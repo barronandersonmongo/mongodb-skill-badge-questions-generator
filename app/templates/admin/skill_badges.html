@@ -1,0 +1,526 @@
+{% extends "base.html" %}
+{% set api = "/api/admin/skill-badges" %}
+
+{% block title %}Skill badges — Skill Badge Questions{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <div>
+    <h1 class="h3 mb-1">Skill badges</h1>
+    <p class="text-body-secondary mb-0">
+      Claude researches MongoDB's published badge catalog. Everything it finds
+      <strong>Sync from catalog</strong> reads the published badge collection
+      directly — that is the authoritative list. <strong>Research with Claude</strong>
+      searches the web instead, for finding what the collection may not list yet.
+      Either way, badges arrive as <strong>candidates</strong> for you to approve or
+      retire.
+    </p>
+  </div>
+  <div class="text-nowrap">
+    <button class="btn btn-primary" id="sync-catalog-btn" type="button">
+      Sync from catalog
+    </button>
+    <button class="btn btn-outline-secondary" id="scan-duplicates-btn" type="button">
+      Find duplicates
+    </button>
+    <button class="btn btn-outline-secondary" id="normalise-slugs-btn" type="button">
+      Normalise slugs
+    </button>
+    <button class="btn btn-outline-secondary" id="discover-btn" type="button"
+            data-bs-toggle="modal" data-bs-target="#discover-modal">
+      Research with Claude
+    </button>
+  </div>
+</div>
+
+<div id="run-alert" class="alert d-none" role="status"></div>
+
+{% if storage_error %}
+<div class="alert alert-danger">
+  <strong>Cannot reach MongoDB.</strong>
+  Check <span class="font-monospace">PTM_HACKATHON_CONNECTION_STRING</span> and that
+  your IP is on the Atlas access list.
+  <div class="small font-monospace mt-1">{{ storage_error }}</div>
+</div>
+{% endif %}
+
+{% if last_error %}
+<div class="alert alert-danger">
+  <strong>Last discovery run failed.</strong>
+  <div class="small mt-1">{{ last_error }}</div>
+  {% if last_traceback %}
+  <details class="mt-2">
+    <summary class="small">Show stack trace</summary>
+    <pre class="small font-monospace mb-0 mt-2 p-2 bg-body rounded border overflow-auto"
+         style="max-height: 20rem;">{{ last_traceback }}</pre>
+  </details>
+  {% endif %}
+</div>
+{% elif last_result %}
+<div class="alert alert-success">
+  <strong>Last run:</strong>
+  {{ last_result.inserted }} new,
+  {{ last_result.modified }} updated{% if last_result.merged %},
+  {{ last_result.merged | length }} recognised as existing badges{% endif %}
+  {% if last_result.run_id %}<span class="text-body-secondary small">(run {{ last_result.run_id[:8] }})</span>{% endif %}
+  {% if last_result.source == "duplicate-scan" %}
+  <div class="mt-1">
+    {{ last_result.merged | length }} duplicate(s) merged automatically,
+    {{ last_result.needs_review | length }} need review.
+  </div>
+  {% endif %}
+  {% if last_result.needs_review %}
+  <ul class="small mb-0 mt-2" data-needs-review="true">
+    {% for pair in last_result.needs_review %}
+    <li class="mb-1">
+      Possible duplicate: keep <strong>{{ pair.keep_name }}</strong>
+      <span class="font-monospace">({{ pair.keep }})</span>, drop
+      <strong>{{ pair.drop_name }}</strong>
+      <span class="font-monospace">({{ pair.drop }})</span>
+      — {{ pair.reason }}
+      <button class="btn btn-sm btn-outline-danger py-0 js-merge"
+              data-keep="{{ pair.keep }}" data-drop="{{ pair.drop }}">Merge</button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if last_result.rejected %}
+  <details class="mt-2">
+    <summary class="small" data-rejected="true">
+      {{ last_result.rejected | length }} candidate(s) rejected: no {{ catalog_domain }} evidence
+    </summary>
+    <ul class="small mb-0 mt-2">
+      {% for item in last_result.rejected %}
+      <li>{{ item.name }} <span class="font-monospace">({{ item.slug }})</span>
+        {% if item.source_urls %}— cited only {{ item.source_urls | join(", ") }}{% else %}— cited no sources{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>
+{% endif %}
+
+<ul class="nav nav-tabs mb-0">
+  {% for tab, label in tabs %}
+  <li class="nav-item">
+    <a class="nav-link {% if status_filter == tab %}active{% endif %}"
+       href="/admin/skill-badges{% if tab %}?status={{ tab }}{% endif %}">
+      {{ label }} <span class="badge text-bg-secondary">{{ counts.get(tab, 0) }}</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+
+<div class="card border-top-0 rounded-top-0">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>Badge</th>
+          <th>Categories</th>
+          <th>Confidence</th>
+          <th>Sources</th>
+          <th>Status</th>
+          <th class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for badge in badges %}
+        <tr data-slug="{{ badge.slug }}">
+          <td>
+            <div class="d-flex align-items-start gap-3">
+            {% if badge.image_stored %}
+            <img src="{{ api }}/{{ badge.slug }}/image" alt="{{ badge.name }} badge"
+                 data-badge-art="true" width="96" height="96"
+                 class="flex-shrink-0" loading="lazy">
+            {% else %}
+            <span class="flex-shrink-0 border rounded text-body-secondary small d-inline-flex
+                         align-items-center justify-content-center"
+                  style="width:96px;height:96px;" data-badge-art="missing">no art</span>
+            {% endif %}
+            <div>
+            <div class="fw-semibold js-name">
+              {{ badge.name }}
+              {% if badge.name_locked %}
+              <span class="badge text-bg-info" data-name-locked="true" title="Corrected by hand; discovery runs will not overwrite it">edited</span>
+              {% endif %}
+              <button class="btn btn-link btn-sm p-0 ms-1 js-edit-name" title="Edit title">edit</button>
+            </div>
+            <div class="small text-body-secondary font-monospace">{{ badge.slug }}</div>
+            <dl class="row row-cols-1 gx-2 gy-0 mb-0 mt-2 small">
+              {% if badge.credly_title %}
+              <div class="col-12 d-flex gap-2">
+                <dt class="text-body-secondary fw-semibold" style="min-width:9rem;">Credly name</dt>
+                <dd class="mb-0" data-credly-title="true">{{ badge.credly_title }}</dd>
+              </div>
+              {% endif %}
+              <div class="col-12 d-flex gap-2">
+                <dt class="text-body-secondary fw-semibold" style="min-width:9rem;">MongoDB name</dt>
+                {% if badge.mongodb_title %}
+                <dd class="mb-0" data-mongodb-title="true">{{ badge.mongodb_title }}</dd>
+                {% else %}
+                <dd class="mb-0 fst-italic text-body-tertiary" data-mongodb-title="missing">
+                  not found on learn.mongodb.com
+                </dd>
+                {% endif %}
+              </div>
+              {% if badge.image_title %}
+              <div class="col-12 d-flex gap-2">
+                <dt class="text-body-secondary fw-semibold" style="min-width:9rem;">Artwork name</dt>
+                <dd class="mb-0" data-title-source="artwork">{{ badge.image_title }}</dd>
+              </div>
+              {% endif %}
+              {% if badge.text_title and badge.text_title != badge.credly_title %}
+              <div class="col-12 d-flex gap-2">
+                <dt class="text-body-secondary fw-semibold" style="min-width:9rem;">Catalog name</dt>
+                <dd class="mb-0">{{ badge.text_title }}</dd>
+              </div>
+              {% endif %}
+              <div class="col-12 d-flex gap-2">
+                <dt class="text-body-secondary fw-semibold" style="min-width:9rem;">Description</dt>
+                <dd class="mb-0 text-body-secondary">{{ badge.description }}</dd>
+              </div>
+            </dl>
+            </div>
+            </div>
+          </td>
+          <td>
+            {% for category in badge.categories %}
+            <span class="badge text-bg-light border">{{ category }}</span>
+            {% else %}
+            <span class="text-body-secondary small">—</span>
+            {% endfor %}
+          </td>
+          <td>
+            <span class="badge text-bg-{{ confidence_styles.get(badge.confidence, 'secondary') }}">
+              {{ badge.confidence }}
+            </span>
+          </td>
+          <td>
+            {% if badge.credly_url %}
+            <a href="{{ badge.credly_url }}" target="_blank" rel="noopener"
+               class="d-block small" data-canonical="credly">Credly badge page</a>
+            {% endif %}
+            {% if badge.mongodb_url %}
+            <a href="{{ badge.mongodb_url }}" target="_blank" rel="noopener"
+               class="d-block small" data-canonical="mongodb">learn.mongodb.com page</a>
+            {% endif %}
+            <div class="js-sources" data-sources="{{ badge.source_urls | join('\n') }}">
+              {% for url in badge.source_urls %}
+              <a href="{{ url }}" target="_blank" rel="noopener" class="d-block small text-truncate"
+                 style="max-width: 18rem;">{{ url }}</a>
+              {% else %}
+              <span class="text-body-secondary small">none cited</span>
+              {% endfor %}
+            </div>
+            {% if badge.sources_locked %}
+            <span class="badge text-bg-info" data-sources-locked="true"
+                  title="Curated by hand; discovery runs will not overwrite these">curated</span>
+            {% endif %}
+            <button class="btn btn-link btn-sm p-0 js-edit-sources" title="Edit reference links">edit links</button>
+          </td>
+          <td>
+            <span class="badge text-bg-{{ status_styles.get(badge.status, 'secondary') }}">
+              {{ badge.status }}
+            </span>
+          </td>
+          <td class="text-end text-nowrap">
+            {% if badge.status != "approved" %}
+            <button class="btn btn-sm btn-outline-success js-status" data-status="approved">Approve</button>
+            {% endif %}
+            {% if badge.status != "retired" %}
+            <button class="btn btn-sm btn-outline-secondary js-status" data-status="retired">Retire</button>
+            {% endif %}
+            {% if badge.status != "candidate" %}
+            <button class="btn btn-sm btn-outline-primary js-status" data-status="candidate">Re-open</button>
+            {% endif %}
+            {% if badge.status == "retired" %}
+            <button class="btn btn-sm btn-outline-danger js-delete" data-delete="true">Delete</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="text-center text-body-secondary py-5">
+            {% if status_filter %}
+              No badges with status “{{ status_filter }}”.
+            {% else %}
+              No skill badges yet. Run <strong>Discover badges</strong> to populate the collection.
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<p class="text-body-secondary small mt-3 mb-0">
+  Stored in <span class="font-monospace">{{ database }}.{{ collection }}</span>.
+  Badges are only accepted with evidence on
+  <a href="{{ catalog_url }}" target="_blank" rel="noopener">{{ catalog_domain }}</a>.
+</p>
+
+<div class="modal fade" id="discover-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5">Discover badges</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-body-secondary">
+          Claude will search MongoDB's published sources. This takes minutes, not
+          seconds — you can leave this page open and it will report when done.
+        </p>
+        <label for="instructions" class="form-label">Extra instructions (optional)</label>
+        <textarea class="form-control" id="instructions" rows="3"
+                  placeholder="e.g. Atlas badges only"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="start-run">Start run</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = "{{ api }}";
+const alertBox = document.getElementById("run-alert");
+let elapsedTimer = null;
+let startedAt = null;
+
+function formatElapsed(ms) {
+  const total = Math.floor(ms / 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return pad(Math.floor(total / 3600)) + ":" + pad(Math.floor((total % 3600) / 60)) +
+    ":" + pad(total % 60);
+}
+
+function showAlert(kind, message, {timed = false} = {}) {
+  alertBox.className = "alert alert-" + kind;
+  alertBox.textContent = message;
+
+  if (!timed) {
+    stopElapsed();
+    return;
+  }
+  // Runs take minutes, so show how long this one has been going.
+  if (startedAt === null) startedAt = Date.now();
+  const label = document.createElement("span");
+  label.className = "ms-2 font-monospace";
+  label.dataset.elapsed = "true";
+  label.textContent = formatElapsed(Date.now() - startedAt);
+  alertBox.append(label);
+  if (elapsedTimer === null) {
+    elapsedTimer = setInterval(() => {
+      const current = alertBox.querySelector("[data-elapsed]");
+      if (current) current.textContent = formatElapsed(Date.now() - startedAt);
+    }, 1000);
+  }
+}
+
+function stopElapsed() {
+  if (elapsedTimer !== null) {
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+  }
+  startedAt = null;
+}
+
+async function pollStatus() {
+  const response = await fetch(API + "/discover/status");
+  const state = await response.json();
+  if (state.running) {
+    showAlert("info", "Discovery run in progress — researching MongoDB's badge catalog…", {timed: true});
+    setTimeout(pollStatus, 3000);
+    return;
+  }
+  if (state.last_error) {
+    showAlert("danger", "Run failed: " + state.last_error);
+    if (state.last_traceback) {
+      const details = document.createElement("details");
+      details.className = "mt-2";
+      const summary = document.createElement("summary");
+      summary.className = "small";
+      summary.textContent = "Show stack trace";
+      const pre = document.createElement("pre");
+      pre.className = "small font-monospace mb-0 mt-2 p-2 bg-body rounded border overflow-auto";
+      pre.style.maxHeight = "20rem";
+      pre.textContent = state.last_traceback;   // textContent, never innerHTML
+      details.append(summary, pre);
+      alertBox.append(details);
+    }
+    return;
+  }
+  const took = startedAt === null ? "" : " Took " + formatElapsed(Date.now() - startedAt) + ".";
+  showAlert("success", "Run finished." + took + " Reloading…");
+  window.location.reload();
+}
+
+document.getElementById("normalise-slugs-btn").addEventListener("click", async () => {
+  const response = await fetch(API + "/normalise-slugs", {method: "POST"});
+  if (!response.ok) {
+    showAlert("danger", "Could not normalise slugs (HTTP " + response.status + ").");
+    return;
+  }
+  const result = await response.json();
+  const conflicts = result.slug_conflicts.length
+    ? " " + result.slug_conflicts.length + " conflict(s) left alone."
+    : "";
+  showAlert("success", result.renamed.length + " renamed, " + result.unchanged +
+    " already correct." + conflicts + " Reloading…");
+  setTimeout(() => window.location.reload(), 1500);
+});
+
+document.getElementById("scan-duplicates-btn").addEventListener("click", async () => {
+  showAlert("info", "Comparing badge descriptions for duplicates…", {timed: true});
+  const response = await fetch(API + "/duplicates/scan", {method: "POST"});
+  if (!response.ok) {
+    showAlert("danger", "Could not start the scan (HTTP " + response.status + ").");
+    return;
+  }
+  pollStatus();
+});
+
+document.querySelectorAll(".js-merge").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const keep = button.dataset.keep, drop = button.dataset.drop;
+    if (!window.confirm(
+      "Merge " + drop + " into " + keep + "?\n\n" + drop +
+      " will be deleted. Its slug is remembered so a later sync recognises it."
+    )) return;
+    const response = await fetch(API + "/merge", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({keep: keep, drop: drop}),
+    });
+    if (!response.ok) {
+      showAlert("danger", "Merge failed (HTTP " + response.status + ").");
+      return;
+    }
+    window.location.reload();
+  });
+});
+
+document.getElementById("sync-catalog-btn").addEventListener("click", async () => {
+  showAlert("info", "Syncing from the published badge collection…", {timed: true});
+  const response = await fetch(API + "/sync-catalog", {method: "POST"});
+  if (response.status === 409) {
+    showAlert("warning", "A run is already in progress.");
+    return;
+  }
+  if (!response.ok) {
+    showAlert("danger", "Could not start the sync (HTTP " + response.status + ").");
+    return;
+  }
+  pollStatus();
+});
+
+document.getElementById("start-run").addEventListener("click", async () => {
+  const instructions = document.getElementById("instructions").value.trim();
+  bootstrap.Modal.getInstance(document.getElementById("discover-modal")).hide();
+  const response = await fetch(API + "/discover", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({extra_instructions: instructions || null}),
+  });
+  if (response.status === 409) {
+    showAlert("warning", "A discovery run is already in progress.");
+    return;
+  }
+  if (!response.ok) {
+    showAlert("danger", "Could not start the run (HTTP " + response.status + ").");
+    return;
+  }
+  pollStatus();
+});
+
+document.querySelectorAll(".js-delete").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const row = button.closest("tr");
+    const slug = row.dataset.slug;
+    if (!window.confirm(
+      "Permanently delete " + slug + "?\n\nThis cannot be undone. A later " +
+      "discovery run that finds this badge again will re-add it as a new candidate."
+    )) return;
+    const response = await fetch(API + "/" + encodeURIComponent(slug), {method: "DELETE"});
+    if (!response.ok) {
+      showAlert("danger", "Could not delete " + slug + " (HTTP " + response.status + ").");
+      return;
+    }
+    window.location.reload();
+  });
+});
+
+document.querySelectorAll(".js-edit-sources").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const row = button.closest("tr");
+    const slug = row.dataset.slug;
+    const current = row.querySelector(".js-sources").dataset.sources || "";
+    const edited = window.prompt(
+      "Reference links for " + slug + " — one per line. Delete a line to remove it.",
+      current
+    );
+    if (edited === null) return;
+    const urls = edited.split("\n").map((u) => u.trim()).filter((u) => u !== "");
+    const response = await fetch(API + "/" + encodeURIComponent(slug) + "/sources", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({source_urls: urls}),
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      showAlert("danger", "Could not update links for " + slug + ": " + detail.slice(0, 200));
+      return;
+    }
+    window.location.reload();
+  });
+});
+
+document.querySelectorAll(".js-edit-name").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const row = button.closest("tr");
+    const slug = row.dataset.slug;
+    const current = row.querySelector(".js-name").textContent.replace(/\s*(edited)?\s*edit\s*$/, "").trim();
+    const name = window.prompt("Correct the badge title:", current);
+    if (name === null || name.trim() === "" || name.trim() === current) return;
+    const response = await fetch(API + "/" + encodeURIComponent(slug) + "/name", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: name.trim()}),
+    });
+    if (!response.ok) {
+      showAlert("danger", "Could not rename " + slug + " (HTTP " + response.status + ").");
+      return;
+    }
+    window.location.reload();
+  });
+});
+
+document.querySelectorAll(".js-status").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const slug = button.closest("tr").dataset.slug;
+    button.disabled = true;
+    const response = await fetch(API + "/" + encodeURIComponent(slug) + "/status", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({status: button.dataset.status}),
+    });
+    if (!response.ok) {
+      button.disabled = false;
+      showAlert("danger", "Could not update " + slug + " (HTTP " + response.status + ").");
+      return;
+    }
+    window.location.reload();
+  });
+});
+
+// A run may already be going when the page loads (started elsewhere, or a reload).
+if ({{ "true" if running else "false" }}) { pollStatus(); }
+</script>
+{% endblock %}
