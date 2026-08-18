@@ -165,11 +165,30 @@ def totals() -> dict[str, Any]:
     }
 
 
-def list_pages(source: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+def list_pages(
+    source: str | None = None, limit: int = 200, contains: str | None = None
+) -> list[dict[str, Any]]:
+    """Stored pages, without their text, for drilling into one source.
+
+    `contains` filters on title and URL in Python rather than with a database regex:
+    the largest source is under a thousand pages, and matching here keeps the query a
+    plain indexed equality instead of a scan with an unanchored pattern.
+    """
     query = {"source": source} if source else {}
-    return list(
-        collection().find(query, LIST_PROJECTION).sort("url", ASCENDING).limit(limit)
-    )
+    found = list(collection().find(query, LIST_PROJECTION).sort("url", ASCENDING))
+    if contains:
+        needle = contains.strip().casefold()
+        found = [
+            page
+            for page in found
+            if needle in (page.get("title") or "").casefold()
+            or needle in page["url"].casefold()
+        ]
+    return found[:limit]
+
+
+def count_pages(source: str | None = None) -> int:
+    return collection().count_documents({"source": source} if source else {})
 
 
 def get_page(url: str) -> dict[str, Any] | None:

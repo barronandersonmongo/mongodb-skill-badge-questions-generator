@@ -13,7 +13,7 @@ JavaScript; JS only drives the discover button's polling and the status buttons.
 
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pymongo.errors import PyMongoError
@@ -27,6 +27,10 @@ from app.routers.admin_skill_badges import run_state
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 router = APIRouter(prefix="/admin", tags=["admin-ui"])
+
+# One source runs to nearly a thousand pages; a listing longer than this is scrolled
+# past rather than read, and the search box is the way through it.
+PAGE_LIST_LIMIT = 500
 
 STATUS_TABS = [
     ("", "All"),
@@ -71,6 +75,68 @@ def docs_page(request: Request):
             "last_result": state["last_result"],
             "last_error": state["last_error"],
             "last_traceback": state["last_traceback"],
+        },
+    )
+
+
+@router.get("/docs/source")
+def docs_source_page(request: Request, source: str, q: str | None = None):
+    """The pages one documentation index contributed.
+
+    The index alone is not much use — this is the step from "we store this source" to
+    "here is what is in it". Text is deliberately not loaded: some sources run to
+    hundreds of pages.
+    """
+    pages: list[dict] = []
+    total = 0
+    storage_error: str | None = None
+    try:
+        pages = doc_pages.list_pages(source, limit=PAGE_LIST_LIMIT, contains=q)
+        total = doc_pages.count_pages(source)
+    except PyMongoError as exc:
+        storage_error = str(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "admin/docs_source.html",
+        {
+            "active_page": "docs",
+            "source": source,
+            "pages": pages,
+            "total": total,
+            "shown": len(pages),
+            "limit": PAGE_LIST_LIMIT,
+            "query": q or "",
+            "storage_error": storage_error,
+        },
+    )
+
+
+@router.get("/docs/page")
+def docs_page_view(request: Request, url: str):
+    """One stored page, rendered as Markdown.
+
+    The page is read here rather than fetched by the browser so the viewer works
+    without JavaScript for reading the source text, and so a missing page is a 404
+    rather than an empty screen.
+    """
+    page = None
+    storage_error: str | None = None
+    try:
+        page = doc_pages.get_page(url)
+    except PyMongoError as exc:
+        storage_error = str(exc)
+
+    if page is None and storage_error is None:
+        raise HTTPException(404, f"No stored documentation page for {url!r}.")
+
+    return templates.TemplateResponse(
+        request,
+        "admin/docs_page.html",
+        {
+            "active_page": "docs",
+            "page": page,
+            "storage_error": storage_error,
         },
     )
 

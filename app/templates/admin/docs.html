@@ -90,7 +90,8 @@
   <div class="card-header py-2">
     <span class="fw-semibold">Sources</span>
     <span class="small text-body-secondary ms-2">
-      what the corpus is made of — all of these are crawled on every refresh
+      what the corpus is made of — all of these are crawled on every refresh.
+      Open a source to read its pages.
     </span>
   </div>
   <div class="table-responsive">
@@ -211,13 +212,21 @@ async function loadSources() {
     row.dataset.source = source;
 
     const name = row.insertCell();
-    const link = document.createElement("a");
-    link.href = source;
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.className = "small font-monospace";
-    link.textContent = shortName(source);
-    name.append(link);
+    if (info) {
+      // Only a source with stored pages can be drilled into; one that has never been
+      // crawled would open an empty list.
+      const link = document.createElement("a");
+      link.href = "/admin/docs/source?source=" + encodeURIComponent(source);
+      link.className = "small font-monospace";
+      link.dataset.drillIn = "true";
+      link.textContent = shortName(source);
+      name.append(link);
+    } else {
+      const label = document.createElement("span");
+      label.className = "small font-monospace text-body-secondary";
+      label.textContent = shortName(source);
+      name.append(label);
+    }
 
     const pages = row.insertCell();
     pages.className = "text-end";

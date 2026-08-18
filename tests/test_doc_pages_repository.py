@@ -231,3 +231,54 @@ def test_the_repository_targets_the_configured_collection(monkeypatch):
     resolved = doc_pages.collection()
     assert resolved.name == "doc_pages"
     assert resolved.database.name == "skill-badge-questions"
+
+
+def test_pages_can_be_filtered_by_title_or_url(fake_doc_pages):
+    """
+    Intent: One source runs to nearly a thousand pages, so reaching a particular page by
+        scrolling is impractical. Matching on the title and the URL both matters: a reader
+        may remember either.
+    Success: A filter matches on title and on URL, case-insensitively, and excludes the rest.
+    Feature: Documentation corpus — find a page within a source.
+    """
+    doc_pages.upsert_pages([
+        {"url": "https://x/aggregation.md", "source": "ix", "title": "Pipelines", "text": "a"},
+        {"url": "https://x/indexes.md", "source": "ix", "title": "Index Design", "text": "b"},
+    ])
+    assert [p["url"] for p in doc_pages.list_pages("ix", contains="AGGREGATION")] == [
+        "https://x/aggregation.md"
+    ]
+    assert [p["title"] for p in doc_pages.list_pages("ix", contains="index design")] == [
+        "Index Design"
+    ]
+    assert doc_pages.list_pages("ix", contains="nothing here") == []
+
+
+def test_a_sources_pages_can_be_counted_without_listing_them(fake_doc_pages):
+    """
+    Intent: The listing is capped, so "showing 500 of 940" needs a real total. Counting by
+        listing everything would defeat the cap it exists to describe.
+    Success: count_pages reports the total for a source, independent of any list limit.
+    Feature: Documentation corpus — page totals per source.
+    """
+    doc_pages.upsert_pages([
+        {"url": "https://x/a.md", "source": "ix-1", "title": "A", "text": "a"},
+        {"url": "https://x/b.md", "source": "ix-1", "title": "B", "text": "b"},
+        {"url": "https://x/c.md", "source": "ix-2", "title": "C", "text": "c"},
+    ])
+    assert doc_pages.count_pages("ix-1") == 2
+    assert doc_pages.count_pages() == 3
+
+
+def test_the_page_listing_is_capped(fake_doc_pages):
+    """
+    Intent: Without a cap, opening the Atlas CLI source would render nearly a thousand rows
+        and pull their metadata into one response.
+    Success: The limit bounds how many pages are returned.
+    Feature: Documentation corpus — bounded page listing.
+    """
+    doc_pages.upsert_pages([
+        {"url": f"https://x/p{i}.md", "source": "ix", "title": f"P{i}", "text": "t"}
+        for i in range(10)
+    ])
+    assert len(doc_pages.list_pages("ix", limit=4)) == 4

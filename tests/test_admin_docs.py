@@ -329,3 +329,182 @@ def test_the_docs_api_is_mounted(client):
     paths = client.get("/openapi.json").json()["paths"]
     assert API + "/refresh" in paths
     assert API + "/sources" in paths
+
+
+# --- drilling in: source -> page -> rendered markdown ---
+
+
+def test_a_source_can_be_opened_to_list_its_pages(client, fake_doc_pages):
+    """
+    Intent: The corpus screen showed only which indexes existed, which told a reader nothing
+        about what was actually captured. Being able to open a source is the step from "we
+        store this" to "here is what is in it".
+    Success: The source screen lists the stored page, linking to the page view.
+    Feature: Documentation corpus — drill into a source.
+    """
+    seed(url="https://www.mongodb.com/docs/a.md", source="ix-1")
+    response = client.get("/admin/docs/source", params={"source": "ix-1"})
+    assert response.status_code == 200
+    assert 'data-doc-page="true"' in response.text
+    assert "/admin/docs/page?url=" in response.text
+
+
+def test_the_corpus_screen_links_into_a_stored_source(client, fake_doc_pages):
+    """
+    Intent: A drill-down nobody can find is not a feature. The route in has to be the source
+        row itself, which is what a reader would click.
+    Success: The corpus screen's script builds links to the source view.
+    Feature: Documentation corpus — the drill-down is reachable.
+    """
+    body = client.get(PAGE).text
+    assert "/admin/docs/source?source=" in body
+    assert "drillIn" in body
+
+
+def test_a_source_listing_says_how_much_it_is_showing(client, fake_doc_pages):
+    """
+    Intent: The listing is capped at 500 while a source can hold nearly a thousand pages.
+        Showing a truncated list without saying so would read as the whole source.
+    Success: The screen reports how many of the total are shown.
+    Feature: Documentation corpus — the listing is honest about truncation.
+    """
+    seed(url="https://www.mongodb.com/docs/a.md", source="ix-1")
+    body = client.get("/admin/docs/source", params={"source": "ix-1"}).text
+    assert 'data-page-count="true"' in body
+    assert "Showing 1 of 1 page(s)" in body
+
+
+def test_pages_in_a_source_can_be_filtered(client, fake_doc_pages):
+    """
+    Intent: With hundreds of pages per source, a filter is the only practical way to reach
+        one. Without it the cap makes later pages unreachable entirely.
+    Success: A filter narrows the list to the matching page.
+    Feature: Documentation corpus — find a page within a source.
+    """
+    seed(url="https://www.mongodb.com/docs/aggregation.md", source="ix-1")
+    seed(url="https://www.mongodb.com/docs/indexes.md", source="ix-1")
+    body = client.get("/admin/docs/source", params={"source": "ix-1", "q": "aggregation"}).text
+    assert "aggregation.md" in body
+    assert "indexes.md" not in body
+
+
+def test_a_filter_with_no_match_is_distinguished_from_an_empty_source(client, fake_doc_pages):
+    """
+    Intent: "Nothing matches your filter" and "this source has no pages" call for different
+        actions — one is a typo, the other means the corpus needs refreshing.
+    Success: The empty state names the filter when one is applied.
+    Feature: Documentation corpus — distinct empty states.
+    """
+    seed(url="https://www.mongodb.com/docs/a.md", source="ix-1")
+    body = client.get("/admin/docs/source", params={"source": "ix-1", "q": "zzz"}).text
+    assert 'data-empty="true"' in body
+    assert "zzz" in body
+
+
+def test_a_stored_page_is_shown_as_rendered_markdown(client, fake_doc_pages):
+    """
+    Intent: Reading raw Markdown in a table cell is not reading documentation. The point of
+        the viewer is that a stored page can be read as the page it came from.
+    Success: The page view renders, offers both rendered and raw views, and loads a Markdown
+        renderer.
+    Feature: Documentation viewer — a stored page is readable.
+    """
+    seed(url="https://www.mongodb.com/docs/a.md", source="ix-1")
+    response = client.get("/admin/docs/page", params={"url": "https://www.mongodb.com/docs/a.md"})
+    assert response.status_code == 200
+    assert 'data-rendered="true"' in response.text
+    assert 'data-raw="true"' in response.text
+    assert "marked.min.js" in response.text
+
+
+def test_the_page_text_is_passed_as_data_not_markup(client, fake_doc_pages):
+    """
+    Intent: A documentation page is fetched content, and this program does not get to assume
+        what is in it. Interpolating it into the document would let a page's own text be
+        parsed as part of this application's HTML; passing it as JSON and sanitising before
+        rendering cannot.
+    Success: The text reaches the page as a JSON string and is sanitised before insertion.
+    Feature: Documentation viewer — fetched content cannot alter the page.
+    """
+    doc_pages.upsert_pages([{
+        "url": "https://www.mongodb.com/docs/x.md", "source": "ix-1", "title": "X",
+        "text": "# Heading\n<script>window.__owned = true;</script>",
+    }])
+    body = client.get("/admin/docs/page",
+                      params={"url": "https://www.mongodb.com/docs/x.md"}).text
+    assert "DOMPurify.sanitize(marked.parse(MARKDOWN))" in body
+    # The script tag from the document must appear only inside the JSON string literal,
+    # escaped, never as a live tag in the markup.
+    assert "<script>window.__owned" not in body
+
+
+def test_the_viewer_links_back_to_the_source_and_the_corpus(client, fake_doc_pages):
+    """
+    Intent: A reader who drills three levels down needs a way back, or the only route out is
+        the browser's back button and the screens read as dead ends.
+    Success: The page view carries breadcrumbs to its source and to the corpus screen.
+    Feature: Documentation viewer — navigable.
+    """
+    seed(url="https://www.mongodb.com/docs/a.md", source="ix-1")
+    body = client.get("/admin/docs/page", params={"url": "https://www.mongodb.com/docs/a.md"}).text
+    assert 'data-breadcrumb="true"' in body
+    assert 'href="/admin/docs"' in body
+    assert "/admin/docs/source?source=" in body
+
+
+def test_the_viewer_links_to_the_page_on_mongodbs_site(client, fake_doc_pages):
+    """
+    Intent: The corpus can be stale, and a reader judging a question's grounding needs to
+        compare against what is published now. Without the original URL there is no way
+        back to it.
+    Success: The stored page's own URL is linked.
+    Feature: Documentation viewer — the original is one click away.
+    """
+    seed(url="https://www.mongodb.com/docs/a.md", source="ix-1")
+    body = client.get("/admin/docs/page", params={"url": "https://www.mongodb.com/docs/a.md"}).text
+    assert 'data-source-link="true"' in body
+    assert 'href="https://www.mongodb.com/docs/a.md"' in body
+
+
+def test_viewing_a_page_that_is_not_stored_is_a_404(client, fake_doc_pages):
+    """
+    Intent: A stale link or a hand-typed URL must say the page is not in the corpus, rather
+        than rendering an empty document that reads as a page with no content.
+    Success: An unstored URL returns 404.
+    Feature: Documentation viewer — unknown pages are reported.
+    """
+    assert client.get("/admin/docs/page",
+                      params={"url": "https://x/never-crawled.md"}).status_code == 404
+
+
+def test_the_source_screen_survives_an_unreachable_database(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: These screens are reached mid-investigation; a stack trace there tells the reader
+        nothing about which variable to fix.
+    Success: The source screen returns 200 and names the storage failure.
+    Feature: Documentation corpus — storage failures are explained.
+    """
+    def explode(*args, **kwargs):
+        raise ServerSelectionTimeoutError("no route to host")
+
+    monkeypatch.setattr(doc_pages, "list_pages", explode)
+    response = client.get("/admin/docs/source", params={"source": "ix-1"})
+    assert response.status_code == 200
+    assert "no route to host" in response.text
+
+
+def test_the_page_viewer_survives_an_unreachable_database(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: A storage failure must not be reported as "this page is not in the corpus" — that
+        would send a reader off to re-crawl documentation they already have, over a
+        connection problem.
+    Success: The viewer returns 200 and names the storage failure instead of a 404.
+    Feature: Documentation viewer — storage failures are explained, not mistaken for absence.
+    """
+    def explode(*args, **kwargs):
+        raise ServerSelectionTimeoutError("no route to host")
+
+    monkeypatch.setattr(doc_pages, "get_page", explode)
+    response = client.get("/admin/docs/page", params={"url": "https://x/a.md"})
+    assert response.status_code == 200
+    assert "no route to host" in response.text

@@ -254,7 +254,17 @@ now — around **10,000 pages** (~80 MB), a few minutes.
 - Progress is reported while the crawl runs, and the run is timed on the server, so
   leaving the screen and returning does not restart the timer.
 
-The source table is informational: everything in it is crawled on every refresh.
+**Reading what is stored.** The source table is not just an inventory — open a source
+to list its pages, then open a page to read it. Long sources are capped at 500 rows
+with a filter over titles and URLs, and the screen says how many of the total it is
+showing rather than quietly truncating.
+
+A page is rendered as Markdown (`marked`, sanitised through `DOMPurify`, both pinned
+by SRI), with a **Markdown** toggle for the stored source text and a link to the page
+on MongoDB's own site — the corpus can be stale, and comparing against what is
+published now is the point of that link. The page text is passed into the template as
+JSON and sanitised before it reaches the document: it is fetched content, so nothing
+in it gets to be parsed as part of this application.
 
 Nothing schedules this; it is refreshed on demand. `DOCS_INDEX_URL` overrides the
 index location.
@@ -262,6 +272,8 @@ index location.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/admin/docs` | The corpus screen |
+| `GET` | `/admin/docs/source?source=&q=` | Pages in one source, filterable |
+| `GET` | `/admin/docs/page?url=` | One page, rendered as Markdown |
 | `POST` | `/api/admin/docs/refresh` | Replace the corpus with a fresh crawl |
 | `GET` | `/api/admin/docs/refresh/status` | Poll a crawl, with progress |
 | `GET` | `/api/admin/docs/sources` | Stored sources, upstream sources, totals |
@@ -384,6 +396,8 @@ app/templates/questions.html         the main screen: review and generate
 app/templates/admin/skill_badges.html  badge review screen
 app/templates/admin/logs.html        log viewer
 app/templates/admin/docs.html        documentation corpus screen
+app/templates/admin/docs_source.html pages in one source
+app/templates/admin/docs_page.html   Markdown viewer for one page
 tests/                               pytest suite + fakes (see tests/README.md)
 ```
 

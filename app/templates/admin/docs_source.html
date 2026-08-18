@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}{{ source }} — Documentation{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small" data-breadcrumb="true">
+    <li class="breadcrumb-item"><a href="/admin/docs">Documentation corpus</a></li>
+    <li class="breadcrumb-item active" aria-current="page">
+      {{ source.replace("https://www.mongodb.com/", "") }}
+    </li>
+  </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <div>
+    <h1 class="h4 mb-1">Pages in this source</h1>
+    <p class="text-body-secondary small mb-0">
+      <a href="{{ source }}" target="_blank" rel="noopener" class="font-monospace">{{ source }}</a>
+    </p>
+  </div>
+  <form method="get" action="/admin/docs/source" class="d-flex gap-1">
+    <input type="hidden" name="source" value="{{ source }}">
+    <input class="form-control form-control-sm" type="search" name="q" value="{{ query }}"
+           placeholder="filter by title or URL" style="min-width: 18rem;">
+    <button class="btn btn-sm btn-outline-primary" type="submit">Filter</button>
+    {% if query %}
+    <a class="btn btn-sm btn-outline-secondary"
+       href="/admin/docs/source?source={{ source | urlencode }}" data-clear-filter="true">Clear</a>
+    {% endif %}
+  </form>
+</div>
+
+{% if storage_error %}
+<div class="alert alert-danger">
+  <strong>Cannot reach MongoDB.</strong>
+  <div class="small font-monospace mt-1">{{ storage_error }}</div>
+</div>
+{% endif %}
+
+<p class="text-body-secondary small" data-page-count="true">
+  Showing {{ shown }} of {{ total }} page(s){% if query %} matching “{{ query }}”{% endif %}.
+  {% if shown < total and not query %}
+  Refine with the filter to reach the rest.
+  {% endif %}
+</p>
+
+<div class="card">
+  <div class="list-group list-group-flush">
+    {% for page in pages %}
+    <a class="list-group-item list-group-item-action py-2"
+       data-doc-page="true"
+       href="/admin/docs/page?url={{ page.url | urlencode }}">
+      <div class="fw-semibold">{{ page.title }}</div>
+      <div class="small text-body-secondary font-monospace text-truncate">
+        {{ page.url.replace("https://www.mongodb.com/", "") }}
+      </div>
+      <div class="small text-body-tertiary">
+        {{ (page.bytes / 1024) | round(1) }} KB
+        {% if page.fetched_at %}· fetched {{ page.fetched_at.strftime("%Y-%m-%d %H:%M UTC") }}{% endif %}
+      </div>
+    </a>
+    {% else %}
+    <div class="list-group-item text-center text-body-secondary py-5" data-empty="true">
+      {% if query %}
+        No page in this source matches “{{ query }}”.
+      {% else %}
+        No pages stored for this source. Refresh the corpus on the
+        <a href="/admin/docs">documentation screen</a>.
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
