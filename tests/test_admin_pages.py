@@ -697,3 +697,35 @@ def test_the_page_offers_slug_normalisation(client, fake_collection):
     Feature: Admin area — normalising slugs.
     """
     assert 'id="normalise-slugs-btn"' in client.get("/admin/skill-badges").text
+
+
+def test_the_badge_screens_elapsed_timer_is_driven_by_the_servers_start_time(
+    client, fake_collection
+):
+    """
+    Intent: The badge screen times its runs with the same mechanism as the questions
+        screen and had the same defect: the start time lived only in page memory, so
+        navigating away and back restarted the count at 00:00 while the sync continued.
+        Fixing one screen and not the other would leave the same misleading timer here.
+    Success: The badge screen's polling adopts the server's start time and clock, and
+        does not seed the timer from the browser's own clock.
+    Feature: Badge discovery — elapsed time survives leaving the page.
+    """
+    body = client.get("/admin/skill-badges").text
+    assert "adoptServerClock(state)" in body
+    assert "state.started_at" in body
+    assert "startedAt = Date.now()" not in body
+
+
+def test_a_badge_run_reports_when_it_started_and_finished(client, fake_collection, monkeypatch):
+    """
+    Intent: The badge screen's timer can only survive a reload if the run's start and end
+        are recorded on the server, as they are for question generation.
+    Success: A completed catalog sync reports started_at and finished_at, in that order.
+    Feature: Badge discovery — runs are timestamped on the server.
+    """
+    monkeypatch.setattr(api_module, "synchronize_from_catalog", lambda: {"inserted": 0})
+    client.post("/api/admin/skill-badges/sync-catalog")
+    state = client.get("/api/admin/skill-badges/discover/status").json()
+    assert state["finished_at"] >= state["started_at"]
+    assert state["running"] is False

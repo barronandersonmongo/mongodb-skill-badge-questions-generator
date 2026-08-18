@@ -4,3 +4,6 @@ __pycache__/
 .env
 .coverage
 htmlcov/
+
+# Application log files (rotating, see app/logging_config.py)
+logs/

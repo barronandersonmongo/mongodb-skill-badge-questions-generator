@@ -526,3 +526,85 @@ def test_the_current_state_is_not_offered_as_an_action(client, fake_collection, 
     assert 'data-status="approved"' not in body
     assert 'data-status="rejected"' in body
     assert 'data-status="draft"' in body
+
+
+def test_the_elapsed_timer_is_driven_by_the_servers_start_time(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: This is the reported bug: leaving the screen and coming back restarted the
+        timer at 00:00 while the run continued, because the start time lived only in the
+        page's memory. The page must take it from the run state instead, so any load of
+        the screen shows the true elapsed time.
+    Success: The page's polling adopts the server's start time and clock, and never seeds
+        the timer from the browser's own clock.
+    Feature: Question generation — elapsed time survives leaving the page.
+    """
+    body = client.get(PAGE).text
+    assert "adoptServerClock(state)" in body
+    assert "state.started_at" in body
+    assert "state.server_time" in body
+    # The old behaviour: starting the count from whenever the browser noticed.
+    assert "startedAt = Date.now()" not in body
+
+
+def test_a_run_already_in_progress_shows_its_true_elapsed_time(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: The case that exposed the bug — arriving at the screen while a run started
+        earlier is still going. The page must ask the server for status before it draws
+        the timer, rather than drawing a zero and correcting it later.
+    Success: With a run in progress the page polls on load, and the timer's text comes
+        from the elapsed-time helper rather than a literal zero.
+    Feature: Question generation — elapsed time survives leaving the page.
+    """
+    api_module._run_state["running"] = True
+    body = client.get(PAGE).text
+    assert "if (true) { pollStatus(); }" in body
+    assert "elapsedSinceStart" in body
+
+
+def test_cross_badge_attribution_is_reported_after_a_run(client, fake_collection, fake_questions):
+    """
+    Intent: Filing a question under badges the author did not ask for is a judgement they
+        may disagree with. Reporting how many were cross-filed, and why, is what makes it
+        reviewable rather than something that quietly happens to their collection.
+    Success: The run alert reports the cross-tagged count, the badges added and the reason.
+    Feature: Question attribution — cross-filing is reported on screen.
+    """
+    api_module._run_state["last_result"] = {
+        "inserted": 2,
+        "requested": 2,
+        "run_id": "abcdef1234",
+        "rejected": [],
+        "cross_tagged": 1,
+        "attribution_reasons": [
+            {"stem": "Which stage?", "added": ["indexing"], "reason": "tests index selection"}
+        ],
+    }
+    body = client.get(PAGE).text
+    assert 'data-cross-tagged="true"' in body
+    assert "1 question(s) also belong to other skill badges" in body
+    assert "tests index selection" in body
+
+
+def test_a_skipped_cross_badge_review_is_reported(client, fake_collection, fake_questions):
+    """
+    Intent: When attribution fails the questions are still stored, but only under the
+        badges they were written for. Silently returning a narrower result would leave the
+        author believing the cross-badge review had found nothing.
+    Success: The page says the review did not run, and names the reason.
+    Feature: Question attribution — a skipped review is visible, not silent.
+    """
+    api_module._run_state["last_result"] = {
+        "inserted": 1,
+        "requested": 1,
+        "run_id": "abcdef1234",
+        "rejected": [],
+        "cross_tagged": 0,
+        "attribution_error": "overloaded_error",
+    }
+    body = client.get(PAGE).text
+    assert 'data-attribution-error="true"' in body
+    assert "overloaded_error" in body

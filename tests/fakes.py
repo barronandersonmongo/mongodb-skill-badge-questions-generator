@@ -265,9 +265,13 @@ class FakeParsedResponse:
 
 
 class FakeMessages:
-    def __init__(self, stream_messages: list[FakeMessage], parsed=None):
+    def __init__(self, stream_messages: list[FakeMessage], parsed=None, parsed_by_format=None):
         self._stream_messages = list(stream_messages)
         self._parsed = parsed
+        # A single run can make several parse() calls against different schemas
+        # (extraction, then badge attribution). Scripting by output_format lets a
+        # test answer each one without depending on call order.
+        self._parsed_by_format = parsed_by_format or {}
         self.stream_calls: list[dict] = []
         self.parse_calls: list[dict] = []
 
@@ -279,13 +283,19 @@ class FakeMessages:
 
     def parse(self, **kwargs) -> FakeParsedResponse:
         self.parse_calls.append(kwargs)
+        scripted = self._parsed_by_format.get(kwargs.get("output_format"), self._parsed)
         return (
-            self._parsed
-            if isinstance(self._parsed, FakeParsedResponse)
-            else FakeParsedResponse(self._parsed)
+            scripted
+            if isinstance(scripted, FakeParsedResponse)
+            else FakeParsedResponse(scripted)
         )
 
 
 class FakeAnthropic:
-    def __init__(self, stream_messages: list[FakeMessage] | None = None, parsed=None):
-        self.messages = FakeMessages(stream_messages or [], parsed)
+    def __init__(
+        self,
+        stream_messages: list[FakeMessage] | None = None,
+        parsed=None,
+        parsed_by_format=None,
+    ):
+        self.messages = FakeMessages(stream_messages or [], parsed, parsed_by_format)

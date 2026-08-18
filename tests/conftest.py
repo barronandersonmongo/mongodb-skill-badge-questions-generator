@@ -27,6 +27,20 @@ def clean_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolate_log_file(tmp_path, monkeypatch):
+    """No test may write to the operator's real log file.
+
+    Importing the application configures logging, so without this the suite appends
+    to logs/app.log on every run — polluting the log an operator reads and, over
+    enough runs, rotating real history out of existence.
+    """
+    from app import logging_config
+
+    monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(logging_config, "_configured", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def clear_settings_cache():
     """get_settings() is not cached, but get_client() is — drop it between tests."""
     from app.db import get_client

@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% set api = "/api/admin/logs" %}
+
+{% block title %}Logs — Skill Badge Questions{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <div>
+    <h1 class="h3 mb-1">Logs</h1>
+    <p class="text-body-secondary mb-0">
+      The tail of the current log file. The log rotates at
+      {{ max_megabytes }} MB and keeps {{ total_files }} files; only the most
+      recent is shown here.
+    </p>
+  </div>
+  <div class="text-nowrap">
+    <label for="lines" class="form-label small mb-0">Lines</label>
+    <select class="form-select form-select-sm d-inline-block w-auto" id="lines">
+      <option value="100">100</option>
+      <option value="500" selected>500</option>
+      <option value="2000">2000</option>
+      <option value="10000">10000</option>
+    </select>
+    <button class="btn btn-outline-secondary btn-sm" id="refresh-btn" type="button">Refresh</button>
+    <div class="form-check form-check-inline ms-2">
+      <input class="form-check-input" type="checkbox" id="follow">
+      <label class="form-check-label small" for="follow">Follow</label>
+    </div>
+  </div>
+</div>
+
+<div id="log-alert" class="alert d-none" role="status"></div>
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center py-2">
+    <span class="small font-monospace" data-log-file="true">{{ log_file }}</span>
+    <span class="small text-body-secondary" data-line-count="true"></span>
+  </div>
+  <pre class="mb-0 p-3 bg-body font-monospace small overflow-auto"
+       id="log-body" data-log-body="true"
+       style="max-height: 70vh; white-space: pre-wrap;">Loading…</pre>
+</div>
+
+<div class="mt-3" id="rotated" data-rotated="true"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = "{{ api }}";
+const body = document.getElementById("log-body");
+const alertBox = document.getElementById("log-alert");
+const lineCount = document.querySelector("[data-line-count]");
+const rotatedBox = document.getElementById("rotated");
+let followTimer = null;
+
+function showAlert(kind, message) {
+  alertBox.className = "alert alert-" + kind;
+  alertBox.textContent = message;
+}
+
+function clearAlert() {
+  alertBox.className = "alert d-none";
+  alertBox.textContent = "";
+}
+
+async function load() {
+  const lines = document.getElementById("lines").value;
+  let state;
+  try {
+    const response = await fetch(API + "?lines=" + encodeURIComponent(lines));
+    if (!response.ok) {
+      showAlert("danger", "Could not read the log (HTTP " + response.status + ").");
+      return;
+    }
+    state = await response.json();
+  } catch (error) {
+    showAlert("danger", "Could not read the log: " + error);
+    return;
+  }
+  clearAlert();
+
+  // Stay pinned to the newest entries unless the reader has scrolled up to look
+  // at something, which following would otherwise yank them away from.
+  const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 40;
+
+  // textContent, never innerHTML: log lines are arbitrary text, including any
+  // markup that happened to be logged.
+  body.textContent = state.lines.length
+    ? state.lines.join("\n")
+    : "The log is empty — nothing has been written yet.";
+  lineCount.textContent = state.lines.length + " line(s)";
+
+  rotatedBox.textContent = "";
+  if (state.rotated.length) {
+    const label = document.createElement("span");
+    label.className = "text-body-secondary small";
+    label.textContent = "Rotated on disk: " + state.rotated
+      .map((f) => f.name + " (" + (f.bytes / (1024 * 1024)).toFixed(1) + " MB)")
+      .join(", ");
+    rotatedBox.append(label);
+  }
+
+  if (atBottom) body.scrollTop = body.scrollHeight;
+}
+
+document.getElementById("refresh-btn").addEventListener("click", load);
+document.getElementById("lines").addEventListener("change", load);
+
+document.getElementById("follow").addEventListener("change", (event) => {
+  if (event.target.checked) {
+    followTimer = setInterval(load, 3000);
+    load();
+  } else if (followTimer !== null) {
+    clearInterval(followTimer);
+    followTimer = null;
+  }
+});
+
+load();
+</script>
+{% endblock %}

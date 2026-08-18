@@ -5,6 +5,8 @@ is a long-running Claude call (web search, minutes not seconds), so it runs in a
 background task and the admin page polls for status.
 """
 
+import logging
+import time
 import traceback
 from typing import Literal
 
@@ -13,6 +15,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.repositories import skill_badges
 from app.services.badge_discovery import synchronize_badges, synchronize_from_catalog
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/skill-badges", tags=["admin"])
 
@@ -23,12 +27,33 @@ _run_state: dict = {
     "last_result": None,
     "last_error": None,
     "last_traceback": None,
+    # Wall-clock epoch seconds, so the elapsed timer survives a page reload.
+    "started_at": None,
+    "finished_at": None,
 }
 
 
 def run_state() -> dict:
     """Current discovery-run state, for the page renderer to show on load."""
     return _run_state
+
+
+def _begin_run(what: str) -> None:
+    """Mark a run as started and stamp it, so the page can time it."""
+    _run_state.update(
+        running=True,
+        last_error=None,
+        last_traceback=None,
+        started_at=time.time(),
+        finished_at=None,
+    )
+    logger.info("%s started", what)
+
+
+def _finish_run(what: str) -> None:
+    _run_state["running"] = False
+    _run_state["finished_at"] = time.time()
+    logger.info("%s finished", what)
 
 
 class DiscoverRequest(BaseModel):
@@ -57,18 +82,19 @@ class SourcesRequest(BaseModel):
 
 
 def _run_catalog_sync() -> None:
-    _run_state.update(running=True, last_error=None, last_traceback=None)
+    _begin_run("Catalog sync")
     try:
         _run_state["last_result"] = synchronize_from_catalog()
     except Exception as exc:  # surfaced to the admin page, not swallowed
         _run_state["last_error"] = str(exc)
         _run_state["last_traceback"] = traceback.format_exc()
+        logger.exception("Catalog sync failed: %s", exc)
     finally:
-        _run_state["running"] = False
+        _finish_run("Catalog sync")
 
 
 def _run_discovery(extra_instructions: str | None) -> None:
-    _run_state.update(running=True, last_error=None, last_traceback=None)
+    _begin_run("Badge discovery")
     try:
         _run_state["last_result"] = synchronize_badges(
             extra_instructions=extra_instructions
@@ -78,8 +104,9 @@ def _run_discovery(extra_instructions: str | None) -> None:
         # Keep the trace so the page can offer it without the operator
         # having to go read server logs.
         _run_state["last_traceback"] = traceback.format_exc()
+        logger.exception("Badge discovery failed: %s", exc)
     finally:
-        _run_state["running"] = False
+        _finish_run("Badge discovery")
 
 
 @router.post("/discover")
@@ -101,7 +128,8 @@ def start_catalog_sync(background: BackgroundTasks) -> dict:
 
 @router.get("/discover/status")
 def discovery_status() -> dict:
-    return _run_state
+    """Run state, plus the server's clock, which the page times the run against."""
+    return {**_run_state, "server_time": time.time()}
 
 
 @router.get("")
@@ -165,7 +193,7 @@ def scan_duplicates(background: BackgroundTasks) -> dict:
 def _run_duplicate_scan() -> None:
     from app.services.duplicates import merge_confident_duplicates
 
-    _run_state.update(running=True, last_error=None, last_traceback=None)
+    _begin_run("Duplicate scan")
     try:
         _run_state["last_result"] = {
             **merge_confident_duplicates(),
@@ -174,8 +202,9 @@ def _run_duplicate_scan() -> None:
     except Exception as exc:  # surfaced to the admin page, not swallowed
         _run_state["last_error"] = str(exc)
         _run_state["last_traceback"] = traceback.format_exc()
+        logger.exception("Duplicate scan failed: %s", exc)
     finally:
-        _run_state["running"] = False
+        _finish_run("Duplicate scan")
 
 
 @router.post("/merge")

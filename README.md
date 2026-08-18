@@ -31,7 +31,8 @@ export GROVE_ANTHROPIC_BASE_URL='https://.../anthropic'      # part before /v1/m
 visible to cron, systemd, or anything started as a service.
 
 Optional overrides: `ANTHROPIC_MODEL`, `WEB_SEARCH_TOOL_TYPE`, `WEB_FETCH_TOOL_TYPE`,
-`SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`.
+`SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`, `LOG_DIR`,
+`LOG_LEVEL`.
 
 Storage target is the `skill-badge-questions` database on the `PTM-Hackathon`
 cluster (Atlas project "Barry Anderson").
@@ -103,6 +104,20 @@ internal training content, live cluster behaviour — is pasted into **Source
 material** and preferred over anything Claude finds itself: the server has no
 Glean or MongoDB MCP access of its own.
 
+**Questions are filed under every badge they test.** A question written for one
+badge often tests others — skills overlap. So each finished question is reviewed
+against the whole badge catalog in a third pass, reading the stem, all four
+options and the explanation, because what a question really tests is often only
+visible in what separates the correct option from the wrong ones. Any badge whose
+subject matter it genuinely tests is added.
+
+That pass can only widen a question's reach, never narrow it: the badges it was
+written for are always kept, and a slug matching no stored badge is dropped. The
+run reports how many questions were cross-filed and why, so an over-eager pass is
+visible rather than silent. If the pass itself fails, the questions are still
+stored under the badges they were written for and the screen says the review did
+not run — an authoring turn is never discarded over a follow-up step.
+
 **The format is enforced, not requested.** Every stored question is multiple
 choice with exactly four options, exactly one correct, no repeated or empty
 options, and a non-empty stem. A question failing any of those is discarded and
@@ -131,6 +146,28 @@ exactly the filtered set from the same endpoint the screen reads.
 | `GET` | `/api/questions` | List / export questions, same filters |
 | `POST` | `/api/questions/{id}/status` | Approve, reject or re-open |
 | `DELETE` | `/api/questions/{id}` | Delete a question |
+
+### Logging
+
+Everything the service logs goes to `logs/app.log`, rotating at **100 MB** and
+keeping **10 files** (the active file plus nine backups, ~1 GB at most). `LOG_DIR`
+and `LOG_LEVEL` override the location and verbosity.
+
+Logging is configured from the environment rather than from `Settings`, because
+`Settings` requires a MongoDB connection string — and "cannot reach Atlas" is
+exactly what someone will come to the log to find out.
+
+**Log viewer** at `/admin/logs` shows the tail of the current file, with a
+selectable line count and a **Follow** toggle that refreshes every few seconds.
+Only the active file is served and the endpoint accepts no path, so the viewer
+cannot be turned into a way to read arbitrary files off the server — there are no
+authorizations here. Rotated files are listed by name and size so it is clear what
+history exists on disk.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/admin/logs` | The log viewer |
+| `GET` | `/api/admin/logs?lines=` | Tail of the active log, plus rotated history |
 
 ### Badge synchronisation
 
@@ -203,6 +240,7 @@ from CDN, no build step):
 
 ```
 app/config.py                        environment-driven settings
+app/logging_config.py                rotating file log, and reading it back
 app/db.py                            Mongo client (one per process)
 app/models/skill_badge.py            Pydantic schemas (Claude output + stored doc)
 app/models/question.py               question schemas (Claude output + stored doc)
@@ -215,9 +253,11 @@ app/routers/questions.py             question JSON endpoints under /api/question
 app/routers/pages.py                 the questions screen, served at /
 app/routers/admin_skill_badges.py    badge JSON endpoints under /api/admin
 app/routers/admin_pages.py           server-rendered pages under /admin
+app/routers/admin_logs.py            log tail endpoint under /api/admin
 app/templates/base.html              nav shell shared by every screen
 app/templates/questions.html         the main screen: review and generate
 app/templates/admin/skill_badges.html  badge review screen
+app/templates/admin/logs.html        log viewer
 tests/                               pytest suite + fakes (see tests/README.md)
 ```
 
@@ -225,7 +265,11 @@ tests/                               pytest suite + fakes (see tests/README.md)
 
 - Run state is in-process; it needs to move into MongoDB before running multiple
   uvicorn workers. Badge runs and question runs hold separate state, so one of
-  each can run at a time.
+  each can run at a time. Run start and finish times are recorded on the server,
+  so the elapsed timer is correct across a page reload — but a restart still loses
+  the state.
+- The log viewer shows only the active file. Reading a rotated file still means
+  going to the disk.
 - Nothing checks whether a newly generated question duplicates an existing one.
   The vector-search machinery used for badge duplicates would transfer, but is
   not wired up for questions.

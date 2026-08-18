@@ -56,6 +56,8 @@ suite from the repository root with quiet output.
 | `test_admin_skill_badges_router.py` | `app/routers/admin_skill_badges.py`, `app/main.py` — JSON API under `/api/admin` |
 | `test_admin_pages.py` | `app/routers/admin_pages.py` + templates — the `/admin` badge screens |
 | `test_discover_cli.py` | `app/services/discover_cli.py` — shell entry point |
+| `test_logging_config.py` | `app/logging_config.py` — rotation budget, tailing the file |
+| `test_admin_logs.py` | `app/routers/admin_logs.py` + `admin/logs.html` — the log viewer |
 | `test_test_documentation.py` | The suite itself — enforces the convention below |
 | `conftest.py` | Shared fixtures (credential scrubbing, in-memory collection) |
 | `fakes.py` | Test doubles: in-memory MongoDB collection, scripted Anthropic client |

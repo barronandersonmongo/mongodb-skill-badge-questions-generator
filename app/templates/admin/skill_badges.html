@@ -292,13 +292,34 @@
 const API = "{{ api }}";
 const alertBox = document.getElementById("run-alert");
 let elapsedTimer = null;
+
+// When the run started, in epoch milliseconds, as reported by the server. The
+// browser must not use its own clock for this: a reload, or a trip to another
+// screen and back, would restart the count from zero while the run carried on.
 let startedAt = null;
+// Clock offset between this browser and the server, so a machine whose clock is
+// off does not show a negative or wildly inflated elapsed time.
+let clockSkewMs = 0;
 
 function formatElapsed(ms) {
-  const total = Math.floor(ms / 1000);
+  const total = Math.max(0, Math.floor(ms / 1000));
   const pad = (n) => String(n).padStart(2, "0");
   return pad(Math.floor(total / 3600)) + ":" + pad(Math.floor((total % 3600) / 60)) +
     ":" + pad(total % 60);
+}
+
+function elapsedSinceStart(until = null) {
+  if (startedAt === null) return null;
+  const end = until !== null ? until : Date.now() - clockSkewMs;
+  return end - startedAt;
+}
+
+// Adopt the server's view of when this run started and what time it is now.
+function adoptServerClock(state) {
+  if (state.server_time) {
+    clockSkewMs = Date.now() - state.server_time * 1000;
+  }
+  startedAt = state.started_at ? state.started_at * 1000 : null;
 }
 
 function showAlert(kind, message, {timed = false} = {}) {
@@ -309,17 +330,20 @@ function showAlert(kind, message, {timed = false} = {}) {
     stopElapsed();
     return;
   }
-  // Runs take minutes, so show how long this one has been going.
-  if (startedAt === null) startedAt = Date.now();
+  // Runs take minutes, so show how long this one has been going. Until the first
+  // poll answers, there is no server timestamp yet and the timer is left blank
+  // rather than restarted at zero.
   const label = document.createElement("span");
   label.className = "ms-2 font-monospace";
   label.dataset.elapsed = "true";
-  label.textContent = formatElapsed(Date.now() - startedAt);
+  const current = elapsedSinceStart();
+  label.textContent = current === null ? "" : formatElapsed(current);
   alertBox.append(label);
   if (elapsedTimer === null) {
     elapsedTimer = setInterval(() => {
-      const current = alertBox.querySelector("[data-elapsed]");
-      if (current) current.textContent = formatElapsed(Date.now() - startedAt);
+      const shown = alertBox.querySelector("[data-elapsed]");
+      const running = elapsedSinceStart();
+      if (shown && running !== null) shown.textContent = formatElapsed(running);
     }, 1000);
   }
 }
@@ -329,12 +353,12 @@ function stopElapsed() {
     clearInterval(elapsedTimer);
     elapsedTimer = null;
   }
-  startedAt = null;
 }
 
 async function pollStatus() {
   const response = await fetch(API + "/discover/status");
   const state = await response.json();
+  adoptServerClock(state);
   if (state.running) {
     showAlert("info", "Discovery run in progress — researching MongoDB's badge catalog…", {timed: true});
     setTimeout(pollStatus, 3000);
@@ -357,7 +381,10 @@ async function pollStatus() {
     }
     return;
   }
-  const took = startedAt === null ? "" : " Took " + formatElapsed(Date.now() - startedAt) + ".";
+  const duration = state.finished_at
+    ? elapsedSinceStart(state.finished_at * 1000)
+    : elapsedSinceStart();
+  const took = duration === null ? "" : " Took " + formatElapsed(duration) + ".";
   showAlert("success", "Run finished." + took + " Reloading…");
   window.location.reload();
 }

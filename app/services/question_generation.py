@@ -15,10 +15,17 @@ links — enough to keep a question inside the badge's syllabus. Deeper material
 own, so that content is pasted rather than fetched.
 """
 
+import logging
 from typing import Any
 
 from app.config import Settings, get_settings
-from app.models.question import GeneratedQuestion, GeneratedQuestions
+from app.models.question import (
+    GeneratedQuestion,
+    GeneratedQuestions,
+    QuestionBadgeAttributions,
+)
+
+logger = logging.getLogger(__name__)
 
 OPTIONS_PER_QUESTION = 4
 
@@ -62,6 +69,35 @@ URLs of the material it came from.
 
 Write the questions as a plain numbered list. No preamble, no methodology \
 section, no closing summary."""
+
+ATTRIBUTE_SYSTEM = """\
+You are cataloguing finished quiz questions against MongoDB's skill badges.
+
+A question was written for one set of badges, but skills overlap: a question \
+about an aggregation stage used to reshape documents for a search index may \
+belong to the aggregation badge and the search badge both. Your job is to find \
+every badge whose subject matter the question genuinely tests, so an author \
+looking at any of those badges finds it.
+
+For each question you are given the stem, all four options and the explanation. \
+Read the answers, not just the stem: what a question tests is often visible only \
+in what distinguishes the correct option from the wrong ones.
+
+Include a badge when someone earning that badge would be expected to answer the \
+question correctly, and answering it requires knowledge that badge covers.
+
+Do NOT include a badge because:
+- the question mentions a term that appears in the badge's description;
+- the badge is adjacent, related, or a prerequisite;
+- the topic is broadly part of MongoDB and so is the badge.
+
+Over-tagging is worse than under-tagging: a badge whose question list is full of \
+questions that only nearly apply is a badge whose list cannot be trusted. When \
+in doubt, leave the badge out.
+
+Use only slugs from the badge list given to you — never invent one, and never \
+alter one. Always include the badges the question was written for. Say briefly \
+why any additional badge applies."""
 
 EXTRACT_SYSTEM = """\
 Convert the drafted questions into structured records. Carry over every \
@@ -245,20 +281,145 @@ def split_well_formed(
     return kept, rejected
 
 
-def _scope_to_selected_badges(
-    questions: list[GeneratedQuestion], slugs: list[str]
+def _drop_unknown_badges(
+    questions: list[GeneratedQuestion], known_slugs: set[str], requested: list[str]
 ) -> None:
-    """Keep each question's badge list inside the badges that were asked for.
+    """Remove badge slugs that no stored badge answers to.
 
-    The model is told which badges are in scope, but the stored `skill_badges`
-    array is what the whole collection is filtered by, so a hallucinated or
-    mis-slugged badge there would make a question unfindable. Anything outside the
-    request is dropped; a question left with none is attributed to the request.
+    `skill_badges` is what the whole collection is filtered by, so a hallucinated
+    or mis-spelled slug would make a question unfindable under any real badge while
+    looking correctly tagged. A question left with no badge at all is attributed to
+    the badges the run was scoped to, which is where it came from.
+
+    Note this does not restrict a question to the badges that were requested: a
+    question may legitimately belong to others, which `attribute_badges` decides.
     """
-    allowed = set(slugs)
     for question in questions:
-        inside = [s for s in question.skill_badges if s in allowed]
-        question.skill_badges = inside or list(slugs)
+        known = [s for s in question.skill_badges if s in known_slugs]
+        # dict.fromkeys rather than set(), to keep the order stable for review.
+        question.skill_badges = list(dict.fromkeys(known)) or list(requested)
+
+
+def _question_brief(index: int, question: GeneratedQuestion) -> str:
+    """One question as the attribution pass sees it: stem, options and explanation."""
+    lines = [f"Question {index}:", f"  Stem: {question.stem}"]
+    for option in question.options:
+        mark = "correct" if option.is_correct else "wrong"
+        lines.append(f"  Option ({mark}): {option.text}")
+    if question.explanation:
+        lines.append(f"  Explanation: {question.explanation}")
+    if question.categories:
+        lines.append(f"  Topic areas: {', '.join(question.categories)}")
+    lines.append(f"  Written for: {', '.join(question.skill_badges)}")
+    return "\n".join(lines)
+
+
+def build_attribution_prompt(
+    questions: list[GeneratedQuestion], catalog: list[dict[str, Any]]
+) -> str:
+    """Assemble the attribution request. Kept separate so it can be asserted on."""
+    badge_lines = []
+    for badge in catalog:
+        description = badge.get("description") or ""
+        badge_lines.append(f"- {badge['slug']}: {badge.get('name')} — {description}")
+    question_lines = [
+        _question_brief(index, question) for index, question in enumerate(questions, 1)
+    ]
+    return (
+        "Every MongoDB skill badge, by slug:\n"
+        + "\n".join(badge_lines)
+        + "\n\nThe questions to catalogue:\n"
+        + "\n\n".join(question_lines)
+    )
+
+
+def attribute_badges(
+    questions: list[GeneratedQuestion],
+    catalog: list[dict[str, Any]],
+    requested: list[str],
+    *,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Add every other badge each question genuinely tests.
+
+    Skills overlap, so a question written for one badge often serves others. Left
+    tagged only with the badge it was requested for, that question is invisible to
+    an author working through any of the badges it also covers — so the same
+    question gets written again.
+
+    The pass reads the whole question, answers included: what a question actually
+    tests is often only visible in what separates the correct option from the wrong
+    ones. Slugs are checked against the catalog, and the requested badges are always
+    kept, so this can only add findability, never remove it.
+    """
+    from app.services.badge_discovery import _client, _translate_auth_error
+
+    if not questions or not catalog:
+        return {"cross_tagged": 0, "attribution_error": None}
+
+    settings = settings or get_settings()
+    known = {badge["slug"] for badge in catalog}
+    before = [list(q.skill_badges) for q in questions]
+
+    try:
+        response = _client(settings).messages.parse(
+            model=settings.model,
+            max_tokens=16000,
+            system=ATTRIBUTE_SYSTEM,
+            output_format=QuestionBadgeAttributions,
+            messages=[
+                {
+                    "role": "user",
+                    "content": build_attribution_prompt(questions, catalog),
+                }
+            ],
+        )
+    except Exception as exc:
+        _translate_auth_error(exc)
+        raise
+    if response.parsed_output is None:
+        raise RuntimeError(
+            f"Badge attribution produced no structured output (stop_reason="
+            f"{response.stop_reason}, details={response.stop_details})."
+        )
+
+    reasons = []
+    for attribution in response.parsed_output.attributions:
+        # 1-based indexing in the prompt, so an out-of-range answer is ignored
+        # rather than silently retagging the wrong question.
+        position = attribution.question_index - 1
+        if not 0 <= position < len(questions):
+            logger.warning(
+                "Badge attribution named question %d, which was not sent",
+                attribution.question_index,
+            )
+            continue
+        question = questions[position]
+        # The badges the question was written for are never dropped here.
+        merged = list(question.skill_badges) + [
+            slug for slug in attribution.skill_badges if slug in known
+        ]
+        question.skill_badges = list(dict.fromkeys(merged))
+        added = [s for s in question.skill_badges if s not in before[position]]
+        if added and attribution.reason:
+            reasons.append({"stem": question.stem, "added": added, "reason": attribution.reason})
+
+    cross_tagged = sum(
+        1
+        for index, question in enumerate(questions)
+        if set(question.skill_badges) != set(before[index])
+    )
+    logger.info(
+        "Badge attribution: %d of %d question(s) gained a badge beyond %s",
+        cross_tagged,
+        len(questions),
+        ", ".join(requested),
+    )
+    return {
+        "cross_tagged": cross_tagged,
+        "attribution_reasons": reasons,
+        "attribution_error": None,
+    }
 
 
 def generate_questions(
@@ -276,7 +437,8 @@ def generate_questions(
     if not slugs:
         raise ValueError("Select at least one skill badge to generate questions for.")
 
-    known = {b["slug"]: b for b in skill_badges.list_badges()}
+    catalog = skill_badges.list_badges()
+    known = {b["slug"]: b for b in catalog}
     missing = [s for s in slugs if s not in known]
     if missing:
         raise ValueError(f"No skill badge with slug(s): {', '.join(sorted(missing))}.")
@@ -290,8 +452,12 @@ def generate_questions(
         settings=settings,
     )
     generated = extract_questions(draft, settings=settings)
-    _scope_to_selected_badges(generated, slugs)
+    _drop_unknown_badges(generated, set(known), slugs)
     kept, rejected = split_well_formed(generated)
+
+    # Only the questions being stored are worth cataloguing, so attribution runs
+    # after the format check rather than before it.
+    attribution = _attribute_or_keep_going(kept, catalog, slugs, settings)
 
     summary = questions_repo.insert_questions(kept)
     summary["source"] = "question-generation"
@@ -301,4 +467,27 @@ def generate_questions(
     summary["skill_badges"] = slugs
     summary["draft"] = draft
     summary["questions"] = [q.model_dump() for q in kept]
+    summary.update(attribution)
     return summary
+
+
+def _attribute_or_keep_going(
+    questions: list[GeneratedQuestion],
+    catalog: list[dict[str, Any]],
+    requested: list[str],
+    settings: Settings | None,
+) -> dict[str, Any]:
+    """Run the attribution pass, but never let it lose a finished batch.
+
+    By this point the expensive work is done and the questions are good. If
+    cataloguing them across badges fails — a rate limit, a truncated response — the
+    right outcome is to store them under the badges they were written for and say
+    so, not to discard an authoring run over a follow-up step.
+    """
+    try:
+        return attribute_badges(questions, catalog, requested, settings=settings)
+    except Exception as exc:
+        logger.warning(
+            "Badge attribution failed; questions keep their requested badges: %s", exc
+        )
+        return {"cross_tagged": 0, "attribution_error": str(exc)}

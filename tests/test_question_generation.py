@@ -7,7 +7,13 @@ program changes, or a new test is added alongside with its own block.
 
 import pytest
 
-from app.models.question import GeneratedQuestion, GeneratedQuestions, QuestionOption
+from app.models.question import (
+    GeneratedQuestion,
+    GeneratedQuestions,
+    QuestionBadgeAttributions,
+    QuestionBadges,
+    QuestionOption,
+)
 from app.services import badge_discovery, question_generation
 from tests.fakes import FakeAnthropic, FakeBlock, FakeMessage, FakeParsedResponse
 
@@ -40,11 +46,26 @@ def make(stem: str = "Which stage filters documents?", **overrides) -> Generated
 
 ONE_QUESTION = GeneratedQuestions(questions=[make()])
 
+# A run makes two parse() calls against different schemas — extraction, then badge
+# attribution — so a full-run test scripts an answer for each.
+NO_EXTRA_BADGES = QuestionBadgeAttributions(attributions=[])
+
+
+def full_run(questions=ONE_QUESTION, attributions=NO_EXTRA_BADGES) -> dict:
+    return {
+        GeneratedQuestions: questions,
+        QuestionBadgeAttributions: attributions,
+    }
+
 
 @pytest.fixture
 def fake_client(monkeypatch):
-    def install(stream_messages=None, parsed=None):
-        client = FakeAnthropic(stream_messages=stream_messages, parsed=parsed)
+    def install(stream_messages=None, parsed=None, parsed_by_format=None):
+        client = FakeAnthropic(
+            stream_messages=stream_messages,
+            parsed=parsed,
+            parsed_by_format=parsed_by_format,
+        )
         monkeypatch.setattr(badge_discovery, "_client", lambda settings=None: client)
         return client
 
@@ -380,7 +401,7 @@ def test_a_run_stores_the_questions_it_generated(fake_client, fake_collection, f
     Feature: Question generation — end-to-end run.
     """
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    fake_client(stream_messages=[FakeMessage("draft")], parsed=ONE_QUESTION)
+    fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
     result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
     assert result["inserted"] == 1
     assert fake_questions.docs[0]["stem"] == "Which stage filters documents?"
@@ -400,7 +421,7 @@ def test_a_run_reports_the_questions_it_discarded(fake_client, fake_collection, 
     bad = make("Broken?", options=[option("a", True), option("b")])
     fake_client(
         stream_messages=[FakeMessage("draft")],
-        parsed=GeneratedQuestions(questions=[make(), bad]),
+        parsed_by_format=full_run(GeneratedQuestions(questions=[make(), bad])),
     )
     result = question_generation.generate_questions(["atlas-search"], 2, settings=settings)
     assert result["inserted"] == 1
@@ -417,7 +438,9 @@ def test_the_draft_is_kept_so_a_run_can_be_audited(fake_client, fake_collection,
     Feature: Question generation — auditable runs.
     """
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    fake_client(stream_messages=[FakeMessage("the raw draft")], parsed=ONE_QUESTION)
+    fake_client(
+        stream_messages=[FakeMessage("the raw draft")], parsed_by_format=full_run()
+    )
     result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
     assert result["draft"] == "the raw draft"
 
@@ -445,21 +468,25 @@ def test_generating_for_an_unknown_badge_is_refused(fake_collection, fake_questi
         question_generation.generate_questions(["made-up-badge"], 1, settings=settings)
 
 
-def test_a_question_is_only_attributed_to_badges_that_were_asked_for(
+def test_a_question_is_only_attributed_to_badges_that_exist(
     fake_client, fake_collection, fake_questions, settings
 ):
     """
     Intent: skill_badges is what the whole collection is filtered by. A badge slug the
-        model invented — or mis-spelled — would make the question unfindable under any
-        real badge while looking correctly tagged.
-    Success: A badge outside the request is dropped and the requested one kept.
-    Feature: Question generation — badge attribution stays inside the request.
+        model invented — or mis-spelled — would make the question unfindable under that
+        name while looking correctly tagged. Note this checks existence, not membership
+        of the request: a question may legitimately belong to badges beyond the ones it
+        was written for.
+    Success: A slug matching no stored badge is dropped and the real one kept.
+    Feature: Question generation — badge slugs must name a real badge.
     """
     fake_collection.docs.append({**BADGE, "status": "approved"})
     fake_client(
         stream_messages=[FakeMessage("draft")],
-        parsed=GeneratedQuestions(
-            questions=[make(skill_badges=["atlas-search", "invented-badge"])]
+        parsed_by_format=full_run(
+            GeneratedQuestions(
+                questions=[make(skill_badges=["atlas-search", "invented-badge"])]
+            )
         ),
     )
     question_generation.generate_questions(["atlas-search"], 1, settings=settings)
@@ -479,7 +506,7 @@ def test_a_question_tagged_with_no_badge_falls_back_to_the_request(
     fake_collection.docs.append({**BADGE, "status": "approved"})
     fake_client(
         stream_messages=[FakeMessage("draft")],
-        parsed=GeneratedQuestions(questions=[make(skill_badges=[])]),
+        parsed_by_format=full_run(GeneratedQuestions(questions=[make(skill_badges=[])])),
     )
     question_generation.generate_questions(["atlas-search"], 1, settings=settings)
     assert fake_questions.docs[0]["skill_badges"] == ["atlas-search"]
@@ -565,3 +592,329 @@ def test_extraction_failures_other_than_credentials_still_propagate(monkeypatch,
     _raising_client(monkeypatch, "parse", ConnectionError("connection reset by peer"))
     with pytest.raises(ConnectionError, match="connection reset"):
         question_generation.extract_questions("draft", settings=settings)
+
+
+# --- badge attribution: a question belongs to every badge it tests ---
+
+CATALOG = [
+    BADGE,
+    {
+        "slug": "aggregation",
+        "name": "Aggregation",
+        "description": "Covers the aggregation pipeline.",
+        "categories": ["aggregation"],
+    },
+    {
+        "slug": "indexing",
+        "name": "Indexing",
+        "description": "Covers index design.",
+        "categories": ["indexing"],
+    },
+]
+
+
+def attributed(index: int, slugs: list[str], reason: str = "also tests pipelines"):
+    return QuestionBadgeAttributions(
+        attributions=[
+            QuestionBadges(question_index=index, skill_badges=slugs, reason=reason)
+        ]
+    )
+
+
+def test_a_question_gains_the_other_badges_it_tests(fake_client, settings):
+    """
+    Intent: Skills overlap, so a question written for one badge often tests others. Left
+        tagged only with the badge it was requested for, it is invisible to an author
+        working through any badge it also covers — who then has the same question
+        written a second time.
+    Success: A badge the attribution pass names is added to the question.
+    Feature: Question attribution — questions belong to every badge they test.
+    """
+    question = make(skill_badges=["atlas-search"])
+    fake_client(parsed=attributed(1, ["atlas-search", "aggregation"]))
+    result = question_generation.attribute_badges(
+        [question], CATALOG, ["atlas-search"], settings=settings
+    )
+    assert question.skill_badges == ["atlas-search", "aggregation"]
+    assert result["cross_tagged"] == 1
+
+
+def test_the_badges_a_question_was_written_for_are_never_dropped(fake_client, settings):
+    """
+    Intent: This pass exists to widen a question's reach, so it must never narrow it. An
+        attribution that omitted the requested badge would remove the question from the
+        very list the author generated it for.
+    Success: The requested badge survives an attribution that does not mention it.
+    Feature: Question attribution — attribution only ever adds.
+    """
+    question = make(skill_badges=["atlas-search"])
+    fake_client(parsed=attributed(1, ["aggregation"]))
+    question_generation.attribute_badges(
+        [question], CATALOG, ["atlas-search"], settings=settings
+    )
+    assert question.skill_badges == ["atlas-search", "aggregation"]
+
+
+def test_the_question_and_its_answers_are_both_reviewed(fake_client, settings):
+    """
+    Intent: What a question actually tests is often visible only in what separates the
+        correct option from the wrong ones — a stem alone reads as more general than the
+        question is. Sending only stems would produce attribution by keyword.
+    Success: The stem, every option, the correct/wrong marking and the explanation all
+        reach the attribution prompt.
+    Feature: Question attribution — decided from the whole question.
+    """
+    client = fake_client(parsed=attributed(1, ["aggregation"]))
+    question_generation.attribute_badges(
+        [make()], CATALOG, ["atlas-search"], settings=settings
+    )
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    for option in ("$match", "$project", "$sort", "$limit"):
+        assert option in prompt
+    assert "correct" in prompt and "wrong" in prompt
+    assert "$match filters." in prompt
+
+
+def test_every_badge_is_offered_as_a_candidate(fake_client, settings):
+    """
+    Intent: The pass can only tag a question with a badge it was told about, so the whole
+        catalog must be offered — not just the badges the run was scoped to, which would
+        make cross-badge attribution impossible by construction.
+    Success: Every catalog slug appears in the attribution prompt.
+    Feature: Question attribution — the whole badge catalog is considered.
+    """
+    client = fake_client(parsed=attributed(1, ["aggregation"]))
+    question_generation.attribute_badges(
+        [make()], CATALOG, ["atlas-search"], settings=settings
+    )
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    for badge in CATALOG:
+        assert badge["slug"] in prompt
+
+
+def test_an_invented_badge_slug_is_ignored(fake_client, settings):
+    """
+    Intent: A slug that matches no stored badge makes a question unfindable under that
+        name while looking correctly tagged — and this pass is the one place a model is
+        asked to produce slugs freely.
+    Success: A slug outside the catalog is not added.
+    Feature: Question attribution — badge slugs must name a real badge.
+    """
+    question = make(skill_badges=["atlas-search"])
+    fake_client(parsed=attributed(1, ["aggregation", "not-a-real-badge"]))
+    question_generation.attribute_badges(
+        [question], CATALOG, ["atlas-search"], settings=settings
+    )
+    assert question.skill_badges == ["atlas-search", "aggregation"]
+
+
+def test_a_badge_is_not_recorded_twice(fake_client, settings):
+    """
+    Intent: An attribution naturally repeats the badges the question was written for. If
+        those were appended blindly the stored array would contain duplicates, which
+        would show as repeated tags on screen and repeat the question in an export
+        filtered across badges.
+    Success: The badge list has no duplicates.
+    Feature: Question attribution — distinct badge list.
+    """
+    question = make(skill_badges=["atlas-search"])
+    fake_client(parsed=attributed(1, ["atlas-search", "atlas-search", "aggregation"]))
+    question_generation.attribute_badges(
+        [question], CATALOG, ["atlas-search"], settings=settings
+    )
+    assert question.skill_badges == ["atlas-search", "aggregation"]
+
+
+def test_an_attribution_for_a_question_that_was_not_sent_is_ignored(fake_client, settings):
+    """
+    Intent: Questions are addressed by position. An out-of-range index would either crash
+        the run or, worse, retag a different question than the model meant.
+    Success: An index beyond the batch leaves every question untouched.
+    Feature: Question attribution — positional answers are bounds-checked.
+    """
+    question = make(skill_badges=["atlas-search"])
+    fake_client(parsed=attributed(7, ["aggregation"]))
+    result = question_generation.attribute_badges(
+        [question], CATALOG, ["atlas-search"], settings=settings
+    )
+    assert question.skill_badges == ["atlas-search"]
+    assert result["cross_tagged"] == 0
+
+
+def test_each_question_is_attributed_independently(fake_client, settings):
+    """
+    Intent: A batch is catalogued in one call for cost, so the answers must be matched
+        back to the right questions. Applying one question's badges to another would
+        mis-file work in a way no reviewer could see.
+    Success: Two questions receive only their own additional badges.
+    Feature: Question attribution — answers map to the right question.
+    """
+    first, second = make("First?", skill_badges=["atlas-search"]), make(
+        "Second?", skill_badges=["atlas-search"]
+    )
+    fake_client(
+        parsed=QuestionBadgeAttributions(
+            attributions=[
+                QuestionBadges(question_index=1, skill_badges=["aggregation"], reason="a"),
+                QuestionBadges(question_index=2, skill_badges=["indexing"], reason="b"),
+            ]
+        )
+    )
+    question_generation.attribute_badges(
+        [first, second], CATALOG, ["atlas-search"], settings=settings
+    )
+    assert first.skill_badges == ["atlas-search", "aggregation"]
+    assert second.skill_badges == ["atlas-search", "indexing"]
+
+
+def test_the_reason_for_an_added_badge_is_reported(fake_client, settings):
+    """
+    Intent: Cross-tagging is a judgement an author may disagree with. Recording why a
+        badge was added is what lets them audit an over-eager run rather than only
+        seeing the result.
+    Success: The run reports the added badges with the stated reason.
+    Feature: Question attribution — auditable decisions.
+    """
+    fake_client(parsed=attributed(1, ["aggregation"], reason="tests pipeline stages"))
+    result = question_generation.attribute_badges(
+        [make(skill_badges=["atlas-search"])], CATALOG, ["atlas-search"], settings=settings
+    )
+    assert result["attribution_reasons"][0]["added"] == ["aggregation"]
+    assert result["attribution_reasons"][0]["reason"] == "tests pipeline stages"
+
+
+def test_attribution_costs_no_call_when_there_is_nothing_to_catalogue(fake_client, settings):
+    """
+    Intent: A run whose questions were all discarded, or a collection with no badges, has
+        nothing to attribute. Calling the model anyway spends money to answer a question
+        about an empty list.
+    Success: No API call is made for an empty batch or an empty catalog.
+    Feature: Question attribution — no needless API calls.
+    """
+    client = fake_client(parsed=NO_EXTRA_BADGES)
+    assert question_generation.attribute_badges([], CATALOG, [], settings=settings)[
+        "cross_tagged"
+    ] == 0
+    question_generation.attribute_badges([make()], [], ["atlas-search"], settings=settings)
+    assert client.messages.parse_calls == []
+
+
+def test_a_truncated_attribution_is_reported_rather_than_treated_as_no_overlap(
+    fake_client, settings
+):
+    """
+    Intent: A truncated or refused attribution returns no structured output. Reading that
+        as "this question overlaps nothing" would silently under-tag a whole batch, which
+        looks identical to a correct result.
+    Success: A missing parsed output raises an error naming the stop reason.
+    Feature: Question attribution — truncated output is an error.
+    """
+    fake_client(parsed=FakeParsedResponse(None, stop_reason="max_tokens"))
+    with pytest.raises(RuntimeError, match="max_tokens"):
+        question_generation.attribute_badges(
+            [make()], CATALOG, ["atlas-search"], settings=settings
+        )
+
+
+def test_a_failed_attribution_does_not_lose_the_generated_questions(
+    fake_client, fake_collection, fake_questions, settings
+):
+    """
+    Intent: By the time attribution runs, the authoring turn has been paid for and the
+        questions are good. Discarding them because a follow-up cataloguing step hit a
+        rate limit would throw away the expensive work — the questions must still be
+        stored under the badges they were written for.
+    Success: The run stores the question, reports zero cross-tagged, and names the
+        attribution failure.
+    Feature: Question generation — attribution failure never loses a batch.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    fake_client(
+        stream_messages=[FakeMessage("draft")],
+        parsed_by_format={
+            GeneratedQuestions: ONE_QUESTION,
+            QuestionBadgeAttributions: FakeParsedResponse(None, stop_reason="max_tokens"),
+        },
+    )
+    result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    assert result["inserted"] == 1
+    assert fake_questions.docs[0]["skill_badges"] == ["atlas-search"]
+    assert result["cross_tagged"] == 0
+    assert "max_tokens" in result["attribution_error"]
+
+
+def test_a_run_stores_the_extra_badges_a_question_earned(
+    fake_client, fake_collection, fake_questions, settings
+):
+    """
+    Intent: Attribution is only worth anything if the widened badge list is what gets
+        stored — the array MongoDB is queried on. Deciding the extra badges and then
+        saving the original list would be an invisible no-op.
+    Success: The stored question carries both the requested and the attributed badge.
+    Feature: Question generation — attributed badges are persisted.
+    """
+    fake_collection.docs.extend(
+        [{**BADGE, "status": "approved"}, {**CATALOG[1], "status": "approved"}]
+    )
+    fake_client(
+        stream_messages=[FakeMessage("draft")],
+        parsed_by_format=full_run(
+            attributions=attributed(1, ["atlas-search", "aggregation"])
+        ),
+    )
+    result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    assert fake_questions.docs[0]["skill_badges"] == ["atlas-search", "aggregation"]
+    assert result["cross_tagged"] == 1
+
+
+def test_the_topic_areas_a_question_carries_reach_the_attribution_pass(fake_client, settings):
+    """
+    Intent: A question's own topic areas are the clearest signal of which badges it
+        crosses into — a question tagged "indexing" is a candidate for the indexing badge
+        whatever it was written for. Withholding them makes the pass work from prose
+        alone.
+    Success: The question's categories appear in the attribution prompt.
+    Feature: Question attribution — topic areas inform the decision.
+    """
+    client = fake_client(parsed=attributed(1, ["aggregation"]))
+    question_generation.attribute_badges(
+        [make(categories=["aggregation", "indexing"])],
+        CATALOG,
+        ["atlas-search"],
+        settings=settings,
+    )
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "aggregation, indexing" in prompt
+
+
+def test_attribution_translates_missing_credentials_into_an_actionable_error(
+    monkeypatch, settings
+):
+    """
+    Intent: Attribution is a third API call, so it can be where a credential problem first
+        surfaces. It must give the same actionable message as the other two rather than
+        the SDK's bare TypeError about its own constructor arguments.
+    Success: RuntimeError is raised naming ANTHROPIC_API_KEY.
+    Feature: Question attribution — missing credential diagnostics.
+    """
+    _raising_client(monkeypatch, "parse", SDK_AUTH_ERROR)
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        question_generation.attribute_badges(
+            [make()], CATALOG, ["atlas-search"], settings=settings
+        )
+
+
+def test_attribution_failures_other_than_credentials_still_propagate(monkeypatch, settings):
+    """
+    Intent: The credential translator fronts every attribution failure, so a real API
+        error (rate limit, overload, network) must pass through unchanged for the caller
+        to decide about — which is what lets a run keep its questions and report the
+        reason rather than mislabelling it as a missing key.
+    Success: The original exception propagates from attribute_badges.
+    Feature: Question attribution — failure handling.
+    """
+    _raising_client(monkeypatch, "parse", ConnectionError("connection reset by peer"))
+    with pytest.raises(ConnectionError, match="connection reset"):
+        question_generation.attribute_badges(
+            [make()], CATALOG, ["atlas-search"], settings=settings
+        )

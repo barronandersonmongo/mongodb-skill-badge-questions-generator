@@ -5,6 +5,8 @@ recorded requirement and are never edited: if behavior must change, the
 program changes, or a new test is added alongside with its own block.
 """
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -28,13 +30,17 @@ def configured_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def reset_run_state():
-    api_module._run_state.update(
-        running=False, last_result=None, last_error=None, last_traceback=None
+    reset = dict(
+        running=False,
+        last_result=None,
+        last_error=None,
+        last_traceback=None,
+        started_at=None,
+        finished_at=None,
     )
+    api_module._run_state.update(reset)
     yield
-    api_module._run_state.update(
-        running=False, last_result=None, last_error=None, last_traceback=None
-    )
+    api_module._run_state.update(reset)
 
 
 def make(stem: str = "Which stage filters documents?", **overrides) -> GeneratedQuestion:
@@ -272,3 +278,78 @@ def test_the_questions_api_is_mounted_outside_the_admin_area(client):
     assert API in paths
     assert API + "/generate" in paths
     assert not [p for p in paths if p.startswith("/api/admin") and "question" in p]
+
+
+# --- the elapsed timer must survive leaving the page ---
+
+
+def test_a_running_run_reports_when_it_started(client, monkeypatch, fake_questions):
+    """
+    Intent: The browser cannot remember when a run started: navigating to another screen
+        and back, or reloading, loses it and the elapsed timer restarts at zero while the
+        run is still going — which reads as a run that has made no progress. The start
+        time therefore has to come from the server.
+    Success: While a run is in progress the status reports the epoch second it started.
+    Feature: Question generation — elapsed time survives leaving the page.
+    """
+    started: dict = {}
+
+    def slow(*args, **kwargs):
+        # Observed from inside the run, which is the only moment it is "running".
+        started["at"] = api_module._run_state["started_at"]
+        started["running"] = api_module._run_state["running"]
+        return {}
+
+    monkeypatch.setattr(api_module, "generate_questions", slow)
+    before = time.time()
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 1})
+    assert started["running"] is True
+    assert before <= started["at"] <= time.time()
+
+
+def test_the_status_reports_the_servers_clock(client, fake_questions):
+    """
+    Intent: The page measures elapsed time as "now minus started_at". If "now" came from
+        the browser, a machine whose clock is off — or in another time zone — would show
+        a wildly wrong or negative duration. Both ends must be read from one clock.
+    Success: The status response carries the server's current time.
+    Feature: Question generation — elapsed time measured against one clock.
+    """
+    body = client.get(API + "/generate/status").json()
+    assert abs(body["server_time"] - time.time()) < 5
+
+
+def test_a_finished_run_reports_when_it_finished(client, monkeypatch, fake_questions):
+    """
+    Intent: After a reload the page has no record of the run at all, so "took 4m 12s" can
+        only be shown if the server recorded both ends. Without it, a completed run
+        reports a duration measured from whenever the page happened to open.
+    Success: A completed run reports finished_at at or after started_at, and is no longer
+        running.
+    Feature: Question generation — a finished run reports its real duration.
+    """
+    monkeypatch.setattr(api_module, "generate_questions", lambda *a, **k: {"inserted": 1})
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 1})
+    state = client.get(API + "/generate/status").json()
+    assert state["running"] is False
+    assert state["finished_at"] >= state["started_at"]
+
+
+def test_a_new_run_does_not_inherit_the_previous_runs_start_time(
+    client, monkeypatch, fake_questions
+):
+    """
+    Intent: started_at is what the timer counts from. If a second run reused the first
+        one's stamp, its timer would open at the first run's total duration and keep
+        climbing — the mirror image of the bug being fixed here.
+    Success: The second run's start time is later than the first run's.
+    Feature: Question generation — each run is timed from its own start.
+    """
+    monkeypatch.setattr(api_module, "generate_questions", lambda *a, **k: {"inserted": 1})
+    payload = {"skill_badges": ["atlas-search"], "count": 1}
+    client.post(API + "/generate", json=payload)
+    first = client.get(API + "/generate/status").json()["started_at"]
+    client.post(API + "/generate", json=payload)
+    second = client.get(API + "/generate/status").json()["started_at"]
+    assert second >= first
+    assert client.get(API + "/generate/status").json()["finished_at"] >= second

@@ -19,6 +19,7 @@ from fastapi.templating import Jinja2Templates
 from pymongo.errors import PyMongoError
 
 from app.config import get_settings
+from app.logging_config import DEFAULT_LINES, MAX_BYTES, TOTAL_FILES, log_file_path
 from app.repositories import skill_badges
 from app.routers.admin_skill_badges import run_state
 
@@ -40,6 +41,27 @@ CONFIDENCE_STYLES = {"high": "success", "medium": "warning", "low": "danger"}
 def admin_home() -> RedirectResponse:
     """The admin area's one screen is the badge catalog; go straight there."""
     return RedirectResponse("/admin/skill-badges", status_code=307)
+
+
+@router.get("/logs")
+def logs_page(request: Request):
+    """The log viewer.
+
+    The contents are fetched by the page rather than rendered into it, so the view
+    can be refreshed — including while a generation run is still writing to the
+    log — without reloading the whole screen.
+    """
+    return templates.TemplateResponse(
+        request,
+        "admin/logs.html",
+        {
+            "active_page": "logs",
+            "log_file": str(log_file_path()),
+            "default_lines": DEFAULT_LINES,
+            "max_megabytes": MAX_BYTES // (1024 * 1024),
+            "total_files": TOTAL_FILES,
+        },
+    )
 
 
 @router.get("/skill-badges")

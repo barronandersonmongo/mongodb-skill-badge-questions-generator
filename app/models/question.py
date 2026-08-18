@@ -57,6 +57,25 @@ class GeneratedQuestions(BaseModel):
     questions: list[GeneratedQuestion]
 
 
+class QuestionBadges(BaseModel):
+    """Which badges one question belongs to, decided by reviewing the question."""
+
+    question_index: int = Field(
+        description="1-based position of the question in the list that was reviewed"
+    )
+    skill_badges: list[str] = Field(
+        description="Slugs of every badge whose subject matter this question tests"
+    )
+    reason: str = Field(
+        default="",
+        description="Why the additional badges apply, for the run's audit trail",
+    )
+
+
+class QuestionBadgeAttributions(BaseModel):
+    attributions: list[QuestionBadges]
+
+
 class QuestionDoc(GeneratedQuestion):
     question_id: str
     created_at: datetime

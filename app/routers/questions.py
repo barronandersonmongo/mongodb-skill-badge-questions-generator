@@ -12,6 +12,8 @@ Run state is separate from the badge run state: generating questions and syncing
 badges are unrelated jobs, and one must not report the other's result.
 """
 
+import logging
+import time
 import traceback
 from typing import Literal
 
@@ -20,6 +22,8 @@ from pydantic import BaseModel, Field
 
 from app.repositories import questions
 from app.services.question_generation import generate_questions
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/questions", tags=["questions"])
 
@@ -32,6 +36,10 @@ _run_state: dict = {
     "last_result": None,
     "last_error": None,
     "last_traceback": None,
+    # Wall-clock epoch seconds. The page derives its elapsed timer from these
+    # rather than from when the browser happened to start watching.
+    "started_at": None,
+    "finished_at": None,
 }
 
 
@@ -52,7 +60,20 @@ class StatusRequest(BaseModel):
 
 
 def _run_generation(request: GenerateRequest) -> None:
-    _run_state.update(running=True, last_error=None, last_traceback=None)
+    _run_state.update(
+        running=True,
+        last_error=None,
+        last_traceback=None,
+        # Recorded on the server so the elapsed timer survives a page reload or a
+        # trip to another screen; the browser cannot remember it across either.
+        started_at=time.time(),
+        finished_at=None,
+    )
+    logger.info(
+        "Generation run started: %d question(s) for %s",
+        request.count,
+        ", ".join(request.skill_badges),
+    )
     try:
         _run_state["last_result"] = generate_questions(
             request.skill_badges,
@@ -60,13 +81,20 @@ def _run_generation(request: GenerateRequest) -> None:
             source_material=request.source_material,
             extra_instructions=request.extra_instructions,
         )
-    except Exception as exc:  # surfaced to the admin page, not swallowed
+        logger.info(
+            "Generation run finished: %s stored, %s discarded",
+            _run_state["last_result"].get("inserted"),
+            len(_run_state["last_result"].get("rejected") or []),
+        )
+    except Exception as exc:  # surfaced to the page, not swallowed
         _run_state["last_error"] = str(exc)
         # Keep the trace so the page can offer it without the author having to go
         # read server logs.
         _run_state["last_traceback"] = traceback.format_exc()
+        logger.exception("Generation run failed: %s", exc)
     finally:
         _run_state["running"] = False
+        _run_state["finished_at"] = time.time()
 
 
 @router.post("/generate")
@@ -79,7 +107,13 @@ def start_generation(request: GenerateRequest, background: BackgroundTasks) -> d
 
 @router.get("/generate/status")
 def generation_status() -> dict:
-    return _run_state
+    """Run state, plus the server's clock.
+
+    `server_time` lets the page measure elapsed time against the same clock the
+    run was stamped with, so a browser whose clock is off — or in a different time
+    zone — still shows the real duration.
+    """
+    return {**_run_state, "server_time": time.time()}
 
 
 @router.get("")
