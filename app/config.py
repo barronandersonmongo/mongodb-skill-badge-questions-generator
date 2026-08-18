@@ -44,13 +44,21 @@ class Settings:
     # Atlas index (voyage-4-large): real duplicates score around 0.80 and rank
     # below some non-duplicates, so this floor only trims cost — the model decides.
     duplicate_score_threshold: float = 0.75
-    # Measured against the live index on 2026-08-18 (voyage-4-large, autoEmbed on
-    # embedding_text): five genuinely distinct questions from one badge scored
-    # 0.765-0.783 against each other, while a deliberately reworded copy of one of
-    # them scored 0.865. This floor sits in that gap. As with badges it only trims
-    # cost — Claude makes the decision, and a pair below the floor is never put to
-    # it. Re-measure as the collection grows and spans more badges.
-    question_duplicate_score_threshold: float = 0.80
+    # Which pairs the duplicate sweep bothers to rerank. Measured against the live
+    # index on 2026-08-18 (voyage-4-large, autoEmbed on embedding_text): five
+    # genuinely distinct questions from one badge scored 0.765-0.783 against each
+    # other, while a deliberately reworded copy of one scored 0.865. Set below that
+    # band on purpose — vector search only shortlists here, and the reranker makes
+    # the decision, so a generous shortlist costs one cheap rerank call rather than
+    # a missed duplicate.
+    question_duplicate_score_threshold: float = 0.70
+    # What the reranker must score for a pair to be treated as the same question and
+    # one of them deleted. Not yet measured against real duplicates — no Voyage key
+    # was available when this was written — so it is deliberately high. Measure with
+    # a dry run before trusting it to delete anything.
+    question_rerank_delete_threshold: float = 0.95
+    # How many neighbours each question is shortlisted against.
+    question_duplicate_neighbours: int = 5
 
     @property
     def uses_gateway(self) -> bool:

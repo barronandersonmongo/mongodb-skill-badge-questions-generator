@@ -32,7 +32,8 @@ visible to cron, systemd, or anything started as a service.
 
 Optional overrides: `ANTHROPIC_MODEL`, `WEB_SEARCH_TOOL_TYPE`, `WEB_FETCH_TOOL_TYPE`,
 `SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`,
-`QUESTIONS_VECTOR_INDEX_NAME`, `LOG_DIR`, `LOG_LEVEL`.
+`QUESTIONS_VECTOR_INDEX_NAME`, `LOG_DIR`, `LOG_LEVEL`, `VOYAGE_API_KEY`,
+`VOYAGE_RERANK_MODEL`, `VOYAGE_BASE_URL`.
 
 Storage target is the `skill-badge-questions` database on the `PTM-Hackathon`
 cluster (Atlas project "Barry Anderson").
@@ -161,29 +162,37 @@ The index in use is **`questions_embedding_text_vector`** (autoEmbed,
 things: duplicate screening at generation time, and the search box on the main
 screen.
 
-**Duplicate screening.** Before a question is stored it is searched against the
-questions already in the collection, and any close match is put to Claude: do these
-test the same knowledge? The judge sees both questions' options, because two
-near-identical stems can test different distinctions and two different stems can
-reduce to one fact.
+**Duplicate detection — an ad-hoc sweep, no LLM.** **Find duplicates** on the main
+screen compares the questions already stored. Generation runs do not screen: an LLM
+judging every candidate pair was accurate but slow and expensive, and the cost fell
+on authoring, the one step a person waits for. A duplicate costs nothing until
+someone builds a quiz, so it is found on request instead.
 
-Confident duplicates are discarded. Anything less is stored and flagged, because
-discarding a question a model merely suspected loses work nobody reviewed. Both
-outcomes are reported on the run with the score, the question resembled, and the
-reason.
+Two stages, neither a language model:
 
-Screening happens before storage — the cheap moment. Afterwards, an author has to
-notice the repetition during review, and a quiz built from the collection can ask
-the same thing twice.
+1. **Shortlist** — vector search over `embedding_text` proposes each question's
+   nearest neighbours. Recall matters here and precision does not, so the floor
+   (`question_duplicate_score_threshold`, 0.70) sits *below* the 0.765-0.783 band
+   measured for genuinely distinct questions. A generous shortlist costs one cheap
+   rerank call; a tight one costs a missed duplicate.
+2. **Decide** — Voyage `rerank-2.5` scores each shortlisted pair. A cross-encoder
+   reads both texts together, which is what lets it separate "same question
+   reworded" from "same topic" — something two independently embedded vectors
+   cannot do.
 
-The score floor (`question_duplicate_score_threshold`, default 0.80) only trims
-cost: below it, a pair is never put to the model. It is higher than the badge floor
-because questions are longer and more specific, so unrelated questions on one topic
-already score highly.
+Pairs at or above `question_rerank_delete_threshold` (0.95) have one question
+deleted; the rest are reported with their scores. The survivor is chosen by review
+value: approved beats draft, then more badges, then older.
 
-If the index is unavailable — still building, renamed, dropped — the questions are
-stored unscreened and the screen says so. An authoring run is never discarded
-because a follow-up step failed.
+**Calibrate before trusting it to delete.** The delete threshold was set without any
+real duplicates to measure against, so it is deliberately high. **Dry run** reports
+exactly what a sweep would delete without deleting it. Do that first.
+
+On MongoDB **8.3+** this becomes the native `$rerank` aggregation stage — no API key
+and no second round trip. This cluster runs 8.0, so `app/services/reranker.py` calls
+the same model over HTTP; it is the only place that knows how a score is obtained,
+so the swap is a change there and nowhere else. Set `VOYAGE_API_KEY` (optionally
+`VOYAGE_RERANK_MODEL`, `VOYAGE_BASE_URL`).
 
 **Search by meaning.** The box on the main screen ranks questions by similarity to
 what you type, so "joining data from another collection" finds the `$lookup`
@@ -204,6 +213,7 @@ exactly the filtered set from the same endpoint the screen reads.
 | `GET` | `/api/questions/generate/status` | Poll a run |
 | `GET` | `/api/questions` | List / export questions, same filters |
 | `GET` | `/api/questions/search?q=&limit=` | Questions ranked by similarity to `q` |
+| `POST` | `/api/questions/duplicates/sweep?dry_run=` | Find duplicates; delete the clear ones |
 | `POST` | `/api/questions/backfill-embedding-text` | Compose `embedding_text` where missing or stale |
 | `POST` | `/api/questions/{id}/status` | Approve, reject or re-open |
 | `DELETE` | `/api/questions/{id}` | Delete a question |
@@ -307,7 +317,8 @@ app/models/skill_badge.py            Pydantic schemas (Claude output + stored do
 app/models/question.py               question schemas (Claude output + stored doc)
 app/services/badge_discovery.py      the two Claude passes
 app/services/question_generation.py  the Claude passes for questions
-app/services/question_duplicates.py  duplicate screening before storage
+app/services/question_duplicates.py  the ad-hoc duplicate sweep
+app/services/reranker.py             Voyage rerank client (native $rerank on 8.3+)
 app/services/discover_cli.py         shell entry point
 app/repositories/skill_badges.py     upsert / list / status, indexes
 app/repositories/questions.py        insert / filter / status, indexes

@@ -302,19 +302,34 @@ def test_the_vector_index_name_is_configurable(monkeypatch):
     assert get_settings().vector_index_name == "another-index"
 
 
-def test_the_question_duplicate_floor_sits_between_measured_bands():
+def test_the_shortlist_floor_is_loose_enough_to_catch_reworded_duplicates():
     """
-    Intent: The floor decides which pairs are ever put to Claude, so a wrong value either
-        misses duplicates or pays for judgements on unrelated questions. It is not a
-        guess: measured on the live index, distinct questions from one badge scored up to
-        0.783 and a reworded duplicate scored 0.865. A future edit that drifts outside
-        that gap should have to confront this.
-    Success: The default floor is above the observed distinct-question band and below the
-        observed duplicate score.
-    Feature: Question duplicates — the score floor reflects measured behaviour.
+    Intent: This value used to be the decision — the score above which a pair was put to an
+        LLM — and was set between the measured bands. It is now only a shortlist for the
+        reranker, which is the thing that decides, so it must sit BELOW the band that
+        distinct questions occupy (0.765-0.783 measured on the live index). Otherwise a
+        duplicate phrased very differently is never shortlisted and the reranker never sees
+        it. This replaces a test that required the opposite, because the value's job
+        changed.
+    Success: The shortlist floor is below the observed distinct-question band, and not so
+        low that every pair is shortlisted.
+    Feature: Question duplicate sweep — the shortlist favours recall, the reranker decides.
     """
     floor = Settings(mongodb_uri="mongodb://test").question_duplicate_score_threshold
-    assert 0.783 < floor < 0.865
+    assert 0.5 < floor < 0.765
+
+
+def test_the_delete_threshold_is_stricter_than_the_shortlist_floor():
+    """
+    Intent: Deleting is irreversible and has no judge behind it, so the bar for removing a
+        question must be far higher than the bar for merely comparing one. A delete
+        threshold at or below the shortlist floor would delete everything shortlisted.
+    Success: The delete threshold is well above the shortlist floor.
+    Feature: Question duplicate sweep — deletion requires more certainty than comparison.
+    """
+    settings = Settings(mongodb_uri="mongodb://test")
+    assert settings.question_rerank_delete_threshold > settings.question_duplicate_score_threshold
+    assert settings.question_rerank_delete_threshold >= 0.9
 
 
 def test_the_questions_vector_index_can_be_renamed_without_a_code_change():

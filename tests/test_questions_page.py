@@ -704,59 +704,104 @@ def test_a_search_can_be_cleared(client, fake_collection, fake_questions):
     assert 'data-clear-search="true"' in body
 
 
-def test_duplicate_outcomes_are_reported_after_a_run(client, fake_collection, fake_questions):
+def test_the_screen_offers_the_duplicate_sweep(client, fake_collection, fake_questions):
     """
-    Intent: A run that silently discarded three of five questions as duplicates would look
-        like a model that produced little. What was dropped, what it duplicated and why
-        must all be visible, or the screening cannot be trusted or corrected.
-    Success: The run alert reports dropped duplicates, flagged near-duplicates, and the
-        reasons for both.
-    Feature: Question duplicates — outcomes are reported on screen.
+    Intent: The sweep is an on-demand action, so it needs a control. Without one it exists
+        only as an API call and would never be run.
+    Success: The page offers sweep and dry-run buttons.
+    Feature: Question duplicate sweep — reachable from the main screen.
+    """
+    body = client.get(PAGE).text
+    assert 'id="sweep-btn"' in body
+    assert 'id="sweep-dry-run-btn"' in body
+
+
+def test_sweep_results_are_reported_with_scores(client, fake_collection, fake_questions):
+    """
+    Intent: A sweep deletes questions with no judge behind it, so what it did and how sure
+        it was must both be visible — otherwise a wrong threshold is invisible until an
+        author notices something missing.
+    Success: The page reports deleted pairs and remaining suspects with their rerank scores.
+    Feature: Question duplicate sweep — outcomes are reported on screen.
     """
     api_module._run_state["last_result"] = {
-        "inserted": 1,
-        "requested": 3,
-        "run_id": "abcdef1234",
-        "rejected": [],
-        "duplicates_dropped": [
+        "source": "question-duplicate-sweep",
+        "compared": 2,
+        "dry_run": False,
+        "deleted": [
             {
-                "stem": "A dropped question?",
-                "duplicate_of_stem": "The stored one?",
-                "score": 0.94,
-                "reason": "both test $match",
+                "keep": "k1",
+                "keep_stem": "The one kept?",
+                "drop": "d1",
+                "drop_stem": "The one deleted?",
+                "vector_score": 0.91,
+                "rerank_score": 0.98,
             }
         ],
         "possible_duplicates": [
             {
-                "stem": "A flagged question?",
-                "duplicate_of_stem": "Another stored one?",
-                "score": 0.86,
-                "reason": "similar but arguable",
+                "keep": "k2",
+                "keep_stem": "A survivor?",
+                "drop": "d2",
+                "drop_stem": "A suspect?",
+                "vector_score": 0.80,
+                "rerank_score": 0.61,
             }
         ],
+        "errors": [],
     }
     body = client.get(PAGE).text
-    assert 'data-duplicates-dropped="true"' in body
-    assert "both test $match" in body
-    assert 'data-possible-duplicates="true"' in body
-    assert "similar but arguable" in body
+    assert 'data-sweep-deleted="true"' in body
+    assert "0.98" in body
+    assert 'data-sweep-possible="true"' in body
+    assert "0.61" in body
 
 
-def test_a_skipped_duplicate_screen_is_reported(client, fake_collection, fake_questions):
+def test_a_dry_run_is_labelled_as_one(client, fake_collection, fake_questions):
     """
-    Intent: If screening could not run, the batch was stored unscreened. Reporting nothing
-        would leave the author believing it had been checked and found clean — the one
-        outcome that must never be assumed.
-    Success: The page says screening did not run, and names the reason.
-    Feature: Question duplicates — a skipped screen is visible, not silent.
+    Intent: A dry run and a real sweep report the same pairs. If the screen did not
+        distinguish them, an author could believe duplicates were removed when nothing was.
+    Success: A dry-run result is labelled, and says nothing was deleted.
+    Feature: Question duplicate sweep — a dry run is visibly a dry run.
     """
     api_module._run_state["last_result"] = {
-        "inserted": 1,
-        "requested": 1,
-        "run_id": "abcdef1234",
-        "rejected": [],
-        "duplicate_check_error": "index not found",
+        "source": "question-duplicate-sweep",
+        "compared": 1,
+        "dry_run": True,
+        "deleted": [],
+        "possible_duplicates": [
+            {
+                "keep": "k",
+                "keep_stem": "Kept?",
+                "drop": "d",
+                "drop_stem": "Would go?",
+                "vector_score": 0.9,
+                "rerank_score": 0.97,
+                "would_delete": True,
+            }
+        ],
+        "errors": [],
     }
     body = client.get(PAGE).text
-    assert 'data-duplicate-check-error="true"' in body
-    assert "index not found" in body
+    assert 'data-sweep-dry-run="true"' in body
+
+
+def test_sweep_errors_are_surfaced(client, fake_collection, fake_questions):
+    """
+    Intent: A sweep that could not rerank part of the collection has not cleared it. Silence
+        would be read as "no duplicates found", which is the one conclusion that must never
+        be assumed.
+    Success: Reported errors appear on the page.
+    Feature: Question duplicate sweep — partial failures are visible.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "question-duplicate-sweep",
+        "compared": 0,
+        "dry_run": False,
+        "deleted": [],
+        "possible_duplicates": [],
+        "errors": ["rerank failed for q1: VOYAGE_API_KEY not set"],
+    }
+    body = client.get(PAGE).text
+    assert 'data-sweep-errors="true"' in body
+    assert "VOYAGE_API_KEY" in body

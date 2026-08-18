@@ -1,177 +1,187 @@
-"""Find questions that duplicate ones already stored.
+"""Find duplicate questions already in the collection.
 
-Two authors generating for the same badge — or one author running generation
-twice — produce questions that test the same thing in different words. Text
-comparison cannot catch that, so candidates are found by searching
-`embedding_text` semantically (Atlas Vector Search, autoEmbed) and then judged by
-Claude on what the questions actually test.
+An ad-hoc sweep, not a check on every generation run: authoring is where the time
+and money go, and a duplicate costs nothing until someone builds a quiz from the
+collection. So duplicates are found on request, over what is stored.
 
-Screening happens before a question is stored, which is the cheap moment: once a
-near-duplicate is in the collection an author has to notice it while reviewing,
-and a quiz built from that collection can ask the same thing twice.
+Two stages, neither of them a language model:
 
-Confident duplicates are dropped. Anything less is stored and reported, because
-discarding a question a model merely suspected is worse than showing an author two
-questions and letting them choose.
+1. **Shortlist** — Atlas Vector Search over `embedding_text` proposes each
+   question's nearest neighbours. Cheap, and it is only a shortlist: recall matters
+   here, precision does not, so the score floor is deliberately loose.
+2. **Decide** — a reranker (Voyage rerank-2.5) scores each shortlisted pair. A
+   cross-encoder reads both texts together, which is what makes it able to
+   distinguish "same question reworded" from "same topic", where a similarity score
+   between two independently embedded texts cannot.
+
+An LLM did this before. It was accurate but cost a generation round trip per pair;
+a reranker answers the same question in one cheap call and returns a number.
 """
 
 import logging
-
-from pydantic import BaseModel, Field
+from typing import Any
 
 from app.config import Settings, get_settings
-from app.models.question import GeneratedQuestion, combined_text
+from app.models.question import combined_text
 from app.repositories import questions as questions_repo
+from app.services.reranker import rerank_pairs
 
 logger = logging.getLogger(__name__)
 
-JUDGE_SYSTEM = """\
-You decide whether two MongoDB quiz questions are DUPLICATES.
 
-Two questions are duplicates when they test the same knowledge, so that a \
-candidate who can answer one can answer the other for the same reason. Wording, \
-scenario details, option order and the names used in an example do not matter — \
-the same question dressed in a different story is still the same question.
-
-Two questions are NOT duplicates when answering them correctly requires different \
-knowledge, even if they share a topic, a feature name, or an almost identical \
-scenario. In particular these are always different questions:
-
-- the same feature approached from different decisions (when to use it vs. how it \
-  behaves vs. why it fails);
-- questions whose correct answers are different facts;
-- a question about a concept and a question about applying that concept to a \
-  specific situation.
-
-Read the options, not just the stem. Two stems can be near-identical while the \
-options test different distinctions — and two very different stems can reduce to \
-the same single fact.
-
-Answer "duplicate" only when you are confident. Saying they differ is safe: the \
-question is kept and a person reviews it. A confident duplicate is discarded \
-before anyone sees it, so a wrong "duplicate" silently loses work."""
-
-
-class QuestionDuplicateVerdict(BaseModel):
-    duplicate: bool = Field(description="True only if these test the same knowledge")
-    confident: bool = Field(
-        description="True only if the pair is unambiguous. Confident duplicates are "
-        "discarded without review, so this must mean certain."
-    )
-    reason: str = Field(
-        description="One sentence citing what both test, or the difference"
+def _text(question: dict[str, Any]) -> str:
+    """The text a pair is compared on: the same block the index embedded."""
+    return question.get("embedding_text") or combined_text(
+        question.get("stem", ""), question.get("explanation")
     )
 
 
-def _describe(question: dict) -> str:
-    """One question as the judge sees it: stem, every option, and the answer."""
-    lines = [f"stem: {question.get('stem')}"]
-    for option in question.get("options") or []:
-        mark = "CORRECT" if option.get("is_correct") else "wrong"
-        lines.append(f"  option ({mark}): {option.get('text')}")
-    if question.get("explanation"):
-        lines.append(f"explanation: {question['explanation']}")
-    return "\n".join(lines)
+def _rank(question: dict[str, Any]) -> tuple:
+    """How much a question is worth keeping, highest first.
+
+    Approved questions carry a review decision and must outlive a draft. Beyond
+    that, prefer the one attributed to more badges — it is reachable from more
+    places, so keeping it loses the least — and then the older one, which anything
+    downstream is more likely to have already seen.
+    """
+    return (
+        question.get("status") == "approved",
+        len(question.get("skill_badges") or []),
+        -(question.get("created_at").timestamp() if question.get("created_at") else 0),
+    )
 
 
-def judge_pair(
-    candidate: dict, stored: dict, *, settings: Settings | None = None
-) -> QuestionDuplicateVerdict:
-    """Ask Claude whether a new question duplicates a stored one."""
-    from app.services.badge_discovery import _client, _translate_auth_error
-
-    settings = settings or get_settings()
-    try:
-        response = _client(settings).messages.parse(
-            model=settings.model,
-            max_tokens=4000,
-            system=JUDGE_SYSTEM,
-            output_format=QuestionDuplicateVerdict,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"New question:\n{_describe(candidate)}\n\n"
-                        f"Already stored:\n{_describe(stored)}"
-                    ),
-                }
-            ],
-        )
-    except Exception as exc:
-        _translate_auth_error(exc)
-        raise
-
-    if response.parsed_output is None:
-        raise RuntimeError(
-            f"Duplicate judgement produced no structured output (stop_reason="
-            f"{response.stop_reason})."
-        )
-    return response.parsed_output
+def choose_survivor(
+    left: dict[str, Any], right: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return (keep, drop) for a duplicate pair."""
+    return (left, right) if _rank(left) >= _rank(right) else (right, left)
 
 
-def screen_questions(
-    candidates: list[GeneratedQuestion],
-    *,
-    top_k: int = 5,
-    settings: Settings | None = None,
-) -> dict:
-    """Split newly generated questions into those to keep and those to discard.
+def shortlist_pairs(
+    *, settings: Settings | None = None
+) -> tuple[list[tuple[dict, dict, float]], list[str]]:
+    """Every pair of stored questions close enough to be worth reranking.
 
-    Only neighbours close enough to be plausible are put to the model — comparing
-    every new question against every stored one would be hundreds of calls for a
-    result the search already narrows.
-
-    Returns the questions to store, plus what was dropped and what merely resembles
-    something and is being kept for review.
+    Each pair is returned once: A-B and B-A are the same pair, and reranking both
+    would double the cost to reach the same answer.
     """
     settings = settings or get_settings()
+    stored = questions_repo.list_questions()
+    by_id = {q["question_id"]: q for q in stored}
 
-    keep: list[GeneratedQuestion] = []
-    dropped: list[dict] = []
-    flagged: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    pairs: list[tuple[dict, dict, float]] = []
+    errors: list[str] = []
 
-    for question in candidates:
-        text = combined_text(question.stem, question.explanation)
-        neighbours = questions_repo.similar_by_embedding_text(
-            text, settings.questions_vector_index_name, limit=top_k
-        )
-
-        verdict_for_drop = None
-        for neighbour in neighbours:
-            score = neighbour.get("score") or 0.0
-            if score < settings.question_duplicate_score_threshold:
-                continue
-            verdict = judge_pair(
-                question.model_dump(), neighbour, settings=settings
+    for question in stored:
+        try:
+            neighbours = questions_repo.similar_by_embedding_text(
+                _text(question),
+                settings.questions_vector_index_name,
+                limit=settings.question_duplicate_neighbours,
+                exclude_question_id=question["question_id"],
             )
-            if not verdict.duplicate:
+        except Exception as exc:
+            # One unsearchable question must not abandon the whole sweep.
+            errors.append(f"{question['question_id']}: {exc}")
+            continue
+
+        for neighbour in neighbours:
+            other = by_id.get(neighbour.get("question_id"))
+            if not other:
                 continue
-            entry = {
-                "stem": question.stem,
-                "duplicate_of": neighbour.get("question_id"),
-                "duplicate_of_stem": neighbour.get("stem"),
-                "score": score,
-                "reason": verdict.reason,
-            }
-            if verdict.confident:
-                verdict_for_drop = entry
-                break
-            flagged.append(entry)
+            if (neighbour.get("score") or 0.0) < settings.question_duplicate_score_threshold:
+                continue
+            key = tuple(sorted((question["question_id"], other["question_id"])))
+            if key in seen:
+                continue
+            seen.add(key)
+            pairs.append((question, other, neighbour.get("score") or 0.0))
+    return pairs, errors
 
-        if verdict_for_drop is None:
-            keep.append(question)
-        else:
-            dropped.append(verdict_for_drop)
 
-    if dropped or flagged:
-        logger.info(
-            "Duplicate screening: %d dropped, %d flagged for review, %d kept",
-            len(dropped),
-            len(flagged),
-            len(keep),
-        )
+def sweep(
+    *, delete: bool = True, settings: Settings | None = None
+) -> dict[str, Any]:
+    """Find duplicate questions, and optionally delete one of each pair.
+
+    `delete=False` is a dry run: the same pairs and scores, nothing removed. That is
+    how the delete threshold should be checked against real data before it is
+    trusted, because a deletion here has no judge behind it and cannot be undone.
+    """
+    settings = settings or get_settings()
+    pairs, errors = shortlist_pairs(settings=settings)
+
+    if not pairs:
+        return {
+            "source": "question-duplicate-sweep",
+            "compared": 0,
+            "deleted": [],
+            "possible_duplicates": [],
+            "errors": errors,
+            "dry_run": not delete,
+        }
+
+    # One request per question, scoring all of its shortlisted partners together.
+    grouped: dict[str, list[tuple[dict, dict, float]]] = {}
+    for left, right, score in pairs:
+        grouped.setdefault(left["question_id"], []).append((left, right, score))
+
+    scored: list[dict[str, Any]] = []
+    for group in grouped.values():
+        query = _text(group[0][0])
+        try:
+            relevance = rerank_pairs(query, [_text(right) for _, right, _ in group])
+        except Exception as exc:
+            errors.append(f"rerank failed for {group[0][0]['question_id']}: {exc}")
+            continue
+        for (left, right, vector_score), rerank_score in zip(group, relevance):
+            keep, drop = choose_survivor(left, right)
+            scored.append(
+                {
+                    "keep": keep["question_id"],
+                    "keep_stem": keep.get("stem"),
+                    "drop": drop["question_id"],
+                    "drop_stem": drop.get("stem"),
+                    "vector_score": vector_score,
+                    "rerank_score": rerank_score,
+                }
+            )
+
+    scored.sort(key=lambda item: item["rerank_score"], reverse=True)
+
+    deleted, possible = [], []
+    removed: set[str] = set()
+    for candidate in scored:
+        if candidate["rerank_score"] < settings.question_rerank_delete_threshold:
+            possible.append(candidate)
+            continue
+        if not delete:
+            possible.append({**candidate, "would_delete": True})
+            continue
+        # A question already removed by an earlier pair cannot be deleted again, and
+        # must not become the survivor of a later one either.
+        if candidate["drop"] in removed or candidate["keep"] in removed:
+            possible.append({**candidate, "skipped": "already resolved"})
+            continue
+        if questions_repo.delete_question(candidate["drop"]):
+            removed.add(candidate["drop"])
+            deleted.append(candidate)
+
+    logger.info(
+        "Duplicate sweep: %d pair(s) compared, %d deleted, %d reported, %d error(s)%s",
+        len(scored),
+        len(deleted),
+        len(possible),
+        len(errors),
+        " (dry run)" if not delete else "",
+    )
     return {
-        "keep": keep,
-        "duplicates_dropped": dropped,
-        "possible_duplicates": flagged,
+        "source": "question-duplicate-sweep",
+        "compared": len(scored),
+        "deleted": deleted,
+        "possible_duplicates": possible,
+        "errors": errors,
+        "dry_run": not delete,
     }

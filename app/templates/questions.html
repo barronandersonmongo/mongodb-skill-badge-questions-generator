@@ -20,6 +20,12 @@
             {% if not badges %}disabled{% endif %}>
       Generate questions
     </button>
+    <button class="btn btn-outline-secondary" id="sweep-btn" type="button">
+      Find duplicates
+    </button>
+    <button class="btn btn-outline-secondary" id="sweep-dry-run-btn" type="button">
+      Dry run
+    </button>
     <a class="btn btn-outline-secondary" id="export-btn" target="_blank" rel="noopener"
        href="{{ api }}?{% if status_filter %}status={{ status_filter }}&{% endif %}{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
       Export JSON
@@ -58,9 +64,13 @@
 </div>
 {% elif last_result %}
 <div class="alert alert-success">
+  {% if last_result.source == "question-duplicate-sweep" %}
+  <strong>Last duplicate sweep.</strong>
+  {% else %}
   <strong>Last run:</strong>
   {{ last_result.inserted }} question(s) stored
   of {{ last_result.requested }} requested
+  {% endif %}
   {% if last_result.run_id %}<span class="text-body-secondary small">(run {{ last_result.run_id[:8] }})</span>{% endif %}
   {% if last_result.cross_tagged %}
   <div class="mt-1" data-cross-tagged="true">
@@ -87,45 +97,52 @@
     badge(s) they were written for: {{ last_result.attribution_error }}
   </div>
   {% endif %}
-  {% if last_result.duplicates_dropped %}
-  <details class="mt-2" data-duplicates-dropped="true">
-    <summary class="small">
-      {{ last_result.duplicates_dropped | length }} discarded as duplicates of questions already stored
-    </summary>
+  {% if last_result.source == "question-duplicate-sweep" %}
+  <div class="mt-1">
+    {{ last_result.compared }} pair(s) compared.
+    {% if last_result.dry_run %}
+    <span class="badge text-bg-warning" data-sweep-dry-run="true">dry run — nothing deleted</span>
+    {% endif %}
+  </div>
+  {% if last_result.deleted %}
+  <details class="mt-2" data-sweep-deleted="true">
+    <summary class="small">{{ last_result.deleted | length }} deleted as duplicates</summary>
     <ul class="small mb-0 mt-2">
-      {% for item in last_result.duplicates_dropped %}
+      {% for pair in last_result.deleted %}
       <li>
-        <span class="fst-italic">{{ item.stem }}</span>
-        — same as <span class="fst-italic">{{ item.duplicate_of_stem }}</span>
-        {% if item.score %}<span class="badge text-bg-light border">{{ "%.3f"|format(item.score) }}</span>{% endif %}
-        — {{ item.reason }}
+        deleted <span class="fst-italic">{{ pair.drop_stem }}</span>,
+        kept <span class="fst-italic">{{ pair.keep_stem }}</span>
+        <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
+        <span class="badge text-bg-light border">vector {{ "%.3f"|format(pair.vector_score) }}</span>
       </li>
       {% endfor %}
     </ul>
   </details>
   {% endif %}
   {% if last_result.possible_duplicates %}
-  <details class="mt-2" data-possible-duplicates="true">
+  <details class="mt-2" data-sweep-possible="true">
     <summary class="small">
-      {{ last_result.possible_duplicates | length }} kept but similar to an existing question — worth a look
+      {{ last_result.possible_duplicates | length }} pair(s) below the delete threshold — kept
     </summary>
     <ul class="small mb-0 mt-2">
-      {% for item in last_result.possible_duplicates %}
+      {% for pair in last_result.possible_duplicates %}
       <li>
-        <span class="fst-italic">{{ item.stem }}</span>
-        — resembles <span class="fst-italic">{{ item.duplicate_of_stem }}</span>
-        {% if item.score %}<span class="badge text-bg-light border">{{ "%.3f"|format(item.score) }}</span>{% endif %}
-        — {{ item.reason }}
+        <span class="fst-italic">{{ pair.drop_stem }}</span>
+        vs <span class="fst-italic">{{ pair.keep_stem }}</span>
+        <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
+        {% if pair.would_delete %}<span class="badge text-bg-warning">would delete</span>{% endif %}
+        {% if pair.skipped %}<span class="badge text-bg-secondary">{{ pair.skipped }}</span>{% endif %}
       </li>
       {% endfor %}
     </ul>
   </details>
   {% endif %}
-  {% if last_result.duplicate_check_error %}
-  <div class="mt-1 small" data-duplicate-check-error="true">
-    Duplicate screening did not run, so these questions were stored unscreened:
-    {{ last_result.duplicate_check_error }}
+  {% if last_result.errors %}
+  <div class="mt-2 small" data-sweep-errors="true">
+    <strong>Not everything could be compared:</strong>
+    <ul class="mb-0">{% for e in last_result.errors %}<li class="font-monospace">{{ e }}</li>{% endfor %}</ul>
   </div>
+  {% endif %}
   {% endif %}
   {% if last_result.rejected %}
   <details class="mt-2">
@@ -493,6 +510,33 @@ document.getElementById("start-run").addEventListener("click", async () => {
   }
   pollStatus();
 });
+
+async function startSweep(dryRun) {
+  showAlert("info", dryRun
+    ? "Comparing stored questions — nothing will be deleted…"
+    : "Comparing stored questions for duplicates…", {timed: true});
+  const response = await fetch(API + "/duplicates/sweep?dry_run=" + (dryRun ? "true" : "false"),
+    {method: "POST"});
+  if (response.status === 409) {
+    showAlert("warning", "A run is already in progress.");
+    return;
+  }
+  if (!response.ok) {
+    showAlert("danger", "Could not start the sweep (HTTP " + response.status + ").");
+    return;
+  }
+  pollStatus();
+}
+
+document.getElementById("sweep-btn").addEventListener("click", () => {
+  if (!window.confirm(
+    "Find duplicates and delete the clear ones?\n\nDeletions cannot be undone. " +
+    "Use Dry run first if the threshold has not been checked against real data."
+  )) return;
+  startSweep(false);
+});
+
+document.getElementById("sweep-dry-run-btn").addEventListener("click", () => startSweep(true));
 
 document.querySelectorAll(".js-status").forEach((button) => {
   button.addEventListener("click", async () => {

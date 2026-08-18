@@ -438,3 +438,83 @@ def test_an_unbuilt_index_is_reported_as_unavailable_not_as_a_bug(
     response = client.get(API + "/search", params={"q": "anything"})
     assert response.status_code == 503
     assert "index" in response.json()["detail"].lower()
+
+
+# --- the duplicate sweep ---
+
+
+def test_the_sweep_runs_in_the_background(client, monkeypatch, fake_questions):
+    """
+    Intent: A sweep is a vector search and a rerank call per question, which is fast but not
+        instant on a large collection. Holding the request open would risk a browser timeout
+        mid-delete.
+    Success: POST /duplicates/sweep returns started immediately, and the work runs.
+    Feature: Question duplicate sweep — does not block the request.
+    """
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.question_duplicates.sweep",
+        lambda **kwargs: calls.append(kwargs) or {},
+    )
+    response = client.post(API + "/duplicates/sweep")
+    assert response.json() == {"started": True}
+    assert calls == [{"delete": True}]
+
+
+def test_a_dry_run_is_passed_through_as_one(client, monkeypatch, fake_questions):
+    """
+    Intent: The dry run is the safeguard for an unmeasured delete threshold. If the flag were
+        dropped between the button and the sweep, a "dry run" would delete questions.
+    Success: dry_run=true reaches the sweep as delete=False.
+    Feature: Question duplicate sweep — a dry run never deletes.
+    """
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.question_duplicates.sweep",
+        lambda **kwargs: calls.append(kwargs) or {},
+    )
+    client.post(API + "/duplicates/sweep", params={"dry_run": True})
+    assert calls == [{"delete": False}]
+
+
+def test_a_sweep_is_refused_while_another_run_is_going(client, fake_questions):
+    """
+    Intent: A sweep and a generation run share the same reported state, and a sweep deleting
+        questions while a run inserts them would interleave unpredictably.
+    Success: The sweep returns 409 while a run is in progress.
+    Feature: Question duplicate sweep — one run at a time.
+    """
+    api_module._run_state["running"] = True
+    assert client.post(API + "/duplicates/sweep").status_code == 409
+
+
+def test_a_failed_sweep_is_reported_with_its_traceback(client, monkeypatch, fake_questions):
+    """
+    Intent: A missing Voyage key is the expected first failure, and it happens in a
+        background task with nowhere to surface. Swallowed, it would look like a collection
+        with no duplicates.
+    Success: The status reports the error and a traceback, and is no longer running.
+    Feature: Question duplicate sweep — failures are surfaced.
+    """
+    def explode(**kwargs):
+        raise RuntimeError("No Voyage API key found")
+
+    monkeypatch.setattr("app.services.question_duplicates.sweep", explode)
+    client.post(API + "/duplicates/sweep")
+    state = client.get(API + "/generate/status").json()
+    assert state["running"] is False
+    assert "No Voyage API key found" in state["last_error"]
+    assert "RuntimeError" in state["last_traceback"]
+
+
+def test_the_sweep_is_timed_like_any_other_run(client, monkeypatch, fake_questions):
+    """
+    Intent: The sweep shares the run state and the screen's elapsed timer. Without its own
+        timestamps the timer would show the previous run's duration, or none.
+    Success: A completed sweep reports started_at and finished_at in order.
+    Feature: Question duplicate sweep — timed on the server.
+    """
+    monkeypatch.setattr("app.services.question_duplicates.sweep", lambda **k: {"compared": 0})
+    client.post(API + "/duplicates/sweep")
+    state = client.get(API + "/generate/status").json()
+    assert state["finished_at"] >= state["started_at"]

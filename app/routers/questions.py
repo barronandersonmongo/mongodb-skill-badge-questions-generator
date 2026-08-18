@@ -128,6 +128,42 @@ def list_questions(
     return questions.list_questions(status, skill_badge, category)
 
 
+@router.post("/duplicates/sweep")
+def sweep_duplicates(background: BackgroundTasks, dry_run: bool = False) -> dict:
+    """Find duplicate questions already stored, deleting the clear ones.
+
+    Runs in the background like a generation run: the sweep is one vector search
+    and one rerank call per question, which is fast but not instant on a large
+    collection. `dry_run=true` reports what it would delete without deleting it.
+    """
+    if _run_state["running"]:
+        raise HTTPException(409, "A run is already in progress.")
+    background.add_task(_run_sweep, dry_run)
+    return {"started": True}
+
+
+def _run_sweep(dry_run: bool) -> None:
+    from app.services.question_duplicates import sweep
+
+    _run_state.update(
+        running=True,
+        last_error=None,
+        last_traceback=None,
+        started_at=time.time(),
+        finished_at=None,
+    )
+    logger.info("Duplicate sweep started%s", " (dry run)" if dry_run else "")
+    try:
+        _run_state["last_result"] = sweep(delete=not dry_run)
+    except Exception as exc:  # surfaced to the page, not swallowed
+        _run_state["last_error"] = str(exc)
+        _run_state["last_traceback"] = traceback.format_exc()
+        logger.exception("Duplicate sweep failed: %s", exc)
+    finally:
+        _run_state["running"] = False
+        _run_state["finished_at"] = time.time()
+
+
 @router.get("/search")
 def search_questions(
     q: str = Query(min_length=2, max_length=1000),

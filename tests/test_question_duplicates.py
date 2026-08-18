@@ -1,291 +1,355 @@
-"""Tests for app/services/question_duplicates.py — screening new questions.
+"""Tests for app/services/question_duplicates.py — the ad-hoc duplicate sweep.
+
+The sweep replaced an earlier design that screened every generation run with a
+Claude call per candidate pair. That was accurate but slow and expensive, and the
+cost fell on authoring — the one part of the workflow a person waits for. Duplicates
+are now found on request, over what is stored, by vector search shortlisting and a
+reranker deciding. No language model is involved.
 
 Every test carries an Intent / Success / Feature block. Those blocks are the
 recorded requirement and are never edited: if behavior must change, the
 program changes, or a new test is added alongside with its own block.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 
 from app.config import Settings
-from app.models.question import GeneratedQuestion, QuestionOption
-from app.services import badge_discovery, question_duplicates
-from tests.fakes import FakeAnthropic, FakeParsedResponse
-
-Verdict = question_duplicates.QuestionDuplicateVerdict
+from app.services import question_duplicates
 
 
-def option(text: str, correct: bool = False) -> QuestionOption:
-    return QuestionOption(text=text, is_correct=correct, rationale="because")
-
-
-def make(stem: str = "Which stage filters documents?", **overrides) -> GeneratedQuestion:
-    return GeneratedQuestion(
-        **{
-            "stem": stem,
-            "options": [option("$match", True), option("$project"), option("$sort"), option("$limit")],
-            "explanation": "$match filters.",
-            "difficulty": "foundational",
-            "skill_badges": ["atlas-search"],
-            **overrides,
-        }
-    )
-
-
-STORED = {
-    "question_id": "stored1",
-    "stem": "Which aggregation stage removes documents from the pipeline?",
-    "explanation": "$match filters.",
-    "options": [
-        {"text": "$match", "is_correct": True},
-        {"text": "$unwind", "is_correct": False},
-    ],
-    "score": 0.93,
-}
+def stored(question_id: str, stem: str, **overrides) -> dict:
+    return {
+        "question_id": question_id,
+        "stem": stem,
+        "explanation": "Because.",
+        "embedding_text": f"Question: {stem}\nExplanation: Because.",
+        "status": "draft",
+        "skill_badges": ["atlas-search"],
+        "created_at": datetime(2026, 8, 1, tzinfo=timezone.utc),
+        **overrides,
+    }
 
 
 @pytest.fixture
-def fake_client(monkeypatch):
-    def install(parsed=None):
-        client = FakeAnthropic(parsed=parsed)
-        monkeypatch.setattr(badge_discovery, "_client", lambda settings=None: client)
-        return client
+def collection(monkeypatch):
+    """Script the stored questions and what the vector index proposes for each."""
+    def install(docs: list[dict], neighbours: dict[str, list[dict]]):
+        deleted: list[str] = []
+
+        def list_questions(*args, **kwargs):
+            return [d for d in docs if d["question_id"] not in deleted]
+
+        def similar(text, index_name, *, limit=5, exclude_question_id=None, **kwargs):
+            return neighbours.get(exclude_question_id, [])
+
+        def delete(question_id):
+            deleted.append(question_id)
+            return True
+
+        monkeypatch.setattr(question_duplicates.questions_repo, "list_questions", list_questions)
+        monkeypatch.setattr(
+            question_duplicates.questions_repo, "similar_by_embedding_text", similar
+        )
+        monkeypatch.setattr(question_duplicates.questions_repo, "delete_question", delete)
+        return deleted
 
     return install
 
 
 @pytest.fixture
-def neighbours(monkeypatch):
-    """Script what the vector index returns for each candidate."""
-    def install(results: list[dict]):
-        calls: list[tuple] = []
+def reranks(monkeypatch):
+    """Script the reranker's scores, and record what it was asked to score."""
+    def install(scores):
+        calls: list[tuple[str, list[str]]] = []
 
-        def search(text, index_name, **kwargs):
-            calls.append((text, index_name, kwargs))
-            return results
+        def rerank(query, documents):
+            calls.append((query, list(documents)))
+            if callable(scores):
+                return scores(query, documents)
+            return [scores] * len(documents)
 
-        monkeypatch.setattr(
-            question_duplicates.questions_repo, "similar_by_embedding_text", search
-        )
+        monkeypatch.setattr(question_duplicates, "rerank_pairs", rerank)
         return calls
 
     return install
 
 
-def test_a_confident_duplicate_is_discarded(fake_client, neighbours, settings):
+def test_a_pair_the_reranker_is_sure_about_loses_one_question(collection, reranks, settings):
     """
-    Intent: A quiz that asks the same thing twice is the failure this whole screening
-        exists to prevent, and the cheap moment to catch it is before the question is
-        stored — afterwards someone has to notice it during review.
-    Success: A question Claude confidently calls a duplicate is not kept, and is reported
-        with what it duplicates.
-    Feature: Question duplicates — confident duplicates are dropped before storage.
+    Intent: The sweep exists to remove repetition from the collection. If a confident pair
+        were only reported, the collection would stay duplicated and the sweep would be a
+        report generator.
+    Success: A pair scoring above the delete threshold has one question deleted, and the
+        deletion is reported.
+    Feature: Question duplicate sweep — clear duplicates are deleted.
     """
-    neighbours([STORED])
-    fake_client(Verdict(duplicate=True, confident=True, reason="both test $match"))
-    result = question_duplicates.screen_questions([make()], settings=settings)
-    assert result["keep"] == []
-    assert result["duplicates_dropped"][0]["duplicate_of"] == "stored1"
-    assert result["duplicates_dropped"][0]["reason"] == "both test $match"
+    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters documents?")]
+    deleted = collection(docs, {"a": [{"question_id": "b", "score": 0.9}]})
+    reranks(0.99)
+    result = question_duplicates.sweep(settings=settings)
+    assert deleted == [result["deleted"][0]["drop"]]
+    assert result["deleted"][0]["rerank_score"] == 0.99
 
 
-def test_an_unconfident_duplicate_is_kept_and_flagged(fake_client, neighbours, settings):
+def test_a_pair_below_the_threshold_is_reported_and_kept(collection, reranks, settings):
     """
-    Intent: Discarding a question the model merely suspected loses work nobody reviewed.
-        Showing an author both questions and letting them choose is the safe direction of
-        error.
-    Success: A duplicate verdict without confidence keeps the question and reports it for
-        review.
-    Feature: Question duplicates — only confident duplicates are discarded.
+    Intent: A deletion here has no judge behind it and cannot be undone, so anything short
+        of certain must survive for a person to look at.
+    Success: A pair scoring below the threshold deletes nothing and is reported as a
+        possible duplicate.
+    Feature: Question duplicate sweep — only certain pairs are deleted.
     """
-    neighbours([STORED])
-    fake_client(Verdict(duplicate=True, confident=False, reason="similar but arguable"))
-    result = question_duplicates.screen_questions([make()], settings=settings)
-    assert len(result["keep"]) == 1
-    assert result["duplicates_dropped"] == []
-    assert result["possible_duplicates"][0]["duplicate_of"] == "stored1"
+    docs = [stored("a", "Which stage filters?"), stored("b", "How do indexes work?")]
+    deleted = collection(docs, {"a": [{"question_id": "b", "score": 0.8}]})
+    reranks(0.42)
+    result = question_duplicates.sweep(settings=settings)
+    assert deleted == []
+    assert result["possible_duplicates"][0]["rerank_score"] == 0.42
 
 
-def test_a_question_judged_different_is_kept_without_comment(fake_client, neighbours, settings):
+def test_a_dry_run_deletes_nothing_but_says_what_it_would(collection, reranks, settings):
     """
-    Intent: Questions on one topic are naturally close in vector space. If proximity alone
-        flagged them, every run would report noise and authors would stop reading the
-        report.
-    Success: A "not a duplicate" verdict keeps the question and reports nothing.
-    Feature: Question duplicates — proximity alone is not a duplicate.
+    Intent: The delete threshold was set without real duplicates to calibrate against, so
+        it has to be checkable against live data before it is trusted to remove anything.
+        A dry run is how that check is made safely.
+    Success: With delete=False nothing is deleted, and the pair is marked as one that would
+        have been.
+    Feature: Question duplicate sweep — dry run for calibrating the threshold.
     """
-    neighbours([STORED])
-    fake_client(Verdict(duplicate=False, confident=True, reason="different knowledge"))
-    result = question_duplicates.screen_questions([make()], settings=settings)
-    assert len(result["keep"]) == 1
-    assert result["duplicates_dropped"] == [] and result["possible_duplicates"] == []
+    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters documents?")]
+    deleted = collection(docs, {"a": [{"question_id": "b", "score": 0.9}]})
+    reranks(0.99)
+    result = question_duplicates.sweep(delete=False, settings=settings)
+    assert deleted == []
+    assert result["dry_run"] is True
+    assert result["possible_duplicates"][0]["would_delete"] is True
 
 
-def test_a_distant_neighbour_is_never_put_to_the_model(fake_client, neighbours, settings):
+def test_the_vector_score_only_shortlists(collection, reranks, settings):
     """
-    Intent: Every judgement costs a model call. Anything below the score floor is not a
-        plausible duplicate, so paying to ask about it is waste — the floor exists to trim
-        cost, not to decide.
-    Success: A neighbour scoring below the threshold produces no API call.
-    Feature: Question duplicates — the score floor trims cost.
+    Intent: Two independently embedded texts cannot distinguish "same question reworded"
+        from "same topic". The reranker reads both together and is the thing that decides;
+        a high vector score alone must never delete anything.
+    Success: A pair with a very high vector score but a low rerank score survives.
+    Feature: Question duplicate sweep — the reranker decides, not the vector score.
     """
-    neighbours([{**STORED, "score": 0.10}])
-    client = fake_client(Verdict(duplicate=True, confident=True, reason="unused"))
-    result = question_duplicates.screen_questions([make()], settings=settings)
-    assert len(result["keep"]) == 1
-    assert client.messages.parse_calls == []
+    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage sorts?")]
+    deleted = collection(docs, {"a": [{"question_id": "b", "score": 0.99}]})
+    reranks(0.10)
+    result = question_duplicates.sweep(settings=settings)
+    assert deleted == []
+    assert result["possible_duplicates"][0]["vector_score"] == 0.99
 
 
-def test_the_score_floor_is_configurable(fake_client, neighbours):
+def test_a_distant_neighbour_is_never_reranked(collection, reranks, settings):
     """
-    Intent: The right floor is empirical and differs from the badge one, because questions
-        are longer and more specific. It has to be tunable without editing code once real
-        scores are observed.
-    Success: Lowering the threshold puts a previously ignored neighbour to the model.
-    Feature: Question duplicates — tunable score floor.
+    Intent: The shortlist floor is the only thing keeping the sweep from reranking every
+        pair in the collection, which grows as the square of its size.
+    Success: A neighbour below the shortlist floor produces no rerank call.
+    Feature: Question duplicate sweep — the shortlist bounds the cost.
     """
-    neighbours([{**STORED, "score": 0.50}])
-    client = fake_client(Verdict(duplicate=True, confident=True, reason="same"))
-    settings = Settings(mongodb_uri="mongodb://test", question_duplicate_score_threshold=0.4)
-    result = question_duplicates.screen_questions([make()], settings=settings)
-    assert result["keep"] == []
-    assert len(client.messages.parse_calls) == 1
+    docs = [stored("a", "Which stage filters?"), stored("b", "Unrelated question?")]
+    collection(docs, {"a": [{"question_id": "b", "score": 0.20}]})
+    calls = reranks(0.99)
+    result = question_duplicates.sweep(settings=settings)
+    assert calls == []
+    assert result["compared"] == 0
 
 
-def test_the_configured_index_is_the_one_searched(fake_client, neighbours, settings):
+def test_each_pair_is_reranked_once(collection, reranks, settings):
     """
-    Intent: The index name is external state created by hand in Atlas. If this program
-        searched a different name the screening would fail — or worse, silently return
-        nothing and report every question as unique.
-    Success: The search uses the index name from settings.
-    Feature: Question duplicates — searches the configured vector index.
+    Intent: A and B are the same pair as B and A. Reranking both doubles the cost to reach
+        the same answer, and would report the duplicate twice.
+    Success: A mutual pair produces one comparison.
+    Feature: Question duplicate sweep — each pair costs one comparison.
     """
-    calls = neighbours([])
-    fake_client(Verdict(duplicate=False, confident=True, reason="n/a"))
-    question_duplicates.screen_questions([make()], settings=settings)
-    assert calls[0][1] == settings.questions_vector_index_name
-
-
-def test_the_candidate_is_searched_by_its_own_embedding_text(fake_client, neighbours, settings):
-    """
-    Intent: The index embeds the labelled stem-and-explanation block, so the query has to
-        be composed the same way. Searching with a bare stem would compare unlike text and
-        weaken every score.
-    Success: The query text is the candidate's combined embedding text.
-    Feature: Question duplicates — query matches how documents were embedded.
-    """
-    calls = neighbours([])
-    fake_client(Verdict(duplicate=False, confident=True, reason="n/a"))
-    question_duplicates.screen_questions([make()], settings=settings)
-    assert calls[0][0] == "Question: Which stage filters documents?\nExplanation: $match filters."
-
-
-def test_the_judge_sees_the_options_of_both_questions(fake_client, neighbours, settings):
-    """
-    Intent: Two stems can be near-identical while their options test different
-        distinctions, and two different stems can reduce to one fact. Judging on stems
-        alone would both merge distinct questions and miss real duplicates.
-    Success: Both questions' options, and which is correct, reach the prompt.
-    Feature: Question duplicates — judged on the whole question.
-    """
-    neighbours([STORED])
-    client = fake_client(Verdict(duplicate=False, confident=True, reason="differs"))
-    question_duplicates.screen_questions([make()], settings=settings)
-    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
-    assert "$project" in prompt and "$unwind" in prompt
-    assert "CORRECT" in prompt
-
-
-def test_screening_stops_at_the_first_confident_duplicate(fake_client, neighbours, settings):
-    """
-    Intent: Once a question is known to duplicate something, further comparisons cannot
-        change the outcome and only cost money.
-    Success: With several close neighbours, only one judgement is made.
-    Feature: Question duplicates — no needless API calls.
-    """
-    neighbours([STORED, {**STORED, "question_id": "stored2"}])
-    client = fake_client(Verdict(duplicate=True, confident=True, reason="same"))
-    question_duplicates.screen_questions([make()], settings=settings)
-    assert len(client.messages.parse_calls) == 1
-
-
-def test_an_empty_collection_produces_no_judgements(fake_client, neighbours, settings):
-    """
-    Intent: The first run against an empty collection has nothing to duplicate. Calling the
-        model to compare against nothing is pure cost.
-    Success: With no neighbours, the question is kept and no call is made.
-    Feature: Question duplicates — no needless API calls.
-    """
-    neighbours([])
-    client = fake_client(Verdict(duplicate=False, confident=True, reason="n/a"))
-    result = question_duplicates.screen_questions([make()], settings=settings)
-    assert len(result["keep"]) == 1
-    assert client.messages.parse_calls == []
-
-
-def test_a_truncated_judgement_is_reported_rather_than_assumed_unique(
-    fake_client, neighbours, settings
-):
-    """
-    Intent: A truncated judgement returns no structured output. Reading that as "not a
-        duplicate" would let duplicates through while appearing to have screened them,
-        which is worse than not screening at all.
-    Success: Missing structured output raises, naming the stop reason.
-    Feature: Question duplicates — an unanswered judgement is an error.
-    """
-    neighbours([STORED])
-    fake_client(FakeParsedResponse(None, stop_reason="max_tokens"))
-    with pytest.raises(RuntimeError, match="max_tokens"):
-        question_duplicates.screen_questions([make()], settings=settings)
-
-
-def test_each_question_in_a_batch_is_screened(fake_client, neighbours, settings):
-    """
-    Intent: A run produces several questions and any of them may duplicate something.
-        Screening only the first would leave the rest unchecked while the run reported
-        itself as screened.
-    Success: Every question in the batch is searched.
-    Feature: Question duplicates — the whole batch is screened.
-    """
-    calls = neighbours([])
-    fake_client(Verdict(duplicate=False, confident=True, reason="n/a"))
-    question_duplicates.screen_questions(
-        [make("First?"), make("Second?"), make("Third?")], settings=settings
+    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters documents?")]
+    collection(
+        docs,
+        {
+            "a": [{"question_id": "b", "score": 0.9}],
+            "b": [{"question_id": "a", "score": 0.9}],
+        },
     )
-    assert len(calls) == 3
+    calls = reranks(0.99)
+    result = question_duplicates.sweep(settings=settings)
+    assert len(calls) == 1
+    assert result["compared"] == 1
 
 
-def test_judging_translates_missing_credentials_into_an_actionable_error(
-    monkeypatch, neighbours, settings
-):
+def test_the_pair_is_compared_on_the_text_that_was_embedded(collection, reranks, settings):
     """
-    Intent: Screening is the fourth API call in a run, so it can be where a credential
-        problem first surfaces. The SDK's bare TypeError names its own constructor
-        arguments and tells an operator nothing about which variable to set.
-    Success: RuntimeError is raised naming ANTHROPIC_API_KEY.
-    Feature: Question duplicates — missing credential diagnostics.
+    Intent: The shortlist comes from the embedded stem-and-explanation block. Reranking
+        different text than was shortlisted would score a pair on something other than
+        what made it a candidate.
+    Success: Both sides sent to the reranker are the stored embedding_text values.
+    Feature: Question duplicate sweep — shortlist and decision compare the same text.
     """
-    from tests.test_question_generation import SDK_AUTH_ERROR, _raising_client
+    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters documents?")]
+    collection(docs, {"a": [{"question_id": "b", "score": 0.9}]})
+    calls = reranks(0.99)
+    question_duplicates.sweep(settings=settings)
+    assert calls[0][0] == docs[0]["embedding_text"]
+    assert calls[0][1] == [docs[1]["embedding_text"]]
 
-    neighbours([STORED])
-    _raising_client(monkeypatch, "parse", SDK_AUTH_ERROR)
-    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
-        question_duplicates.screen_questions([make()], settings=settings)
 
-
-def test_judging_failures_other_than_credentials_still_propagate(
-    monkeypatch, neighbours, settings
-):
+def test_an_approved_question_outlives_a_draft(collection, reranks, settings):
     """
-    Intent: The credential translator fronts every judgement, so a real API error (rate
-        limit, overload, network) must pass through unchanged for the run to report it and
-        keep its questions — rather than being mislabelled as a missing key.
-    Success: The original exception propagates from screen_questions.
-    Feature: Question duplicates — failure handling.
+    Intent: Approval is a human decision the tool exists to capture. Deleting the approved
+        question of a pair and keeping the unreviewed one would throw away exactly the work
+        that matters.
+    Success: The approved question is kept and the draft dropped, whichever way round the
+        pair is found.
+    Feature: Question duplicate sweep — review work survives.
     """
-    from tests.test_question_generation import _raising_client
+    docs = [stored("a", "Draft one?"), stored("b", "Approved one?", status="approved")]
+    collection(docs, {"a": [{"question_id": "b", "score": 0.9}]})
+    reranks(0.99)
+    result = question_duplicates.sweep(settings=settings)
+    assert result["deleted"][0]["keep"] == "b"
+    assert result["deleted"][0]["drop"] == "a"
 
-    neighbours([STORED])
-    _raising_client(monkeypatch, "parse", ConnectionError("connection reset by peer"))
-    with pytest.raises(ConnectionError, match="connection reset"):
-        question_duplicates.screen_questions([make()], settings=settings)
+
+def test_the_question_serving_more_badges_is_preferred(collection, reranks, settings):
+    """
+    Intent: Between two equal drafts, the one attributed to more badges is reachable from
+        more places, so keeping it loses the least findability.
+    Success: The question with more skill badges is kept.
+    Feature: Question duplicate sweep — keeps the more widely useful question.
+    """
+    docs = [
+        stored("a", "One badge?", skill_badges=["atlas-search"]),
+        stored("b", "Two badges?", skill_badges=["atlas-search", "aggregation"]),
+    ]
+    collection(docs, {"a": [{"question_id": "b", "score": 0.9}]})
+    reranks(0.99)
+    result = question_duplicates.sweep(settings=settings)
+    assert result["deleted"][0]["keep"] == "b"
+
+
+def test_a_question_is_not_deleted_twice_over(collection, reranks, settings):
+    """
+    Intent: Three near-identical questions produce overlapping pairs. Acting on each pair
+        independently could delete both of a pair whose survivor was already removed,
+        leaving no copy of the question at all.
+    Success: With three mutually similar questions, at most two are deleted and the
+        skipped pair is reported.
+    Feature: Question duplicate sweep — never deletes every copy.
+    """
+    docs = [stored(i, f"Near duplicate {i}?") for i in ("a", "b", "c")]
+    deleted = collection(
+        docs,
+        {
+            "a": [{"question_id": "b", "score": 0.9}, {"question_id": "c", "score": 0.9}],
+            "b": [{"question_id": "c", "score": 0.9}],
+        },
+    )
+    reranks(0.99)
+    result = question_duplicates.sweep(settings=settings)
+    assert len(deleted) == 2
+    assert any(p.get("skipped") for p in result["possible_duplicates"])
+    assert len(docs) - len(deleted) == 1
+
+
+def test_pairs_are_reported_most_similar_first(collection, reranks, settings):
+    """
+    Intent: A reviewer works down the list, so the likeliest duplicates must be at the top;
+        otherwise the useful findings sit below the noise.
+    Success: Reported pairs are ordered by descending rerank score.
+    Feature: Question duplicate sweep — most likely duplicates first.
+    """
+    docs = [stored(i, f"Question {i}?") for i in ("a", "b", "c")]
+    collection(
+        docs,
+        {"a": [{"question_id": "b", "score": 0.9}, {"question_id": "c", "score": 0.9}]},
+    )
+    reranks(lambda query, documents: [0.30, 0.80])
+    result = question_duplicates.sweep(settings=settings)
+    scores = [p["rerank_score"] for p in result["possible_duplicates"]]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_a_failed_rerank_does_not_abandon_the_sweep(collection, reranks, settings, monkeypatch):
+    """
+    Intent: A rate limit or network blip on one question must not discard the findings for
+        every other question, and must never be read as "no duplicates here".
+    Success: The failure is reported in errors and the sweep still completes.
+    Feature: Question duplicate sweep — partial failures are reported, not fatal.
+    """
+    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters documents?")]
+    collection(docs, {"a": [{"question_id": "b", "score": 0.9}]})
+
+    def explode(query, documents):
+        raise RuntimeError("rate limited")
+
+    monkeypatch.setattr(question_duplicates, "rerank_pairs", explode)
+    result = question_duplicates.sweep(settings=settings)
+    assert result["deleted"] == []
+    assert "rate limited" in result["errors"][0]
+
+
+def test_an_unsearchable_question_does_not_abandon_the_sweep(collection, reranks, settings, monkeypatch):
+    """
+    Intent: One question failing to search — a transient index error, say — must not lose
+        the results for the rest, which would silently narrow the sweep.
+    Success: The search failure is reported and the sweep completes.
+    Feature: Question duplicate sweep — partial failures are reported, not fatal.
+    """
+    docs = [stored("a", "Which stage filters?")]
+    collection(docs, {})
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("index not found")
+
+    monkeypatch.setattr(
+        question_duplicates.questions_repo, "similar_by_embedding_text", explode
+    )
+    result = question_duplicates.sweep(settings=settings)
+    assert "index not found" in result["errors"][0]
+
+
+def test_an_empty_collection_sweeps_without_calling_anything(collection, reranks, settings):
+    """
+    Intent: A sweep of nothing must be free — no rerank request, no error — because it will
+        be run out of habit on a collection that has just been emptied or is new.
+    Success: Nothing is compared and no rerank call is made.
+    Feature: Question duplicate sweep — no needless API calls.
+    """
+    collection([], {})
+    calls = reranks(0.99)
+    result = question_duplicates.sweep(settings=settings)
+    assert result["compared"] == 0 and calls == []
+
+
+def test_the_delete_threshold_is_configurable(collection, reranks):
+    """
+    Intent: The threshold governs irreversible deletion and was set without real duplicates
+        to calibrate against. It must be tunable from configuration once a dry run shows
+        what real scores look like.
+    Success: Lowering the threshold turns a reported pair into a deleted one.
+    Feature: Question duplicate sweep — tunable delete threshold.
+    """
+    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters documents?")]
+    deleted = collection(docs, {"a": [{"question_id": "b", "score": 0.9}]})
+    reranks(0.60)
+    settings = Settings(mongodb_uri="mongodb://test", question_rerank_delete_threshold=0.5)
+    question_duplicates.sweep(settings=settings)
+    assert len(deleted) == 1
+
+
+def test_a_neighbour_that_is_no_longer_stored_is_ignored(collection, reranks, settings):
+    """
+    Intent: The vector index lags deletions, so a search can return a question that has just
+        been removed — including one the same sweep deleted moments earlier. Comparing
+        against it would report a pair whose second half no longer exists, and could delete
+        the survivor of an already-resolved duplicate.
+    Success: A neighbour absent from the collection is skipped, and nothing is compared.
+    Feature: Question duplicate sweep — tolerates an index lagging behind deletions.
+    """
+    docs = [stored("a", "Which stage filters?")]
+    collection(docs, {"a": [{"question_id": "ghost", "score": 0.99}]})
+    calls = reranks(0.99)
+    result = question_duplicates.sweep(settings=settings)
+    assert result["compared"] == 0 and calls == []
