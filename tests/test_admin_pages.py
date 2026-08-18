@@ -59,29 +59,30 @@ def seed(**overrides) -> None:
 # --- navigation ---
 
 
-def test_admin_home_redirects_to_the_badge_screen(client, fake_collection):
+def test_admin_home_redirects_to_the_questions_screen(client, fake_collection, fake_questions):
     """
-    Intent: /admin must be a usable entry point — someone typing it should land on a
-        working screen rather than a 404 while the area has one page.
-    Success: GET /admin follows through to the skill badges page and returns HTML.
+    Intent: /admin must be a usable entry point, and it should open on the screen
+        the tool exists for. Questions are the product; badges only scope them, so
+        landing on the badge screen would put the supporting data before the work.
+    Success: GET /admin follows through to the questions page and returns HTML.
     Feature: Admin area — navigation entry point.
     """
     response = client.get("/admin")
     assert response.status_code == 200
-    assert response.url.path == "/admin/skill-badges"
+    assert response.url.path == "/admin/questions"
     assert "text/html" in response.headers["content-type"]
 
 
-def test_site_root_redirects_into_the_admin_area(client, fake_collection):
+def test_site_root_lands_on_the_questions_screen(client, fake_collection, fake_questions):
     """
     Intent: This tool has no public front page, so the site root should take an
-        internal user straight to the work rather than showing nothing.
-    Success: GET / lands on the skill badges page.
+        internal user straight to the work — writing and reviewing questions.
+    Success: GET / lands on the questions page.
     Feature: Admin area — navigation entry point.
     """
     response = client.get("/")
     assert response.status_code == 200
-    assert response.url.path == "/admin/skill-badges"
+    assert response.url.path == "/admin/questions"
 
 
 def test_page_renders_the_shared_shell(client, fake_collection):

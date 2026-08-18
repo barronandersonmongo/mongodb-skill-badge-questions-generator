@@ -43,7 +43,8 @@ cluster (Atlas project "Barry Anderson").
 ```
 
 Then open **<http://127.0.0.1:8000/admin>** — the admin area. `/` and `/admin`
-both redirect to the skill badges screen. API docs are at `/docs`.
+both redirect to the questions screen, which is the main screen. API docs are at
+`/docs`.
 
 If MongoDB is unreachable the screen still loads and names the problem rather
 than returning a stack trace.
@@ -70,6 +71,55 @@ credentials from the environment, MongoDB is an in-memory fake
 > its `bulk_write` path breaks on pymongo's newer `add_update()` signature.
 
 ## Features
+
+### Questions
+
+The main screen (`/admin/questions`) is where questions are viewed and written.
+
+**Generating.** A run is scoped to one or more skill badges: the badge decides
+what is in subject matter. Two Claude passes, as with badge discovery — an
+authoring pass that reads the selected badges (title, coverage, topic areas and
+curated reference links), any material the author pasted in, and MongoDB's
+documentation via server-side web search and fetch; then an extraction pass that
+turns the draft into validated records. The draft is kept on the run summary so a
+weak batch can be diagnosed.
+
+Runs happen in the background with the page polling for status and showing an
+elapsed timer, because an authoring turn takes minutes.
+
+The badges scope the questions but are not the whole source. Deeper material —
+internal training content, live cluster behaviour — is pasted into **Source
+material** and preferred over anything Claude finds itself: the server has no
+Glean or MongoDB MCP access of its own.
+
+**The format is enforced, not requested.** Every stored question is multiple
+choice with exactly four options, exactly one correct, no repeated or empty
+options, and a non-empty stem. A question failing any of those is discarded and
+reported with the reason rather than stored for a reviewer to find. A malformed
+question never fails the batch it came in — the rest are kept.
+
+Badge attribution is also enforced: a badge slug outside the run's selection is
+dropped, and a question the model left untagged is attributed to the badges the
+run was scoped to. `skill_badges` is what the collection is filtered by, so a
+wrong value there would make a question unfindable.
+
+**Reviewing.** Questions arrive as **drafts**. The screen shows the stem, all four
+options with the correct one marked, each option's rationale, the explanation, the
+difficulty, the badges and categories, and the sources — everything needed to
+judge quality. Per question: approve, reject, re-open, delete.
+
+**Filtering and export.** Filter by skill badge, category and status; the filters
+intersect and live in the URL, so a view can be shared. **Export JSON** returns
+exactly the filtered set from the same endpoint the screen reads.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/admin/questions` | The main screen; `?status=`, `?skill_badge=`, `?category=` |
+| `POST` | `/api/admin/questions/generate` | Start a generation run |
+| `GET` | `/api/admin/questions/generate/status` | Poll a run |
+| `GET` | `/api/admin/questions` | List / export questions, same filters |
+| `POST` | `/api/admin/questions/{id}/status` | Approve, reject or re-open |
+| `DELETE` | `/api/admin/questions/{id}` | Delete a question |
 
 ### Badge synchronisation
 
@@ -109,7 +159,8 @@ remembers the dropped slug as an alias so a later sync does not re-create it.
 
 ### Admin area
 
-Server-rendered screens at `/admin` (Jinja2 + Bootstrap 5 from CDN, no build step):
+Server-rendered screens at `/admin` (Jinja2 + Bootstrap 5 from CDN, no build step).
+The badge screen at `/admin/skill-badges` carries:
 
 - Review table with badge artwork, and every name source labelled — **Credly
   name**, **MongoDB name**, **Artwork name**, **Catalog name** — plus the
@@ -143,12 +194,17 @@ Server-rendered screens at `/admin` (Jinja2 + Bootstrap 5 from CDN, no build ste
 app/config.py                        environment-driven settings
 app/db.py                            Mongo client (one per process)
 app/models/skill_badge.py            Pydantic schemas (Claude output + stored doc)
+app/models/question.py               question schemas (Claude output + stored doc)
 app/services/badge_discovery.py      the two Claude passes
+app/services/question_generation.py  the two Claude passes for questions
 app/services/discover_cli.py         shell entry point
 app/repositories/skill_badges.py     upsert / list / status, indexes
+app/repositories/questions.py        insert / filter / status, indexes
 app/routers/admin_skill_badges.py    JSON endpoints under /api/admin
+app/routers/admin_questions.py       question JSON endpoints under /api/admin
 app/routers/admin_pages.py           server-rendered pages under /admin
 app/templates/base.html              nav shell shared by admin screens
+app/templates/admin/questions.html   the main screen: review and generate
 app/templates/admin/skill_badges.html  badge review screen
 tests/                               pytest suite + fakes (see tests/README.md)
 ```
@@ -156,7 +212,13 @@ tests/                               pytest suite + fakes (see tests/README.md)
 ## Known limitations
 
 - Run state is in-process; it needs to move into MongoDB before running multiple
-  uvicorn workers.
+  uvicorn workers. Badge runs and question runs hold separate state, so one of
+  each can run at a time.
+- Nothing checks whether a newly generated question duplicates an existing one.
+  The vector-search machinery used for badge duplicates would transfer, but is
+  not wired up for questions.
+- The generation path has never run against the live Claude API; the tests prove
+  the control flow, not that the prompt produces good questions.
 - `learn.mongodb.com` course pages are client-rendered, so their titles come from
   the search index rather than the page. Three badges have no title available by
   any headless method; a rendering browser (e.g. Playwright) would be needed.

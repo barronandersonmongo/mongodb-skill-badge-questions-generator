@@ -15,11 +15,12 @@
     <a class="navbar-brand" href="/admin">Skill Badge Questions</a>
     <ul class="navbar-nav me-auto">
       <li class="nav-item">
-        <a class="nav-link {% if active_page == 'skill_badges' %}active{% endif %}"
-           href="/admin/skill-badges">Skill badges</a>
+        <a class="nav-link {% if active_page == 'questions' %}active{% endif %}"
+           href="/admin/questions">Questions</a>
       </li>
       <li class="nav-item">
-        <span class="nav-link disabled" aria-disabled="true">Questions</span>
+        <a class="nav-link {% if active_page == 'skill_badges' %}active{% endif %}"
+           href="/admin/skill-badges">Skill badges</a>
       </li>
     </ul>
     <span class="navbar-text small">Internal authoring tool</span>

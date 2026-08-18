@@ -1,0 +1,492 @@
+"""Tests for the /admin/questions screen — the tool's main screen.
+
+Assertions are on markup (elements, classes, data- attributes), never on a bare
+word: the page ships JavaScript containing the same labels it renders, so a
+substring check on a label passes whether or not the element was rendered.
+
+Every test carries an Intent / Success / Feature block. Those blocks are the
+recorded requirement and are never edited: if behavior must change, the
+program changes, or a new test is added alongside with its own block.
+"""
+
+import re
+
+import pytest
+from fastapi.testclient import TestClient
+from pymongo.errors import ServerSelectionTimeoutError
+
+from app.main import app
+from app.models.question import GeneratedQuestion, QuestionOption
+from app.models.skill_badge import DiscoveredBadge
+from app.repositories import questions, skill_badges
+from app.routers import admin_questions as api_module
+
+PAGE = "/admin/questions"
+
+
+@pytest.fixture
+def client() -> TestClient:
+    return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def configured_env(monkeypatch):
+    """The page footer names the storage target, so settings must resolve."""
+    monkeypatch.setenv("MONGODB_URI", "mongodb://test")
+
+
+@pytest.fixture(autouse=True)
+def reset_run_state():
+    api_module._run_state.update(
+        running=False, last_result=None, last_error=None, last_traceback=None
+    )
+    yield
+    api_module._run_state.update(
+        running=False, last_result=None, last_error=None, last_traceback=None
+    )
+
+
+def seed_badge(**overrides) -> None:
+    skill_badges.upsert_badges(
+        [
+            DiscoveredBadge(
+                **{
+                    "slug": "atlas-search",
+                    "name": "Atlas Search",
+                    "description": "Covers Atlas Search indexes and queries.",
+                    "confidence": "high",
+                    "categories": ["search"],
+                    "source_urls": ["https://learn.mongodb.com/atlas-search"],
+                    **overrides,
+                }
+            )
+        ]
+    )
+
+
+def seed_question(stem: str = "Which stage filters documents?", **overrides) -> str:
+    result = questions.insert_questions(
+        [
+            GeneratedQuestion(
+                **{
+                    "stem": stem,
+                    "options": [
+                        QuestionOption(text="$match", is_correct=True, rationale="it filters"),
+                        QuestionOption(text="$project", is_correct=False, rationale="it reshapes"),
+                        QuestionOption(text="$sort", is_correct=False, rationale="it orders"),
+                        QuestionOption(text="$limit", is_correct=False, rationale="it truncates"),
+                    ],
+                    "explanation": "Only $match filters documents.",
+                    "difficulty": "intermediate",
+                    "categories": ["aggregation"],
+                    "skill_badges": ["atlas-search"],
+                    "source_urls": ["https://mongodb.com/docs/match"],
+                    **overrides,
+                }
+            )
+        ]
+    )
+    return result["question_ids"][0]
+
+
+# --- the shell ---
+
+
+def test_the_page_renders_the_shared_shell(client, fake_collection, fake_questions):
+    """
+    Intent: The questions screen is one of several admin screens; it must render
+        inside the shared nav shell so navigation between them exists and is
+        consistent.
+    Success: The page carries the shared navbar with the Questions link marked active.
+    Feature: Admin area — shared page shell.
+    """
+    response = client.get(PAGE)
+    assert response.status_code == 200
+    assert '<nav class="navbar' in response.text
+    assert re.search(r'class="nav-link active"[^>]*\n?\s*href="/admin/questions"', response.text)
+
+
+def test_the_navigation_offers_the_badge_screen(client, fake_collection, fake_questions):
+    """
+    Intent: Generation depends on badges, so an author who needs to fix a badge must be
+        able to reach that screen from here rather than typing a URL.
+    Success: The page links to /admin/skill-badges.
+    Feature: Admin area — navigation between screens.
+    """
+    assert 'href="/admin/skill-badges"' in client.get(PAGE).text
+
+
+def test_an_unreachable_database_is_explained_rather_than_crashing(
+    client, monkeypatch, fake_questions
+):
+    """
+    Intent: A wrong or unlisted connection string is the likeliest setup mistake. A
+        stack trace tells an operator nothing about which variable to fix, and a blank
+        page reads as "no questions yet".
+    Success: The page still returns 200 and shows a danger alert naming the failure.
+    Feature: Question review screen — storage failures are explained.
+    """
+    def explode(*args, **kwargs):
+        raise ServerSelectionTimeoutError("no route to host")
+
+    monkeypatch.setattr(questions, "list_questions", explode)
+    response = client.get(PAGE)
+    assert response.status_code == 200
+    assert 'class="alert alert-danger"' in response.text
+    assert "no route to host" in response.text
+
+
+# --- viewing questions ---
+
+
+def test_a_stored_question_is_shown_with_its_options(client, fake_collection, fake_questions):
+    """
+    Intent: Reviewing a question means reading the stem and all four options together;
+        a listing that showed only stems would make the screen useless for its purpose.
+    Success: The stem and every option text appear in the rendered markup.
+    Feature: Question review screen — questions are readable in full.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    assert 'data-stem="true"' in body
+    assert "Which stage filters documents?" in body
+    for option in ("$match", "$project", "$sort", "$limit"):
+        assert option in body
+
+
+def test_the_correct_answer_is_marked(client, fake_collection, fake_questions):
+    """
+    Intent: A reviewer cannot judge a question without knowing which option is intended
+        to be right. This is an authoring tool, not a quiz, so the answer is shown
+        rather than hidden.
+    Success: Exactly one option is marked correct in the markup.
+    Feature: Question review screen — the intended answer is visible.
+    """
+    seed_question()
+    assert client.get(PAGE).text.count('data-correct="true"') == 1
+
+
+def test_each_options_rationale_is_shown(client, fake_collection, fake_questions):
+    """
+    Intent: The point of the tool is question quality. A distractor is judged by the
+        misconception it claims to catch, so the rationale must be on screen next to
+        the option, not buried in the export.
+    Success: The rationale text of a wrong option is rendered.
+    Feature: Question review screen — per-option rationale is visible.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    assert "it reshapes" in body
+    assert 'data-explanation="true"' in body
+
+
+def test_a_questions_badges_categories_and_difficulty_are_shown(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: These three fields are what the collection is organised by. Shown on the
+        question, a mis-tagged question is obvious during review — which is the only
+        point at which it is cheap to fix.
+    Success: The badge slug, category and difficulty each render as tagged markup.
+    Feature: Question review screen — classification is visible.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    assert 'data-badge-tag="atlas-search"' in body
+    assert 'data-category-tag="aggregation"' in body
+    assert 'data-difficulty="true"' in body
+
+
+def test_an_empty_collection_says_what_to_do_next(client, fake_collection, fake_questions):
+    """
+    Intent: A blank screen is indistinguishable from a broken one. The first-run state
+        must name the action that fills it.
+    Success: With no questions the page renders its empty state.
+    Feature: Question review screen — first-run guidance.
+    """
+    assert 'data-empty="true"' in client.get(PAGE).text
+
+
+def test_filtered_emptiness_is_distinguished_from_an_empty_collection(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: "No questions match these filters" and "no questions exist" call for
+        different actions. Conflating them sends an author to generate questions they
+        already have.
+    Success: With a filter applied and no match, the empty state mentions the filters.
+    Feature: Question review screen — filtered empty state.
+    """
+    seed_question()
+    body = client.get(PAGE, params={"status": "approved"}).text
+    assert 'data-empty="true"' in body
+    assert "match these filters" in body
+
+
+# --- filtering ---
+
+
+def test_the_status_tabs_count_the_questions_in_each_state(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: The counts are how an author sees there is review work waiting without
+        clicking every tab.
+    Success: With one draft, the All and Drafts tabs both show 1 and Approved shows 0.
+    Feature: Question review screen — status tabs with counts.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    tabs = [
+        (label.strip(), count)
+        for label, count in re.findall(
+            r'>([^<>]+?)<span class="badge text-bg-secondary">(\d+)</span>', body
+        )
+    ]
+    assert ("All", "1") in tabs
+    assert ("Drafts", "1") in tabs
+    assert ("Approved", "0") in tabs
+
+
+def test_filtering_by_status_narrows_the_list(client, fake_collection, fake_questions):
+    """
+    Intent: The tabs must actually filter. A tab that changed only the highlight would
+        misrepresent what state the collection is in.
+    Success: Filtering to approved hides the draft question.
+    Feature: Question review screen — status filter.
+    """
+    seed_question()
+    assert "Which stage filters documents?" not in client.get(
+        PAGE, params={"status": "approved"}
+    ).text
+
+
+def test_filtering_by_badge_and_category_narrows_the_list(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Badge and category are the two axes an author browses by — usually "show me
+        what exists for this badge before I generate more". Filters that did not
+        intersect with the tabs would show a misleading view.
+    Success: Each filter returns only the matching question.
+    Feature: Question review screen — filter by badge and category.
+    """
+    seed_question("Search question?", skill_badges=["atlas-search"], categories=["search"])
+    seed_question("Agg question?", skill_badges=["aggregation"], categories=["aggregation"])
+    by_badge = client.get(PAGE, params={"skill_badge": "atlas-search"}).text
+    assert "Search question?" in by_badge and "Agg question?" not in by_badge
+    by_category = client.get(PAGE, params={"category": "aggregation"}).text
+    assert "Agg question?" in by_category and "Search question?" not in by_category
+
+
+def test_the_tabs_keep_the_badge_and_category_filters(client, fake_collection, fake_questions):
+    """
+    Intent: An author working through one badge switches status tabs constantly. If a
+        tab dropped the badge filter they would land in the whole collection and lose
+        their place.
+    Success: A tab link rendered under a badge filter carries that filter too.
+    Feature: Question review screen — filters survive tab changes.
+    """
+    seed_badge()
+    seed_question()
+    body = client.get(PAGE, params={"skill_badge": "atlas-search"}).text
+    assert 'href="/admin/questions?status=draft&skill_badge=atlas-search' in body
+
+
+def test_the_filter_menus_offer_the_badges_and_categories_in_use(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Filters an author has to type are filters they cannot discover. The menus
+        must be built from the data actually stored, not a hardcoded list.
+    Success: The badge menu offers the stored badge and the category menu the stored
+        category.
+    Feature: Question review screen — filter menus built from stored data.
+    """
+    seed_badge()
+    seed_question()
+    body = client.get(PAGE).text
+    assert '<option value="atlas-search"' in body
+    assert '<option value="aggregation"' in body
+
+
+# --- exporting ---
+
+
+def test_the_export_link_carries_the_current_filters(client, fake_collection, fake_questions):
+    """
+    Intent: Export is a stated requirement, and the author expects to get what they are
+        looking at. An export link that ignored the filters would quietly hand over the
+        whole collection.
+    Success: Under a badge filter, the export link requests that filter from the API.
+    Feature: Question export — exports what is on screen.
+    """
+    seed_badge()
+    seed_question()
+    body = client.get(PAGE, params={"status": "approved", "skill_badge": "atlas-search"}).text
+    assert 'id="export-btn"' in body
+    assert "/api/admin/questions?status=approved&skill_badge=atlas-search" in body
+
+
+# --- generating ---
+
+
+def test_the_generate_form_offers_every_badge(client, fake_collection, fake_questions):
+    """
+    Intent: A run is scoped by badge, so the picker must list the badges that exist —
+        including candidates, since an author may want questions for a badge still
+        under review.
+    Success: The picker is a multiple-select containing the stored badge.
+    Feature: Question generation — badge selection.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'id="badge-picker"' in body and "multiple" in body
+    assert "Atlas Search" in body
+
+
+def test_the_generate_form_takes_a_count_material_and_instructions(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Batch size, pasted training material and free-text steering are the three
+        controls an author has over a run. Missing from the form, they are unreachable
+        however well the API supports them.
+    Success: All three inputs are present on the page.
+    Feature: Question generation — author controls on the screen.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'id="count"' in body
+    assert 'id="source-material"' in body
+    assert 'id="instructions"' in body
+
+
+def test_generation_is_not_offered_when_there_are_no_badges(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: With no badges a run cannot be scoped, so offering the button would produce
+        a run that fails. Saying why, and linking to the badge screen, is the useful
+        response.
+    Success: The generate button is disabled and the page explains, linking to badges.
+    Feature: Question generation — blocked without a badge scope.
+    """
+    body = client.get(PAGE).text
+    assert 'data-no-badges="true"' in body
+    assert re.search(r'id="generate-btn"[^>]*disabled', body, re.S)
+
+
+def test_a_run_in_progress_is_reported_when_the_page_loads(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: A run outlives the page — an author reloading, or opening a second tab,
+        must see the run is going rather than starting a second one.
+    Success: With a run marked running, the page starts polling on load.
+    Feature: Question generation — run state survives a page load.
+    """
+    api_module._run_state["running"] = True
+    assert "if (true) { pollStatus(); }" in client.get(PAGE).text
+
+
+def test_a_finished_runs_result_is_shown(client, fake_collection, fake_questions):
+    """
+    Intent: After a reload the run alert is gone, so the page itself must report what
+        the last run produced — otherwise a completed run looks like it did nothing.
+    Success: A success alert reports the number of questions stored and requested.
+    Feature: Question generation — the last run's result is reported.
+    """
+    api_module._run_state["last_result"] = {
+        "inserted": 3,
+        "requested": 5,
+        "run_id": "abcdef1234",
+        "rejected": [],
+    }
+    body = client.get(PAGE).text
+    assert 'class="alert alert-success"' in body
+    assert "3 question(s) stored" in body
+    assert "of 5 requested" in body
+
+
+def test_discarded_questions_are_reported_with_their_reason(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: A run that stored three of five questions must say so and say why, or a
+        prompt or model problem looks like a model with little to say.
+    Success: The rejected questions and their reasons are rendered.
+    Feature: Question generation — discards are reported on screen.
+    """
+    api_module._run_state["last_result"] = {
+        "inserted": 1,
+        "requested": 2,
+        "run_id": "abcdef1234",
+        "rejected": [{"stem": "Broken?", "problem": "2 options, expected 4"}],
+    }
+    body = client.get(PAGE).text
+    assert 'data-rejected="true"' in body
+    assert "2 options, expected 4" in body
+
+
+def test_a_failed_run_is_explained_with_its_trace(client, fake_collection, fake_questions):
+    """
+    Intent: A background failure has nowhere else to surface. Without the message and
+        trace on the page, the author has to go and read server logs to learn that a
+        credential is missing.
+    Success: A danger alert carries the error message and the stack trace.
+    Feature: Question generation — failures are explained on screen.
+    """
+    api_module._run_state.update(
+        last_error="No Anthropic credentials found.",
+        last_traceback="Traceback (most recent call last): RuntimeError",
+    )
+    body = client.get(PAGE).text
+    assert 'class="alert alert-danger"' in body
+    assert "No Anthropic credentials found." in body
+    assert "<details" in body and "RuntimeError" in body
+
+
+def test_the_page_names_where_questions_are_stored(client, fake_collection, fake_questions):
+    """
+    Intent: This tool writes to a shared Atlas cluster. Naming the target on screen is
+        what stops an author generating into the wrong database and not noticing.
+    Success: The footer names the configured database and collection.
+    Feature: Question review screen — storage target is visible.
+    """
+    body = client.get(PAGE).text
+    assert "skill-badge-questions.questions" in body
+
+
+# --- review actions ---
+
+
+def test_each_question_offers_the_review_decisions(client, fake_collection, fake_questions):
+    """
+    Intent: Approving, rejecting and deleting are the review actions the screen exists
+        to provide, and each must be bound to the question it appears on — not to the
+        first one on the page.
+    Success: The row carries the question's id and the three action buttons.
+    Feature: Question review screen — review actions.
+    """
+    question_id = seed_question()
+    body = client.get(PAGE).text
+    assert f'data-question-id="{question_id}"' in body
+    assert 'class="btn btn-sm btn-outline-success js-status" data-status="approved"' in body
+    assert 'class="btn btn-sm btn-outline-secondary js-status" data-status="rejected"' in body
+    assert 'data-delete="true"' in body
+
+
+def test_the_current_state_is_not_offered_as_an_action(client, fake_collection, fake_questions):
+    """
+    Intent: Offering "Approve" on an approved question invites a click that changes
+        nothing and makes the current state harder to read.
+    Success: An approved question offers Reject and Re-open but not Approve.
+    Feature: Question review screen — actions reflect current state.
+    """
+    question_id = seed_question()
+    questions.set_status(question_id, "approved")
+    body = client.get(PAGE).text
+    assert 'data-status="approved"' not in body
+    assert 'data-status="rejected"' in body
+    assert 'data-status="draft"' in body

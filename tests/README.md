@@ -46,6 +46,11 @@ suite from the repository root with quiet output.
 | `test_config.py` | `app/config.py` — credential resolution, defaults, immutability |
 | `test_db.py` | `app/db.py` — Atlas client, pooling, fail-fast on missing credentials |
 | `test_models.py` | `app/models/skill_badge.py` — badge schemas and constraints |
+| `test_models_question.py` | `app/models/question.py` — question schemas and constraints |
+| `test_question_generation.py` | `app/services/question_generation.py` — authoring, extraction, format validation |
+| `test_repositories_questions.py` | `app/repositories/questions.py` — insert, filter, lifecycle |
+| `test_admin_questions_router.py` | `app/routers/admin_questions.py` — question JSON API |
+| `test_admin_questions_page.py` | `app/templates/admin/questions.html` — the main screen |
 | `test_badge_discovery.py` | `app/services/badge_discovery.py` — the two Claude passes |
 | `test_repositories_skill_badges.py` | `app/repositories/skill_badges.py` — upsert, listing, lifecycle |
 | `test_admin_skill_badges_router.py` | `app/routers/admin_skill_badges.py`, `app/main.py` — JSON API under `/api/admin` |

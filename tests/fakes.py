@@ -1,8 +1,8 @@
 """Test doubles: an in-memory MongoDB collection and a fake Anthropic client.
 
 The collection implements only the operators this program uses ($set,
-$setOnInsert, $addToSet, equality/$ne/$exists/$or/$expr filters, projection,
-sort, search-index creation and a cosine $vectorSearch) — enough to assert real
+$setOnInsert, $addToSet, equality/array-membership/$ne/$exists/$or/$expr filters,
+projection, sort, search-index creation and a cosine $vectorSearch) — enough to assert real
 semantics such as "$setOnInsert must not overwrite an existing field".
 
 mongomock is not used: as of mongomock 4.3.0 / pymongo 4.17.0 its
@@ -112,6 +112,11 @@ class FakeCollection:
             elif isinstance(expected, dict) and "$exists" in expected:
                 if (key in doc) != expected["$exists"]:
                     return False
+            elif isinstance(actual, list) and not isinstance(expected, list):
+                # MongoDB matches a scalar against any element of an array field,
+                # which is how questions are filtered by badge and by category.
+                if expected not in actual:
+                    return False
             elif actual != expected:
                 return False
         return True
@@ -169,6 +174,15 @@ class FakeCollection:
         self._apply_update(doc, update, inserting=True)
         self.docs.append(doc)
         return doc["_id"]
+
+    def insert_many(self, docs: list[dict]) -> list[Any]:
+        ids = []
+        for doc in docs:
+            stored = {"_id": self._next_id, **doc}
+            self._next_id += 1
+            self.docs.append(stored)
+            ids.append(stored["_id"])
+        return ids
 
     def delete_one(self, query: dict) -> "FakeDeleteResult":
         for index, doc in enumerate(self.docs):

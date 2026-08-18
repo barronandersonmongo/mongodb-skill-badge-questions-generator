@@ -9,6 +9,7 @@ class Settings:
     mongodb_uri: str
     database: str = "skill-badge-questions"
     skill_badges_collection: str = "skill_badges"
+    questions_collection: str = "questions"
     # Claude Opus 5: adaptive thinking is on by default; effort tunes depth.
     model: str = "claude-opus-5"
     effort: str = "high"

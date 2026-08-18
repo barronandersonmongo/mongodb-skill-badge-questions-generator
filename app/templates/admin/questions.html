@@ -1,0 +1,404 @@
+{% extends "base.html" %}
+{% set api = "/api/admin/questions" %}
+
+{% block title %}Questions — Skill Badge Questions{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <div>
+    <h1 class="h3 mb-1">Questions</h1>
+    <p class="text-body-secondary mb-0">
+      Review the questions already written, or generate new ones. A generation run
+      is scoped to the skill badge(s) you pick — the badge decides what is in
+      subject matter. New questions arrive as <strong>drafts</strong> for you to
+      approve or reject.
+    </p>
+  </div>
+  <div class="text-nowrap">
+    <button class="btn btn-primary" id="generate-btn" type="button"
+            data-bs-toggle="modal" data-bs-target="#generate-modal"
+            {% if not badges %}disabled{% endif %}>
+      Generate questions
+    </button>
+    <a class="btn btn-outline-secondary" id="export-btn" target="_blank" rel="noopener"
+       href="{{ api }}?{% if status_filter %}status={{ status_filter }}&{% endif %}{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
+      Export JSON
+    </a>
+  </div>
+</div>
+
+<div id="run-alert" class="alert d-none" role="status"></div>
+
+{% if storage_error %}
+<div class="alert alert-danger">
+  <strong>Cannot reach MongoDB.</strong>
+  Check <span class="font-monospace">PTM_HACKATHON_CONNECTION_STRING</span> and that
+  your IP is on the Atlas access list.
+  <div class="small font-monospace mt-1">{{ storage_error }}</div>
+</div>
+{% elif not badges %}
+<div class="alert alert-warning" data-no-badges="true">
+  <strong>No skill badges yet.</strong>
+  Questions are scoped by badge, so there is nothing to generate against.
+  <a href="/admin/skill-badges">Sync the badge catalog</a> first.
+</div>
+{% endif %}
+
+{% if last_error %}
+<div class="alert alert-danger">
+  <strong>Last generation run failed.</strong>
+  <div class="small mt-1">{{ last_error }}</div>
+  {% if last_traceback %}
+  <details class="mt-2">
+    <summary class="small">Show stack trace</summary>
+    <pre class="small font-monospace mb-0 mt-2 p-2 bg-body rounded border overflow-auto"
+         style="max-height: 20rem;">{{ last_traceback }}</pre>
+  </details>
+  {% endif %}
+</div>
+{% elif last_result %}
+<div class="alert alert-success">
+  <strong>Last run:</strong>
+  {{ last_result.inserted }} question(s) stored
+  of {{ last_result.requested }} requested
+  {% if last_result.run_id %}<span class="text-body-secondary small">(run {{ last_result.run_id[:8] }})</span>{% endif %}
+  {% if last_result.rejected %}
+  <details class="mt-2">
+    <summary class="small" data-rejected="true">
+      {{ last_result.rejected | length }} discarded: not a usable four-option question
+    </summary>
+    <ul class="small mb-0 mt-2">
+      {% for item in last_result.rejected %}
+      <li>{{ item.problem }} — <span class="fst-italic">{{ item.stem }}</span></li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="row g-2 align-items-end mb-2">
+  <div class="col-auto">
+    <label class="form-label small mb-1" for="badge-filter">Skill badge</label>
+    <select class="form-select form-select-sm" id="badge-filter" data-filter="skill_badge">
+      <option value="">All badges</option>
+      {% for badge in badges %}
+      <option value="{{ badge.slug }}" {% if badge_filter == badge.slug %}selected{% endif %}>
+        {{ badge.name }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <label class="form-label small mb-1" for="category-filter">Category</label>
+    <select class="form-select form-select-sm" id="category-filter" data-filter="category">
+      <option value="">All categories</option>
+      {% for category in categories %}
+      <option value="{{ category }}" {% if category_filter == category %}selected{% endif %}>
+        {{ category }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+
+<ul class="nav nav-tabs mb-0">
+  {% for tab, label in tabs %}
+  <li class="nav-item">
+    <a class="nav-link {% if status_filter == tab %}active{% endif %}"
+       href="/admin/questions?{% if tab %}status={{ tab }}&{% endif %}{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
+      {{ label }} <span class="badge text-bg-secondary">{{ counts.get(tab, 0) }}</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+
+<div class="card border-top-0 rounded-top-0">
+  <div class="list-group list-group-flush">
+    {% for question in questions %}
+    <div class="list-group-item py-3" data-question-id="{{ question.question_id }}">
+      <div class="d-flex justify-content-between align-items-start gap-3">
+        <div class="flex-grow-1">
+          <div class="fw-semibold mb-2" data-stem="true">{{ question.stem }}</div>
+          <ol class="mb-2" type="A">
+            {% for option in question.options %}
+            <li class="{% if option.is_correct %}fw-semibold{% endif %}"
+                {% if option.is_correct %}data-correct="true"{% endif %}>
+              {{ option.text }}
+              {% if option.is_correct %}
+              <span class="badge text-bg-success">correct</span>
+              {% endif %}
+              {% if option.rationale %}
+              <div class="small text-body-secondary">{{ option.rationale }}</div>
+              {% endif %}
+            </li>
+            {% endfor %}
+          </ol>
+          {% if question.explanation %}
+          <div class="small text-body-secondary" data-explanation="true">
+            <strong>Why:</strong> {{ question.explanation }}
+          </div>
+          {% endif %}
+          <div class="mt-2">
+            <span class="badge text-bg-{{ difficulty_styles.get(question.difficulty, 'secondary') }}"
+                  data-difficulty="true">{{ question.difficulty }}</span>
+            {% for slug in question.skill_badges %}
+            <span class="badge text-bg-light border" data-badge-tag="{{ slug }}">{{ slug }}</span>
+            {% endfor %}
+            {% for category in question.categories %}
+            <span class="badge text-bg-light border" data-category-tag="{{ category }}">{{ category }}</span>
+            {% endfor %}
+          </div>
+          {% if question.source_urls %}
+          <div class="mt-2">
+            {% for url in question.source_urls %}
+            <a href="{{ url }}" target="_blank" rel="noopener"
+               class="d-block small text-truncate" style="max-width: 32rem;">{{ url }}</a>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+        <div class="text-end text-nowrap">
+          <span class="badge text-bg-{{ status_styles.get(question.status, 'secondary') }} mb-2 d-block">
+            {{ question.status }}
+          </span>
+          {% if question.status != "approved" %}
+          <button class="btn btn-sm btn-outline-success js-status" data-status="approved">Approve</button>
+          {% endif %}
+          {% if question.status != "rejected" %}
+          <button class="btn btn-sm btn-outline-secondary js-status" data-status="rejected">Reject</button>
+          {% endif %}
+          {% if question.status != "draft" %}
+          <button class="btn btn-sm btn-outline-primary js-status" data-status="draft">Re-open</button>
+          {% endif %}
+          <button class="btn btn-sm btn-outline-danger js-delete" data-delete="true">Delete</button>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="list-group-item text-center text-body-secondary py-5" data-empty="true">
+      {% if status_filter or badge_filter or category_filter %}
+        No questions match these filters.
+      {% else %}
+        No questions yet. Run <strong>Generate questions</strong> to write the first.
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<p class="text-body-secondary small mt-3 mb-0">
+  Stored in <span class="font-monospace">{{ database }}.{{ collection }}</span>.
+  <strong>Export JSON</strong> returns exactly the questions matching the filters above.
+</p>
+
+<div class="modal fade" id="generate-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5">Generate questions</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-body-secondary">
+          Claude drafts the questions, then they are validated into the four-option
+          format before being stored. This takes minutes, not seconds — you can
+          leave this page open and it will report when done.
+        </p>
+        <label for="badge-picker" class="form-label">Skill badges</label>
+        <select class="form-select" id="badge-picker" multiple size="8">
+          {% for badge in badges %}
+          <option value="{{ badge.slug }}" {% if badge_filter == badge.slug %}selected{% endif %}>
+            {{ badge.name }}{% if badge.status != "approved" %} ({{ badge.status }}){% endif %}
+          </option>
+          {% endfor %}
+        </select>
+        <div class="form-text">
+          Hold Ctrl (or Cmd) to pick several. The badges scope what the questions
+          may test.
+        </div>
+
+        <label for="count" class="form-label mt-3">How many questions</label>
+        <input class="form-control" id="count" type="number" value="5" min="1" max="25">
+
+        <label for="source-material" class="form-label mt-3">
+          Source material (optional)
+        </label>
+        <textarea class="form-control" id="source-material" rows="6"
+                  placeholder="Paste training material, course notes, or reference text to write from."></textarea>
+        <div class="form-text">
+          Preferred over anything Claude finds on its own. This is where internal
+          training content goes — the server cannot reach Glean or a cluster itself.
+        </div>
+
+        <label for="instructions" class="form-label mt-3">
+          Extra instructions (optional)
+        </label>
+        <textarea class="form-control" id="instructions" rows="2"
+                  placeholder="e.g. advanced only; focus on $lookup"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="start-run">Start run</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = "{{ api }}";
+const alertBox = document.getElementById("run-alert");
+let elapsedTimer = null;
+let startedAt = null;
+
+function formatElapsed(ms) {
+  const total = Math.floor(ms / 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return pad(Math.floor(total / 3600)) + ":" + pad(Math.floor((total % 3600) / 60)) +
+    ":" + pad(total % 60);
+}
+
+function showAlert(kind, message, {timed = false} = {}) {
+  alertBox.className = "alert alert-" + kind;
+  alertBox.textContent = message;
+
+  if (!timed) {
+    stopElapsed();
+    return;
+  }
+  // Runs take minutes, so show how long this one has been going.
+  if (startedAt === null) startedAt = Date.now();
+  const label = document.createElement("span");
+  label.className = "ms-2 font-monospace";
+  label.dataset.elapsed = "true";
+  label.textContent = formatElapsed(Date.now() - startedAt);
+  alertBox.append(label);
+  if (elapsedTimer === null) {
+    elapsedTimer = setInterval(() => {
+      const current = alertBox.querySelector("[data-elapsed]");
+      if (current) current.textContent = formatElapsed(Date.now() - startedAt);
+    }, 1000);
+  }
+}
+
+function stopElapsed() {
+  if (elapsedTimer !== null) {
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+  }
+  startedAt = null;
+}
+
+async function pollStatus() {
+  const response = await fetch(API + "/generate/status");
+  const state = await response.json();
+  if (state.running) {
+    showAlert("info", "Writing questions — this takes a few minutes…", {timed: true});
+    setTimeout(pollStatus, 3000);
+    return;
+  }
+  if (state.last_error) {
+    showAlert("danger", "Run failed: " + state.last_error);
+    if (state.last_traceback) {
+      const details = document.createElement("details");
+      details.className = "mt-2";
+      const summary = document.createElement("summary");
+      summary.className = "small";
+      summary.textContent = "Show stack trace";
+      const pre = document.createElement("pre");
+      pre.className = "small font-monospace mb-0 mt-2 p-2 bg-body rounded border overflow-auto";
+      pre.style.maxHeight = "20rem";
+      pre.textContent = state.last_traceback;   // textContent, never innerHTML
+      details.append(summary, pre);
+      alertBox.append(details);
+    }
+    return;
+  }
+  const took = startedAt === null ? "" : " Took " + formatElapsed(Date.now() - startedAt) + ".";
+  showAlert("success", "Run finished." + took + " Reloading…");
+  window.location.reload();
+}
+
+// Filters are links in effect: changing one reloads the page with it applied, so
+// the current view is always in the URL and can be shared or bookmarked.
+document.querySelectorAll("[data-filter]").forEach((select) => {
+  select.addEventListener("change", () => {
+    const url = new URL(window.location.href);
+    if (select.value) {
+      url.searchParams.set(select.dataset.filter, select.value);
+    } else {
+      url.searchParams.delete(select.dataset.filter);
+    }
+    window.location.assign(url.toString());
+  });
+});
+
+document.getElementById("start-run").addEventListener("click", async () => {
+  const picker = document.getElementById("badge-picker");
+  const slugs = Array.from(picker.selectedOptions).map((o) => o.value);
+  if (slugs.length === 0) {
+    window.alert("Pick at least one skill badge — it scopes what the questions test.");
+    return;
+  }
+  bootstrap.Modal.getInstance(document.getElementById("generate-modal")).hide();
+  const response = await fetch(API + "/generate", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      skill_badges: slugs,
+      count: Number(document.getElementById("count").value),
+      source_material: document.getElementById("source-material").value.trim() || null,
+      extra_instructions: document.getElementById("instructions").value.trim() || null,
+    }),
+  });
+  if (response.status === 409) {
+    showAlert("warning", "A generation run is already in progress.");
+    return;
+  }
+  if (!response.ok) {
+    showAlert("danger", "Could not start the run (HTTP " + response.status + ").");
+    return;
+  }
+  pollStatus();
+});
+
+document.querySelectorAll(".js-status").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const id = button.closest("[data-question-id]").dataset.questionId;
+    button.disabled = true;
+    const response = await fetch(API + "/" + encodeURIComponent(id) + "/status", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({status: button.dataset.status}),
+    });
+    if (!response.ok) {
+      button.disabled = false;
+      showAlert("danger", "Could not update the question (HTTP " + response.status + ").");
+      return;
+    }
+    window.location.reload();
+  });
+});
+
+document.querySelectorAll(".js-delete").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const id = button.closest("[data-question-id]").dataset.questionId;
+    if (!window.confirm(
+      "Permanently delete this question?\n\nThis cannot be undone — nothing can " +
+      "re-create it. Reject it instead if you may want it back."
+    )) return;
+    const response = await fetch(API + "/" + encodeURIComponent(id), {method: "DELETE"});
+    if (!response.ok) {
+      showAlert("danger", "Could not delete the question (HTTP " + response.status + ").");
+      return;
+    }
+    window.location.reload();
+  });
+});
+
+// A run may already be going when the page loads (started elsewhere, or a reload).
+if ({{ "true" if running else "false" }}) { pollStatus(); }
+</script>
+{% endblock %}
