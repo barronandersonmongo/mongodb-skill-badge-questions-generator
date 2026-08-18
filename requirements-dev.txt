@@ -1,0 +1,4 @@
+-r requirements.txt
+coverage>=7.6
+httpx>=0.28
+pytest>=8.3
