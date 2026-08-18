@@ -134,6 +134,31 @@ options with the correct one marked, each option's rationale, the explanation, t
 difficulty, the badges and categories, and the sources — everything needed to
 judge quality. Per question: approve, reject, re-open, delete.
 
+**Embedding text for vector search.** Every stored question carries
+`embedding_text`, the stem and explanation as one labelled block:
+
+```
+Question: Which stage filters documents first in an aggregation pipeline?
+Explanation: $match placed before $project lets the index be used.
+```
+
+That is the path to point an Atlas Vector Search index at. Use **autoEmbed**, so
+Atlas embeds both the stored text and the query — this program stores no vectors,
+the same arrangement as the badge `description` index. The labels are part of the
+embedded string deliberately: an unlabelled concatenation reads as one run-on
+sentence and loses the cue about which part is the question and which is the
+reasoning behind its answer. An absent explanation drops its section rather than
+embedding a dangling label.
+
+The field is composed on write, so a question is embeddable the moment it lands.
+For questions written before the field existed, `POST
+/api/questions/backfill-embedding-text` composes it — safe to re-run, and it only
+writes documents whose text is missing or has drifted from the current stem and
+explanation, so autoEmbed is not asked to re-embed unchanged text.
+
+Note the index name is not referenced anywhere in this program yet; nothing reads
+the index so far. Wire it in once it exists.
+
 **Filtering and export.** Filter by skill badge, category and status; the filters
 intersect and live in the URL, so a view can be shared. **Export JSON** returns
 exactly the filtered set from the same endpoint the screen reads.
@@ -144,6 +169,7 @@ exactly the filtered set from the same endpoint the screen reads.
 | `POST` | `/api/questions/generate` | Start a generation run |
 | `GET` | `/api/questions/generate/status` | Poll a run |
 | `GET` | `/api/questions` | List / export questions, same filters |
+| `POST` | `/api/questions/backfill-embedding-text` | Compose `embedding_text` where missing or stale |
 | `POST` | `/api/questions/{id}/status` | Approve, reject or re-open |
 | `DELETE` | `/api/questions/{id}` | Delete a question |
 

@@ -126,6 +126,23 @@ def list_questions(
     return questions.list_questions(status, skill_badge, category)
 
 
+@router.post("/backfill-embedding-text")
+def backfill_embedding_text() -> dict:
+    """Compose the embedding field for any stored question missing it.
+
+    Questions written before the field existed carry none, and a vector index
+    skips a document whose indexed path is absent — which looks identical to a
+    question that was never written. Safe to run repeatedly.
+    """
+    result = questions.backfill_embedding_text()
+    logger.info(
+        "Embedding-text backfill: %d written, %d already correct",
+        result["written"],
+        result["already_correct"],
+    )
+    return result
+
+
 @router.post("/{question_id}/status")
 def update_status(question_id: str, request: StatusRequest) -> dict:
     if not questions.set_status(question_id, request.status):

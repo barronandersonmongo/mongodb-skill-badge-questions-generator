@@ -19,6 +19,29 @@ from pydantic import BaseModel, Field
 
 DIFFICULTIES = ("foundational", "intermediate", "advanced")
 
+# Labels inside the combined text. They are part of the embedded string on
+# purpose: an unlabelled concatenation reads as one run-on sentence, and the
+# labels give the embedding model the same cue a reader gets about which part is
+# the question and which is the reasoning behind its answer.
+STEM_LABEL = "Question"
+EXPLANATION_LABEL = "Explanation"
+
+
+def combined_text(stem: str, explanation: str | None) -> str:
+    """The stem and explanation as one labelled block, for embedding.
+
+    This is the field an Atlas Vector Search index with autoEmbed points at, so
+    Atlas embeds it — this program stores no vectors, exactly as with badge
+    descriptions.
+
+    An absent explanation drops its section rather than leaving a dangling label,
+    which would otherwise be embedded as meaningful text.
+    """
+    parts = [f"{STEM_LABEL}: {(stem or '').strip()}"]
+    if explanation and explanation.strip():
+        parts.append(f"{EXPLANATION_LABEL}: {explanation.strip()}")
+    return "\n".join(parts)
+
 
 class QuestionOption(BaseModel):
     text: str = Field(description="The answer option as a candidate would read it")
@@ -81,3 +104,5 @@ class QuestionDoc(GeneratedQuestion):
     created_at: datetime
     generation_run_id: str
     status: Literal["draft", "approved", "rejected"] = "draft"
+    # Written on insert by the repository; the path a vector index points at.
+    embedding_text: str = ""

@@ -353,3 +353,33 @@ def test_a_new_run_does_not_inherit_the_previous_runs_start_time(
     second = client.get(API + "/generate/status").json()["started_at"]
     assert second >= first
     assert client.get(API + "/generate/status").json()["finished_at"] >= second
+
+
+def test_the_backfill_endpoint_composes_missing_embedding_text(client, fake_questions):
+    """
+    Intent: The questions stored before this field existed need it, and asking someone to
+        open a Mongo shell to run a one-off script is how a step like that gets skipped —
+        leaving a vector index that quietly indexes nothing.
+    Success: POST /backfill-embedding-text writes the field and reports the counts.
+    Feature: Question embedding text — backfill is reachable from the API.
+    """
+    fake_questions.docs.append(
+        {"question_id": "old1", "stem": "An older question?", "explanation": "Because."}
+    )
+    response = client.post(API + "/backfill-embedding-text")
+    assert response.status_code == 200
+    assert response.json() == {"written": 1, "already_correct": 0}
+    assert fake_questions.docs[0]["embedding_text"].startswith("Question: An older question?")
+
+
+def test_the_backfill_is_safe_to_run_twice(client, fake_questions):
+    """
+    Intent: An operator will press this more than once, and it must not rewrite every
+        document each time — with autoEmbed that would re-embed unchanged text and cost
+        money for no change.
+    Success: A second call reports nothing written.
+    Feature: Question embedding text — backfill is idempotent.
+    """
+    questions.insert_questions([make()])
+    client.post(API + "/backfill-embedding-text")
+    assert client.post(API + "/backfill-embedding-text").json()["written"] == 0

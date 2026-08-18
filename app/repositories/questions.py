@@ -17,9 +17,14 @@ from pymongo.collection import Collection
 
 from app.config import get_settings
 from app.db import get_database
-from app.models.question import GeneratedQuestion
+from app.models.question import GeneratedQuestion, combined_text
 
 STATUSES = ("draft", "approved", "rejected")
+
+# The field a vector search index is expected to point at. Kept as a named
+# constant because it is part of an external contract: an Atlas index definition
+# names this path, so renaming the field silently breaks that index.
+EMBEDDING_FIELD = "embedding_text"
 
 # The stored bytes of a question are small, so listings carry the whole document
 # apart from Mongo's own key, which is not part of this program's model.
@@ -57,6 +62,9 @@ def insert_questions(questions: list[GeneratedQuestion]) -> dict[str, Any]:
                 "created_at": now,
                 "generation_run_id": run_id,
                 "status": "draft",
+                # Composed on write, so a question is embeddable the moment it
+                # lands rather than after some later maintenance step.
+                EMBEDDING_FIELD: combined_text(question.stem, question.explanation),
             }
         )
     collection().insert_many(docs)
@@ -103,6 +111,30 @@ def delete_question(question_id: str) -> bool:
     delete really is final — the UI asks first.
     """
     return collection().delete_one({"question_id": question_id}).deleted_count == 1
+
+
+def backfill_embedding_text() -> dict[str, Any]:
+    """Compose the embedding field for stored questions that lack it, or drifted.
+
+    Needed because questions written before the field existed carry none, and a
+    vector index would silently skip them — an empty search result looks the same
+    as a question that does not exist. Recomposing when the text no longer matches
+    the stem and explanation also covers a question edited by hand in Atlas.
+    """
+    written, already_correct = 0, 0
+    for doc in collection().find(
+        {}, {"_id": False, "question_id": True, "stem": True, "explanation": True,
+             EMBEDDING_FIELD: True}
+    ):
+        wanted = combined_text(doc.get("stem", ""), doc.get("explanation"))
+        if doc.get(EMBEDDING_FIELD) == wanted:
+            already_correct += 1
+            continue
+        collection().update_one(
+            {"question_id": doc["question_id"]}, {"$set": {EMBEDDING_FIELD: wanted}}
+        )
+        written += 1
+    return {"written": written, "already_correct": already_correct}
 
 
 def categories_in_use() -> list[str]:

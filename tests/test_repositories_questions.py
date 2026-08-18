@@ -239,3 +239,91 @@ def test_the_repository_targets_the_configured_questions_collection(monkeypatch)
     resolved = questions.collection()
     assert resolved.name == "questions"
     assert resolved.database.name == "skill-badge-questions"
+
+
+# --- the combined field a vector index points at ---
+
+
+def test_a_stored_question_carries_the_combined_embedding_text(fake_questions):
+    """
+    Intent: The field exists to be the path an Atlas auto-embedding index points at. If
+        it were only composed by some later maintenance step, every freshly generated
+        question would be missing from the index until that step ran.
+    Success: A question stored by a generation run already carries the combined text.
+    Feature: Question embedding text — composed on write.
+    """
+    questions.insert_questions([make()])
+    stored = fake_questions.docs[0]
+    assert stored["embedding_text"] == (
+        "Question: Which stage filters documents?\nExplanation: $match filters."
+    )
+
+
+def test_the_embedding_field_has_a_stable_name(fake_questions):
+    """
+    Intent: An Atlas index definition names this path, and that definition lives outside
+        this repository. Renaming the field would silently stop the index matching
+        anything, with no error anywhere in this program.
+    Success: The constant and the stored key are both "embedding_text".
+    Feature: Question embedding text — stable external contract.
+    """
+    assert questions.EMBEDDING_FIELD == "embedding_text"
+    questions.insert_questions([make()])
+    assert questions.EMBEDDING_FIELD in fake_questions.docs[0]
+
+
+def test_the_combined_text_is_returned_by_listings(fake_questions):
+    """
+    Intent: The listing is the export. Omitting the embedded text would make the exported
+        JSON an incomplete copy of the document, so a re-import could not reproduce what
+        the index was built from.
+    Success: The field appears on a listed question.
+    Feature: Question export — includes the embedding text.
+    """
+    questions.insert_questions([make()])
+    assert "embedding_text" in questions.list_questions()[0]
+
+
+def test_a_question_written_before_the_field_existed_is_backfilled(fake_questions):
+    """
+    Intent: A vector index skips a document whose indexed path is absent, and an empty
+        search result is indistinguishable from a question that was never written. Older
+        questions must therefore be able to gain the field without being regenerated.
+    Success: The backfill composes the field for a document that has none.
+    Feature: Question embedding text — backfill for existing questions.
+    """
+    fake_questions.docs.append(
+        {"question_id": "old1", "stem": "An older question?", "explanation": "Because."}
+    )
+    result = questions.backfill_embedding_text()
+    assert result["written"] == 1
+    assert fake_questions.docs[0]["embedding_text"] == (
+        "Question: An older question?\nExplanation: Because."
+    )
+
+
+def test_the_backfill_leaves_correct_documents_alone(fake_questions):
+    """
+    Intent: The backfill is safe to re-run, so it must not rewrite every document each
+        time — that would be a full collection write on every invocation and, with
+        autoEmbed, could trigger needless re-embedding of unchanged text.
+    Success: A question whose field already matches is reported as correct, not written.
+    Feature: Question embedding text — backfill is idempotent.
+    """
+    questions.insert_questions([make()])
+    result = questions.backfill_embedding_text()
+    assert result == {"written": 0, "already_correct": 1}
+
+
+def test_the_backfill_recomposes_text_that_no_longer_matches(fake_questions):
+    """
+    Intent: A stem corrected by hand in Atlas would leave the embedded text describing the
+        old wording, so vector search would keep matching on text no longer shown to
+        anyone. Drift has to be repairable.
+    Success: A stale combined value is rewritten from the current stem and explanation.
+    Feature: Question embedding text — drift is repaired.
+    """
+    questions.insert_questions([make()])
+    fake_questions.docs[0]["stem"] = "A corrected stem?"
+    questions.backfill_embedding_text()
+    assert fake_questions.docs[0]["embedding_text"].startswith("Question: A corrected stem?")

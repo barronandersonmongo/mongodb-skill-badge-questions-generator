@@ -89,3 +89,51 @@ def test_a_malformed_option_list_is_accepted_by_the_schema():
     """
     result = question(options=[option("a"), option("b")])
     assert len(result.options) == 2
+
+
+# --- the combined field a vector index points at ---
+
+
+def test_the_combined_text_labels_the_stem_and_the_explanation():
+    """
+    Intent: The combined field is what an Atlas auto-embedding index embeds. Without
+        labels it reads as one run-on sentence, and the embedding loses the cue a reader
+        gets about which part is the question and which is the reasoning behind its
+        answer.
+    Success: Both parts appear under their own labels.
+    Feature: Question embedding text — labelled stem and explanation.
+    """
+    from app.models.question import combined_text
+
+    result = combined_text("Which stage filters documents?", "Only $match filters.")
+    assert result == "Question: Which stage filters documents?\nExplanation: Only $match filters."
+
+
+def test_a_missing_explanation_leaves_no_dangling_label():
+    """
+    Intent: An empty explanation with its label still attached would embed the word
+        "Explanation" as though it were content, pulling every such question together in
+        vector space for a reason that has nothing to do with the subject.
+    Success: With no explanation, only the question section is produced.
+    Feature: Question embedding text — no empty sections.
+    """
+    from app.models.question import combined_text
+
+    assert combined_text("A stem", "") == "Question: A stem"
+    assert combined_text("A stem", None) == "Question: A stem"
+    assert combined_text("A stem", "   ") == "Question: A stem"
+
+
+def test_the_combined_text_is_stripped_of_incidental_whitespace():
+    """
+    Intent: A stem or explanation arriving with leading or trailing newlines would embed
+        that whitespace and make the stored text awkward to read in Atlas when checking
+        what was indexed.
+    Success: Surrounding whitespace is removed from both parts.
+    Feature: Question embedding text — clean stored value.
+    """
+    from app.models.question import combined_text
+
+    assert combined_text("  a stem\n", "\n an explanation  ") == (
+        "Question: a stem\nExplanation: an explanation"
+    )
