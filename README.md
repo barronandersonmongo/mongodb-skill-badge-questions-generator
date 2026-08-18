@@ -70,6 +70,188 @@ credentials from the environment, MongoDB is an in-memory fake
 > `mongomock` is deliberately not used — as of mongomock 4.3.0 / pymongo 4.17.0
 > its `bulk_write` path breaks on pymongo's newer `add_update()` signature.
 
+## Implementation strategies
+
+These are the recurring decisions behind the features below. They are written down
+because each one has already been re-derived at least once, and because a change that
+quietly breaks one of them looks fine in review.
+
+### 1. Every view is a URL
+
+State that decides what you are looking at lives in the URL, not in the page. Filters,
+searches, tabs and drill-downs are all query parameters, so any view can be linked,
+bookmarked, shared in Slack, or cited from a question.
+
+| View | Address |
+|---|---|
+| Questions, filtered | `/?status=&skill_badge=&category=` |
+| Questions, ranked by meaning | `/?q=joining+collections` |
+| Export of exactly that view | `/api/questions?status=&skill_badge=&category=` |
+| Badge review, by state | `/admin/skill-badges?status=candidate` |
+| One documentation source | `/admin/docs/source?source=…&q=` |
+| One documentation page | `/admin/docs/page?url=…` |
+
+Consequences that are deliberate: switching a status tab preserves the badge and
+category filters; the export link is built from the same parameters as the screen, so
+it cannot disagree with what is displayed; and changing a filter navigates rather than
+mutating a hidden variable.
+
+The rule for new screens: if a reader could want to send someone else *this*, it needs
+to be in the address bar.
+
+### 2. Server-rendered, with JavaScript only where it earns its place
+
+Jinja2 templates and Bootstrap from a CDN, no build step, no framework. Every list is
+rendered server-side so it is readable without JavaScript. JavaScript is used for four
+things only: polling a background run, posting a review decision, navigating when a
+filter changes, and rendering Markdown.
+
+Tests therefore assert on **markup** — an element, a class, a `data-` attribute — never
+on a bare word, because the templates ship JavaScript containing the same labels they
+render. Where no stable hook exists, add a `data-` attribute rather than matching prose.
+
+### 3. Long work runs in the background and is timed on the server
+
+Anything that calls a model or crawls a site runs as a background task with its own run
+state, and the page polls for status. Each job — question generation, badge sync,
+duplicate sweep, documentation refresh — holds separate state, so one never reports or
+blocks another.
+
+Run state carries `started_at`, `finished_at`, and the endpoint returns `server_time`
+alongside it. The page computes elapsed time from those, correcting for clock skew.
+This is why the timer survives a reload or a trip to another screen: the browser is not
+the thing that remembers when the run began.
+
+### 4. Failures are reported, never swallowed
+
+A background failure has nowhere to surface on its own. Every run captures the error
+and its traceback into run state, and the screen shows both — an operator should not
+have to read server logs to discover that a credential is missing.
+
+Per-item failures are collected rather than raised: one unreachable page must not lose
+the thousands that fetched cleanly. Long failure lists are capped for display while the
+true count is reported, so a bad network does not put thousands of entries into memory
+and onto a page.
+
+The state that must never be silently produced is a **clean result that was not
+actually checked** — "screening did not run" and "screened and found nothing" are
+different, and the screen says which.
+
+### 5. Never lose work that has already been paid for
+
+By the time a follow-up step runs, the expensive part is done. So:
+
+- a malformed question is discarded and reported, but never fails the batch it arrived in;
+- if cross-badge attribution fails, the questions are still stored under the badges they
+  were written for;
+- if duplicate screening cannot run, the questions are still stored, unscreened, and the
+  screen says so;
+- if a documentation crawl stores nothing, the previous corpus is left intact rather than
+  swept away.
+
+### 6. Cheap and deterministic first, expensive and probabilistic second
+
+Where a model or a paid service makes a judgement, something cheap narrows the field
+first, and the narrowing is never allowed to make the decision:
+
+- duplicate detection shortlists with `$vectorSearch` and decides with `$rerank`;
+- the score floor exists to trim cost, not to classify — a pair below it is simply never
+  put to the reranker;
+- badge attribution runs after the format check, so a question about to be discarded is
+  never catalogued;
+- nothing calls out at all when there is nothing to compare.
+
+### 7. Machine runs never overwrite human decisions
+
+Review is the product of this tool, so a re-run must not undo it. Status is set on
+insert only; a corrected badge title and curated links are locked against later syncs;
+and when a merge or a duplicate sweep must choose a survivor, it prefers the record
+carrying review work — approved over draft, curated over machine-written.
+
+### 8. Model output is validated deterministically
+
+Schemas are permissive on arrival and the rules are enforced afterwards, in code:
+exactly four options, exactly one correct, no repeated or empty options, a non-empty
+stem, badge slugs that name a real badge, positional answers bounds-checked against
+what was sent. A schema strict enough to reject one bad question would fail the whole
+batch and lose the good ones.
+
+Refusals, truncated structured output and missing parsed results are errors — never
+read as "the model found nothing", which is indistinguishable from a correct empty
+answer.
+
+### 9. Fetched content is data, never instructions or markup
+
+Documentation pages, search results and log lines are content this program did not
+write. They go into a prompt as clearly-labelled reference material, and into a page as
+data: the Markdown viewer receives page text as JSON and sanitises it before it reaches
+the document; the log viewer and every traceback are written with `textContent`. No
+endpoint accepts a file path — the log viewer serves one known file and takes no path
+parameter at all, because there are no authorizations here to fall back on.
+
+### 10. Configuration from the environment; external contracts as named constants
+
+Every setting resolves from the environment through one frozen `Settings` object, and
+nothing that identifies infrastructure is defaulted in code that lives in a public
+repository. Logging is deliberately configured *without* `Settings`, because `Settings`
+requires a database connection string and "cannot reach Atlas" is exactly what someone
+comes to the log to find out.
+
+Anything named outside this repository is a constant, not a literal: the vector index
+name and the `embedding_text` field path are referenced by an Atlas index definition
+created by hand, so renaming either would silently stop the index matching anything
+with no error raised here.
+
+### 11. Storage shapes follow the way things are read
+
+- Many-to-many is an array: `categories` and `skill_badges` on a question, so one
+  question is findable under every badge it serves.
+- Identity is explicit and stable — a badge is its slug, a question its generated
+  `question_id`, a documentation page its URL. Nothing derives identity from content.
+- Every field a screen filters on is indexed; identity fields are unique.
+- Listings project away bulk (`image_data`, page `text`) so a screen render never
+  carries megabytes it will not display.
+- A refresh that replaces a collection stamps each document with its run and sweeps
+  what the run did not touch, rather than emptying first — the same end state, without a
+  window where the data is gone.
+- `content_hash` distinguishes "unchanged" from "updated", which is what makes a
+  re-crawl cheap and the reported counts meaningful.
+
+### 12. Atlas does the embedding and the reranking
+
+The vector index uses `autoEmbed`, and reranking uses the native `$rerank` stage in the
+same aggregation. This program stores no vectors, needs no model API key for retrieval,
+and makes no second round trip. The consequence to preserve: retrieval quality is a
+property of the index definition and the pipeline, not of client code.
+
+### 13. Tests are the recorded requirements
+
+Every test carries an `Intent` / `Success` / `Feature` block, and those blocks are never
+edited. When a requirement genuinely changes — as several have — the test is **replaced**
+with a new block that records the new requirement and says what it supersedes, rather
+than quietly relaxed to match the code.
+
+The suite is hermetic: no network, no Atlas, no model API. Credentials are stripped by
+an autouse fixture, MongoDB is an in-memory fake that implements real operator
+semantics, the Anthropic client is a scripted double, and HTTP is a local stub server.
+When a fake diverges from real behaviour it gets fixed — a fake that returns the wrong
+shape lets a test pass while the code asks for fields it will never receive.
+
+### 14. Two areas, separated by audience rather than permission
+
+Authoring lives at the root; curation lives under `/admin`. There are no authorizations
+anywhere in this program, and both are reachable by anyone who can reach the service.
+The split exists so each screen has one audience, and it is enforced only by tests: the
+questions screen is not served under `/admin`, and no questions endpoint is served under
+`/api/admin`.
+
+### 15. Destructive actions are reversible, confirmed, or both
+
+Retiring is reversible and deleting is not, so a badge cannot be deleted until it is
+retired. The duplicate sweep has a dry run, because it deletes with no human judgement
+behind it. A sweep never removes both halves of a pair. Every irreversible button
+confirms first, and says what cannot be undone.
+
 ## Features
 
 ### Two areas
