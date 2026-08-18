@@ -383,3 +383,58 @@ def test_the_backfill_is_safe_to_run_twice(client, fake_questions):
     questions.insert_questions([make()])
     client.post(API + "/backfill-embedding-text")
     assert client.post(API + "/backfill-embedding-text").json()["written"] == 0
+
+
+# --- semantic search ---
+
+
+def test_search_returns_questions_ranked_by_meaning(client, fake_questions):
+    """
+    Intent: An author asking "what do we already have about joining collections?" should
+        find the $lookup questions whether or not they used that word — that is the point
+        of a vector index over a text filter.
+    Success: The search endpoint returns matching questions with their scores.
+    Feature: Question search — semantic search over stored questions.
+    """
+    questions.insert_questions([make("Which stage filters documents?")])
+    body = client.get(API + "/search", params={"q": "stage filters documents"}).json()
+    assert body and body[0]["stem"] == "Which stage filters documents?"
+    assert body[0]["score"] > 0
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{"q": "a"}, {"q": ""}, {"q": "ok", "limit": 0}, {"q": "ok", "limit": 500}],
+    ids=["too-short", "empty", "no-limit", "limit-too-high"],
+)
+def test_a_malformed_search_is_refused(client, fake_questions, params):
+    """
+    Intent: A one-character query cannot mean anything to an embedding model, and an
+        unbounded limit makes the response size and any downstream cost unpredictable.
+        Both are caught at the boundary rather than sent to Atlas.
+    Success: Each malformed search is a validation error.
+    Feature: Question search — bounded request.
+    """
+    assert client.get(API + "/search", params=params).status_code == 422
+
+
+def test_an_unbuilt_index_is_reported_as_unavailable_not_as_a_bug(
+    client, fake_questions, monkeypatch
+):
+    """
+    Intent: A newly created Atlas index is not queryable for a few minutes, and can be
+        renamed or dropped later. That is a state to report — a 500 would send someone
+        looking for a bug in this program, and an empty list would read as "we have
+        nothing on that".
+    Success: A storage failure during search returns 503 naming the index as the suspect.
+    Feature: Question search — an unavailable index is explained.
+    """
+    from pymongo.errors import OperationFailure
+
+    def explode(*args, **kwargs):
+        raise OperationFailure("index not found: questions_embedding_text_vector")
+
+    monkeypatch.setattr(questions, "similar_by_embedding_text", explode)
+    response = client.get(API + "/search", params={"q": "anything"})
+    assert response.status_code == 503
+    assert "index" in response.json()["detail"].lower()

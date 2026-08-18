@@ -327,3 +327,66 @@ def test_the_backfill_recomposes_text_that_no_longer_matches(fake_questions):
     fake_questions.docs[0]["stem"] = "A corrected stem?"
     questions.backfill_embedding_text()
     assert fake_questions.docs[0]["embedding_text"].startswith("Question: A corrected stem?")
+
+
+# --- vector search over the embedding text ---
+
+
+def test_similar_questions_are_searched_on_the_embedded_field(fake_questions):
+    """
+    Intent: The Atlas index embeds `embedding_text`, so the search must query that path
+        with the query text itself — autoEmbed means Atlas embeds both sides and this
+        program stores no vectors. Querying another path would match nothing.
+    Success: The pipeline is a $vectorSearch on embedding_text carrying the query text and
+        the given index name.
+    Feature: Question search — queries the auto-embedding index.
+    """
+    captured = {}
+
+    def aggregate(pipeline):
+        captured["stage"] = pipeline[0]["$vectorSearch"]
+        return []
+
+    fake_questions.aggregate = aggregate
+    questions.similar_by_embedding_text("joining collections", "questions_embedding_text_vector")
+    assert captured["stage"]["path"] == "embedding_text"
+    assert captured["stage"]["query"] == "joining collections"
+    assert captured["stage"]["index"] == "questions_embedding_text_vector"
+
+
+def test_search_results_carry_the_similarity_score(fake_questions):
+    """
+    Intent: A ranked list without scores hides how weak the tail is, so an author cannot
+        tell a real match from the closest of several poor ones.
+    Success: Each result carries a score, and Mongo's own key is not returned.
+    Feature: Question search — scores are visible.
+    """
+    questions.insert_questions([make("Which stage filters documents?")])
+    results = questions.similar_by_embedding_text("stage filters documents", "ix")
+    assert results and results[0]["score"] > 0
+    assert "_id" not in results[0]
+
+
+def test_a_question_is_not_returned_as_its_own_nearest_neighbour(fake_questions):
+    """
+    Intent: Rescreening a stored question would otherwise always find itself as a perfect
+        match and report every question as a duplicate of itself.
+    Success: Excluding a question by id removes it from its own results.
+    Feature: Question search — a question is not its own duplicate.
+    """
+    question_id = questions.insert_questions([make()])["question_ids"][0]
+    results = questions.similar_by_embedding_text(
+        "Which stage filters documents?", "ix", exclude_question_id=question_id
+    )
+    assert all(r["question_id"] != question_id for r in results)
+
+
+def test_the_search_returns_no_more_than_the_requested_limit(fake_questions):
+    """
+    Intent: The limit bounds both the response size and, downstream, how many model calls
+        a duplicate screen can make. An ignored limit would make cost unpredictable.
+    Success: Asking for one result returns one.
+    Feature: Question search — bounded result set.
+    """
+    questions.insert_questions([make("First stage question?"), make("Second stage question?")])
+    assert len(questions.similar_by_embedding_text("stage question", "ix", limit=1)) == 1

@@ -17,8 +17,10 @@ import time
 import traceback
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
+
+from pymongo.errors import PyMongoError
 
 from app.repositories import questions
 from app.services.question_generation import generate_questions
@@ -124,6 +126,32 @@ def list_questions(
 ) -> list[dict]:
     """Stored questions, filtered. This is also the export: it returns plain JSON."""
     return questions.list_questions(status, skill_badge, category)
+
+
+@router.get("/search")
+def search_questions(
+    q: str = Query(min_length=2, max_length=1000),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[dict]:
+    """Questions closest in meaning to `q`, most similar first.
+
+    Meaning rather than words: an author asking "questions about joining
+    collections" should find the `$lookup` questions whether or not they used that
+    word. Scores come back with the results so a weak match is visible as one.
+    """
+    from app.config import get_settings
+
+    settings = get_settings()
+    try:
+        return questions.similar_by_embedding_text(
+            q, settings.questions_vector_index_name, limit=limit
+        )
+    except PyMongoError as exc:
+        # The commonest cause by far is an index still building, or renamed. That is
+        # a state to report, not a bug to hide behind a 500.
+        raise HTTPException(
+            503, f"Vector search is unavailable ({exc}). Is the index built?"
+        ) from exc
 
 
 @router.post("/backfill-embedding-text")

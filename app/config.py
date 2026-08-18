@@ -37,10 +37,20 @@ class Settings:
     # configured with autoEmbed on `description`, so Atlas embeds both the stored
     # descriptions and the query text — this program stores no vectors.
     vector_index_name: str = "skill-badge-description-vector"
+    # The questions index: autoEmbed on `embedding_text` (voyage-4-large), so Atlas
+    # embeds both the stored questions and the query text.
+    questions_vector_index_name: str = "questions_embedding_text_vector"
     # Neighbours below this score are not worth a model call. Measured against the
     # Atlas index (voyage-4-large): real duplicates score around 0.80 and rank
     # below some non-duplicates, so this floor only trims cost — the model decides.
     duplicate_score_threshold: float = 0.75
+    # Measured against the live index on 2026-08-18 (voyage-4-large, autoEmbed on
+    # embedding_text): five genuinely distinct questions from one badge scored
+    # 0.765-0.783 against each other, while a deliberately reworded copy of one of
+    # them scored 0.865. This floor sits in that gap. As with badges it only trims
+    # cost — Claude makes the decision, and a pair below the floor is never put to
+    # it. Re-measure as the collection grows and spans more badges.
+    question_duplicate_score_threshold: float = 0.80
 
     @property
     def uses_gateway(self) -> bool:
@@ -95,4 +105,6 @@ def get_settings() -> Settings:
         credly_collection_url=os.environ.get("CREDLY_COLLECTION_URL")
         or Settings.credly_collection_url,
         vector_index_name=os.environ.get("VECTOR_INDEX_NAME") or Settings.vector_index_name,
+        questions_vector_index_name=os.environ.get("QUESTIONS_VECTOR_INDEX_NAME")
+        or Settings.questions_vector_index_name,
     )

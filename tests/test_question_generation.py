@@ -918,3 +918,105 @@ def test_attribution_failures_other_than_credentials_still_propagate(monkeypatch
         question_generation.attribute_badges(
             [make()], CATALOG, ["atlas-search"], settings=settings
         )
+
+
+def test_a_run_drops_questions_that_duplicate_stored_ones(
+    fake_client, fake_collection, fake_questions, monkeypatch, settings
+):
+    """
+    Intent: Screening is only worth anything if the run acts on it. Deciding a question is
+        a duplicate and storing it anyway would be an invisible no-op, and the report would
+        contradict the collection.
+    Success: A question screened out is not stored, and the run reports it as dropped.
+    Feature: Question generation — duplicates are screened before storage.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    monkeypatch.setattr(
+        question_generation,
+        "_screen_or_keep_going",
+        lambda questions, settings: {
+            "keep": [],
+            "duplicates_dropped": [{"stem": "dupe", "reason": "same"}],
+            "possible_duplicates": [],
+            "duplicate_check_error": None,
+        },
+    )
+    fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
+    result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    assert result["inserted"] == 0
+    assert fake_questions.docs == []
+    assert result["duplicates_dropped"][0]["reason"] == "same"
+
+
+def test_a_failed_duplicate_screen_does_not_lose_the_generated_questions(
+    fake_client, fake_collection, fake_questions, monkeypatch, settings
+):
+    """
+    Intent: The vector index is external state — it can be building, renamed or briefly
+        unavailable. None of that is a reason to discard questions that were just written
+        and paid for; the author needs them stored, with the fact they were not screened
+        stated plainly.
+    Success: The run stores the question and names the screening failure.
+    Feature: Question generation — screening failure never loses a batch.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("index not found")
+
+    monkeypatch.setattr(
+        "app.services.question_duplicates.screen_questions", explode
+    )
+    fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
+    result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    assert result["inserted"] == 1
+    assert result["duplicate_check_error"] == "index not found"
+
+
+def test_screening_happens_before_the_badge_attribution_call(
+    fake_client, fake_collection, fake_questions, monkeypatch, settings
+):
+    """
+    Intent: Attribution costs a model call per batch. Cataloguing a question across the
+        badge catalog and then discarding it as a duplicate spends that call for nothing.
+    Success: With every question screened out, no attribution call is made.
+    Feature: Question generation — no needless API calls.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    monkeypatch.setattr(
+        question_generation,
+        "_screen_or_keep_going",
+        lambda questions, settings: {
+            "keep": [],
+            "duplicates_dropped": [],
+            "possible_duplicates": [],
+            "duplicate_check_error": None,
+        },
+    )
+    client = fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
+    question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    formats = [c.get("output_format") for c in client.messages.parse_calls]
+    assert QuestionBadgeAttributions not in formats
+
+
+def test_screening_costs_nothing_when_every_question_was_already_discarded(
+    fake_client, fake_collection, fake_questions, settings
+):
+    """
+    Intent: If the format check rejected everything there is nothing left to screen, and
+        searching the vector index for an empty batch is a needless round trip that would
+        also report a screening that never happened.
+    Success: A run whose questions were all malformed reports no screening error and stores
+        nothing.
+    Feature: Question generation — no needless work on an empty batch.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    bad = make("Broken?", options=[option("a", True), option("b")])
+    fake_client(
+        stream_messages=[FakeMessage("draft")],
+        parsed_by_format=full_run(GeneratedQuestions(questions=[bad])),
+    )
+    result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    assert result["inserted"] == 0
+    assert result["duplicate_check_error"] is None
+    assert result["duplicates_dropped"] == []

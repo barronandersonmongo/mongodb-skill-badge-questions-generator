@@ -113,6 +113,55 @@ def delete_question(question_id: str) -> bool:
     return collection().delete_one({"question_id": question_id}).deleted_count == 1
 
 
+def similar_by_embedding_text(
+    text: str,
+    index_name: str,
+    *,
+    limit: int = 5,
+    exclude_question_id: str | None = None,
+    num_candidates: int = 100,
+) -> list[dict[str, Any]]:
+    """Nearest stored questions by meaning, most similar first.
+
+    The index is configured with autoEmbed, so the query is the text itself — Atlas
+    embeds it with the same model it used for the stored questions, and this program
+    stores no vectors.
+
+    A question is excluded by id rather than by text so that a question already
+    stored does not come back as its own nearest neighbour when it is rescreened.
+    """
+    pipeline: list[dict[str, Any]] = [
+        {
+            "$vectorSearch": {
+                "index": index_name,
+                "path": EMBEDDING_FIELD,
+                "query": text,
+                "numCandidates": num_candidates,
+                "limit": limit + (1 if exclude_question_id else 0),
+            }
+        },
+        {
+            "$project": {
+                "_id": False,
+                "question_id": True,
+                "stem": True,
+                "explanation": True,
+                "options": True,
+                "skill_badges": True,
+                "categories": True,
+                "difficulty": True,
+                "status": True,
+                "source_urls": True,
+                "score": {"$meta": "vectorSearchScore"},
+            }
+        },
+    ]
+    results = list(collection().aggregate(pipeline))
+    if exclude_question_id:
+        results = [r for r in results if r.get("question_id") != exclude_question_id]
+    return results[:limit]
+
+
 def backfill_embedding_text() -> dict[str, Any]:
     """Compose the embedding field for stored questions that lack it, or drifted.
 

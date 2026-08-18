@@ -608,3 +608,155 @@ def test_a_skipped_cross_badge_review_is_reported(client, fake_collection, fake_
     body = client.get(PAGE).text
     assert 'data-attribution-error="true"' in body
     assert "overloaded_error" in body
+
+
+# --- semantic search on the screen ---
+
+
+def test_the_screen_offers_a_search_box(client, fake_collection, fake_questions):
+    """
+    Intent: An author's first instinct before generating is "what do we already have on
+        this?". Without a search box that question can only be answered by scrolling, so
+        duplicates get generated.
+    Success: The page renders a search form posting the q parameter back to the root.
+    Feature: Question search — reachable from the main screen.
+    """
+    body = client.get(PAGE).text
+    assert 'data-search-form="true"' in body
+    assert 'name="q"' in body
+
+
+def test_a_search_ranks_the_list_by_similarity(client, fake_collection, fake_questions):
+    """
+    Intent: The value of the search is the ranking, and a ranking is only trustworthy if the
+        reader can see how close each match is — otherwise the weakest match looks as
+        authoritative as the best.
+    Success: A search renders the matching question with its similarity score and says the
+        list is ranked.
+    Feature: Question search — ranked results with visible scores.
+    """
+    seed_question("Which stage filters documents?")
+    body = client.get(PAGE, params={"q": "stage filters documents"}).text
+    assert 'data-search-summary="true"' in body
+    assert 'data-score="true"' in body
+    assert "Which stage filters documents?" in body
+
+
+def test_a_search_result_can_still_be_narrowed_by_the_filters(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: An author searching within one badge means "of these matches, show me that
+        badge". If the filters were ignored during a search the screen would contradict
+        itself, showing questions the filter excludes.
+    Success: A filter that excludes the match leaves it out of the search result.
+    Feature: Question search — filters narrow the matches.
+    """
+    seed_question("Which stage filters documents?")
+    params = {"q": "stage filters documents", "status": "approved"}
+    assert "Which stage filters documents?" not in client.get(PAGE, params=params).text
+
+
+def test_a_search_with_no_match_says_so_without_claiming_the_collection_is_empty(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: "Nothing like that here" and "no questions exist" call for different actions,
+        and the difference matters most right before someone generates more.
+    Success: A search with no match names the query in the empty state.
+    Feature: Question search — distinct empty state.
+    """
+    body = client.get(PAGE, params={"q": "quantum tunnelling in kubernetes"}).text
+    assert 'data-empty="true"' in body
+    assert "quantum tunnelling in kubernetes" in body
+
+
+def test_an_index_that_is_not_queryable_yet_is_explained_on_the_screen(
+    client, fake_collection, fake_questions, monkeypatch
+):
+    """
+    Intent: A newly created Atlas index takes minutes to build, and searching it before
+        then fails. Showing a stack trace, or an empty result that reads as "we have
+        nothing on that", would both be misleading during exactly the window when someone
+        is trying out the new search.
+    Success: The page returns 200 and explains that the index is unavailable.
+    Feature: Question search — an unbuilt index is explained, not hidden.
+    """
+    from pymongo.errors import OperationFailure
+
+    def explode(*args, **kwargs):
+        raise OperationFailure("index not found")
+
+    monkeypatch.setattr(questions, "similar_by_embedding_text", explode)
+    response = client.get(PAGE, params={"q": "anything"})
+    assert response.status_code == 200
+    assert 'data-search-error="true"' in response.text
+
+
+def test_a_search_can_be_cleared(client, fake_collection, fake_questions):
+    """
+    Intent: A search replaces the whole list, so without an obvious way back an author is
+        stuck in a filtered view and may think the rest of the collection has gone.
+    Success: While searching, the page offers a link back to the unsearched list.
+    Feature: Question search — reversible.
+    """
+    body = client.get(PAGE, params={"q": "anything"}).text
+    assert 'data-clear-search="true"' in body
+
+
+def test_duplicate_outcomes_are_reported_after_a_run(client, fake_collection, fake_questions):
+    """
+    Intent: A run that silently discarded three of five questions as duplicates would look
+        like a model that produced little. What was dropped, what it duplicated and why
+        must all be visible, or the screening cannot be trusted or corrected.
+    Success: The run alert reports dropped duplicates, flagged near-duplicates, and the
+        reasons for both.
+    Feature: Question duplicates — outcomes are reported on screen.
+    """
+    api_module._run_state["last_result"] = {
+        "inserted": 1,
+        "requested": 3,
+        "run_id": "abcdef1234",
+        "rejected": [],
+        "duplicates_dropped": [
+            {
+                "stem": "A dropped question?",
+                "duplicate_of_stem": "The stored one?",
+                "score": 0.94,
+                "reason": "both test $match",
+            }
+        ],
+        "possible_duplicates": [
+            {
+                "stem": "A flagged question?",
+                "duplicate_of_stem": "Another stored one?",
+                "score": 0.86,
+                "reason": "similar but arguable",
+            }
+        ],
+    }
+    body = client.get(PAGE).text
+    assert 'data-duplicates-dropped="true"' in body
+    assert "both test $match" in body
+    assert 'data-possible-duplicates="true"' in body
+    assert "similar but arguable" in body
+
+
+def test_a_skipped_duplicate_screen_is_reported(client, fake_collection, fake_questions):
+    """
+    Intent: If screening could not run, the batch was stored unscreened. Reporting nothing
+        would leave the author believing it had been checked and found clean — the one
+        outcome that must never be assumed.
+    Success: The page says screening did not run, and names the reason.
+    Feature: Question duplicates — a skipped screen is visible, not silent.
+    """
+    api_module._run_state["last_result"] = {
+        "inserted": 1,
+        "requested": 1,
+        "run_id": "abcdef1234",
+        "rejected": [],
+        "duplicate_check_error": "index not found",
+    }
+    body = client.get(PAGE).text
+    assert 'data-duplicate-check-error="true"' in body
+    assert "index not found" in body

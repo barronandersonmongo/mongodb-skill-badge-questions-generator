@@ -31,8 +31,8 @@ export GROVE_ANTHROPIC_BASE_URL='https://.../anthropic'      # part before /v1/m
 visible to cron, systemd, or anything started as a service.
 
 Optional overrides: `ANTHROPIC_MODEL`, `WEB_SEARCH_TOOL_TYPE`, `WEB_FETCH_TOOL_TYPE`,
-`SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`, `LOG_DIR`,
-`LOG_LEVEL`.
+`SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`,
+`QUESTIONS_VECTOR_INDEX_NAME`, `LOG_DIR`, `LOG_LEVEL`.
 
 Storage target is the `skill-badge-questions` database on the `PTM-Hackathon`
 cluster (Atlas project "Barry Anderson").
@@ -156,8 +156,42 @@ For questions written before the field existed, `POST
 writes documents whose text is missing or has drifted from the current stem and
 explanation, so autoEmbed is not asked to re-embed unchanged text.
 
-Note the index name is not referenced anywhere in this program yet; nothing reads
-the index so far. Wire it in once it exists.
+The index in use is **`questions_embedding_text_vector`** (autoEmbed,
+`voyage-4-large`), overridable with `QUESTIONS_VECTOR_INDEX_NAME`. It drives two
+things: duplicate screening at generation time, and the search box on the main
+screen.
+
+**Duplicate screening.** Before a question is stored it is searched against the
+questions already in the collection, and any close match is put to Claude: do these
+test the same knowledge? The judge sees both questions' options, because two
+near-identical stems can test different distinctions and two different stems can
+reduce to one fact.
+
+Confident duplicates are discarded. Anything less is stored and flagged, because
+discarding a question a model merely suspected loses work nobody reviewed. Both
+outcomes are reported on the run with the score, the question resembled, and the
+reason.
+
+Screening happens before storage — the cheap moment. Afterwards, an author has to
+notice the repetition during review, and a quiz built from the collection can ask
+the same thing twice.
+
+The score floor (`question_duplicate_score_threshold`, default 0.80) only trims
+cost: below it, a pair is never put to the model. It is higher than the badge floor
+because questions are longer and more specific, so unrelated questions on one topic
+already score highly.
+
+If the index is unavailable — still building, renamed, dropped — the questions are
+stored unscreened and the screen says so. An authoring run is never discarded
+because a follow-up step failed.
+
+**Search by meaning.** The box on the main screen ranks questions by similarity to
+what you type, so "joining data from another collection" finds the `$lookup`
+questions whether or not they use that word. Scores are shown, so a weak match
+reads as one. The badge, category and status filters then narrow those matches
+rather than the whole collection, and the query lives in the URL. An index that is
+not queryable yet is reported as such rather than returning an empty result that
+reads as "we have nothing on that".
 
 **Filtering and export.** Filter by skill badge, category and status; the filters
 intersect and live in the URL, so a view can be shared. **Export JSON** returns
@@ -169,6 +203,7 @@ exactly the filtered set from the same endpoint the screen reads.
 | `POST` | `/api/questions/generate` | Start a generation run |
 | `GET` | `/api/questions/generate/status` | Poll a run |
 | `GET` | `/api/questions` | List / export questions, same filters |
+| `GET` | `/api/questions/search?q=&limit=` | Questions ranked by similarity to `q` |
 | `POST` | `/api/questions/backfill-embedding-text` | Compose `embedding_text` where missing or stale |
 | `POST` | `/api/questions/{id}/status` | Approve, reject or re-open |
 | `DELETE` | `/api/questions/{id}` | Delete a question |
@@ -271,7 +306,8 @@ app/db.py                            Mongo client (one per process)
 app/models/skill_badge.py            Pydantic schemas (Claude output + stored doc)
 app/models/question.py               question schemas (Claude output + stored doc)
 app/services/badge_discovery.py      the two Claude passes
-app/services/question_generation.py  the two Claude passes for questions
+app/services/question_generation.py  the Claude passes for questions
+app/services/question_duplicates.py  duplicate screening before storage
 app/services/discover_cli.py         shell entry point
 app/repositories/skill_badges.py     upsert / list / status, indexes
 app/repositories/questions.py        insert / filter / status, indexes

@@ -455,6 +455,11 @@ def generate_questions(
     _drop_unknown_badges(generated, set(known), slugs)
     kept, rejected = split_well_formed(generated)
 
+    # Screening before attribution: no point cataloguing a question that is about
+    # to be discarded as a duplicate.
+    screening = _screen_or_keep_going(kept, settings)
+    kept = screening.pop("keep")
+
     # Only the questions being stored are worth cataloguing, so attribution runs
     # after the format check rather than before it.
     attribution = _attribute_or_keep_going(kept, catalog, slugs, settings)
@@ -468,7 +473,41 @@ def generate_questions(
     summary["draft"] = draft
     summary["questions"] = [q.model_dump() for q in kept]
     summary.update(attribution)
+    summary.update(screening)
     return summary
+
+
+def _screen_or_keep_going(
+    questions: list[GeneratedQuestion], settings: Settings | None
+) -> dict[str, Any]:
+    """Screen for duplicates, but never let the screening lose a finished batch.
+
+    The vector index is external state: it can be building, renamed, or briefly
+    unavailable, and none of that is a reason to discard questions that were just
+    written. On failure everything is kept and the reason is reported, so the author
+    sees "not screened" rather than a silently unscreened batch.
+    """
+    from app.services.question_duplicates import screen_questions
+
+    if not questions:
+        return {
+            "keep": questions,
+            "duplicates_dropped": [],
+            "possible_duplicates": [],
+            "duplicate_check_error": None,
+        }
+    try:
+        result = screen_questions(questions, settings=settings)
+        result["duplicate_check_error"] = None
+        return result
+    except Exception as exc:
+        logger.warning("Duplicate screening failed; keeping every question: %s", exc)
+        return {
+            "keep": questions,
+            "duplicates_dropped": [],
+            "possible_duplicates": [],
+            "duplicate_check_error": str(exc),
+        }
 
 
 def _attribute_or_keep_going(

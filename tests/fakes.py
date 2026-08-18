@@ -68,6 +68,10 @@ class FakeCollection:
         The real index is configured with autoEmbed, so the query is text and Atlas
         does the embedding. Similarity is approximated here by word overlap, which
         is enough to order neighbours and exercise the score threshold.
+
+        The $project stage is honoured rather than assumed: badges and questions
+        project different fields, and a fake that returned one shape for both would
+        let a caller pass while asking for fields it never receives in production.
         """
         stage = pipeline[0]["$vectorSearch"]
         limit = stage["limit"]
@@ -79,11 +83,13 @@ class FakeCollection:
                 continue
             scored.append((_word_overlap(query, text), doc))
         scored.sort(key=lambda pair: pair[0], reverse=True)
+
+        projection = next(
+            (s["$project"] for s in pipeline[1:] if "$project" in s), None
+        )
         out = []
         for score, doc in scored[:limit]:
-            item = {k: doc.get(k) for k in ("slug", "name", "description", "status")}
-            item["score"] = score
-            out.append(item)
+            out.append(_project_search_result(doc, projection, score))
         return out
 
     # --- indexes ---
@@ -203,6 +209,19 @@ class FakeCollection:
             elif upsert:
                 upserted[index] = self._insert(query, update)
         return FakeBulkResult(matched, modified, upserted)
+
+
+def _project_search_result(doc: dict, projection: dict | None, score: float) -> dict:
+    """Apply a $vectorSearch pipeline's $project stage, including the score meta field."""
+    if not projection:
+        return {**doc, "score": score}
+    item: dict[str, Any] = {}
+    for field, spec in projection.items():
+        if isinstance(spec, dict) and "$meta" in spec:
+            item[field] = score
+        elif spec:
+            item[field] = doc.get(field)
+    return item
 
 
 def _word_overlap(left: str, right: str) -> float:

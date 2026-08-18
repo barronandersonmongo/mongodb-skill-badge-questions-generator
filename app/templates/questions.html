@@ -87,6 +87,46 @@
     badge(s) they were written for: {{ last_result.attribution_error }}
   </div>
   {% endif %}
+  {% if last_result.duplicates_dropped %}
+  <details class="mt-2" data-duplicates-dropped="true">
+    <summary class="small">
+      {{ last_result.duplicates_dropped | length }} discarded as duplicates of questions already stored
+    </summary>
+    <ul class="small mb-0 mt-2">
+      {% for item in last_result.duplicates_dropped %}
+      <li>
+        <span class="fst-italic">{{ item.stem }}</span>
+        — same as <span class="fst-italic">{{ item.duplicate_of_stem }}</span>
+        {% if item.score %}<span class="badge text-bg-light border">{{ "%.3f"|format(item.score) }}</span>{% endif %}
+        — {{ item.reason }}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+  {% if last_result.possible_duplicates %}
+  <details class="mt-2" data-possible-duplicates="true">
+    <summary class="small">
+      {{ last_result.possible_duplicates | length }} kept but similar to an existing question — worth a look
+    </summary>
+    <ul class="small mb-0 mt-2">
+      {% for item in last_result.possible_duplicates %}
+      <li>
+        <span class="fst-italic">{{ item.stem }}</span>
+        — resembles <span class="fst-italic">{{ item.duplicate_of_stem }}</span>
+        {% if item.score %}<span class="badge text-bg-light border">{{ "%.3f"|format(item.score) }}</span>{% endif %}
+        — {{ item.reason }}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+  {% if last_result.duplicate_check_error %}
+  <div class="mt-1 small" data-duplicate-check-error="true">
+    Duplicate screening did not run, so these questions were stored unscreened:
+    {{ last_result.duplicate_check_error }}
+  </div>
+  {% endif %}
   {% if last_result.rejected %}
   <details class="mt-2">
     <summary class="small" data-rejected="true">
@@ -103,6 +143,21 @@
 {% endif %}
 
 <div class="row g-2 align-items-end mb-2">
+  <div class="col-auto">
+    <label class="form-label small mb-1" for="search">Search by meaning</label>
+    <form method="get" action="/" class="d-flex gap-1" data-search-form="true">
+      <input class="form-control form-control-sm" type="search" id="search" name="q"
+             value="{{ query }}" style="min-width: 22rem;"
+             placeholder="e.g. joining data from another collection">
+      {% if status_filter %}<input type="hidden" name="status" value="{{ status_filter }}">{% endif %}
+      {% if badge_filter %}<input type="hidden" name="skill_badge" value="{{ badge_filter }}">{% endif %}
+      {% if category_filter %}<input type="hidden" name="category" value="{{ category_filter }}">{% endif %}
+      <button class="btn btn-sm btn-outline-primary" type="submit">Search</button>
+      {% if query %}
+      <a class="btn btn-sm btn-outline-secondary" href="/" data-clear-search="true">Clear</a>
+      {% endif %}
+    </form>
+  </div>
   <div class="col-auto">
     <label class="form-label small mb-1" for="badge-filter">Skill badge</label>
     <select class="form-select form-select-sm" id="badge-filter" data-filter="skill_badge">
@@ -127,6 +182,20 @@
   </div>
 </div>
 
+{% if search_error %}
+<div class="alert alert-warning" data-search-error="true">
+  <strong>Vector search is unavailable.</strong>
+  A newly created index takes a few minutes to build and becomes queryable on its
+  own; until then this search cannot run.
+  <div class="small font-monospace mt-1">{{ search_error }}</div>
+</div>
+{% elif query %}
+<p class="text-body-secondary small mb-2" data-search-summary="true">
+  Ranked by similarity to <strong>{{ query }}</strong> — closest first. Filters below
+  narrow these matches rather than the whole collection.
+</p>
+{% endif %}
+
 <ul class="nav nav-tabs mb-0">
   {% for tab, label in tabs %}
   <li class="nav-item">
@@ -144,7 +213,13 @@
     <div class="list-group-item py-3" data-question-id="{{ question.question_id }}">
       <div class="d-flex justify-content-between align-items-start gap-3">
         <div class="flex-grow-1">
-          <div class="fw-semibold mb-2" data-stem="true">{{ question.stem }}</div>
+          <div class="fw-semibold mb-2" data-stem="true">
+            {{ question.stem }}
+            {% if question.get("score") is not none %}
+            <span class="badge text-bg-info" data-score="true"
+                  title="Similarity to your search">{{ "%.3f"|format(question.score) }}</span>
+            {% endif %}
+          </div>
           <ol class="mb-2" type="A">
             {% for option in question.options %}
             <li class="{% if option.is_correct %}fw-semibold{% endif %}"
@@ -202,7 +277,9 @@
     </div>
     {% else %}
     <div class="list-group-item text-center text-body-secondary py-5" data-empty="true">
-      {% if status_filter or badge_filter or category_filter %}
+      {% if query %}
+        Nothing close to “{{ query }}” in the collection.
+      {% elif status_filter or badge_filter or category_filter %}
         No questions match these filters.
       {% else %}
         No questions yet. Run <strong>Generate questions</strong> to write the first.

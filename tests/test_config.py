@@ -300,3 +300,49 @@ def test_the_vector_index_name_is_configurable(monkeypatch):
 
     monkeypatch.setenv("VECTOR_INDEX_NAME", "another-index")
     assert get_settings().vector_index_name == "another-index"
+
+
+def test_the_question_duplicate_floor_sits_between_measured_bands():
+    """
+    Intent: The floor decides which pairs are ever put to Claude, so a wrong value either
+        misses duplicates or pays for judgements on unrelated questions. It is not a
+        guess: measured on the live index, distinct questions from one badge scored up to
+        0.783 and a reworded duplicate scored 0.865. A future edit that drifts outside
+        that gap should have to confront this.
+    Success: The default floor is above the observed distinct-question band and below the
+        observed duplicate score.
+    Feature: Question duplicates — the score floor reflects measured behaviour.
+    """
+    floor = Settings(mongodb_uri="mongodb://test").question_duplicate_score_threshold
+    assert 0.783 < floor < 0.865
+
+
+def test_the_questions_vector_index_can_be_renamed_without_a_code_change():
+    """
+    Intent: The index is created by hand in Atlas and may be rebuilt under a different
+        name. If the name were only a literal in code, a rebuild would mean editing and
+        redeploying the application.
+    Success: QUESTIONS_VECTOR_INDEX_NAME overrides the configured index name.
+    Feature: Question search — configurable index name.
+    """
+    import os
+
+    os.environ["MONGODB_URI"] = "mongodb://test"
+    os.environ["QUESTIONS_VECTOR_INDEX_NAME"] = "some_other_index"
+    try:
+        assert get_settings().questions_vector_index_name == "some_other_index"
+    finally:
+        del os.environ["QUESTIONS_VECTOR_INDEX_NAME"]
+        del os.environ["MONGODB_URI"]
+
+
+def test_the_questions_index_defaults_to_the_one_that_exists():
+    """
+    Intent: The default must match the index actually built in Atlas, or a fresh checkout
+        searches a name that does not exist and reports every question as unique — a
+        silent failure, since an empty result looks like a clean collection.
+    Success: The default index name is the one created for this collection.
+    Feature: Question search — default matches the deployed index.
+    """
+    settings = Settings(mongodb_uri="mongodb://test")
+    assert settings.questions_vector_index_name == "questions_embedding_text_vector"
