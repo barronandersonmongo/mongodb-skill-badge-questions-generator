@@ -20,6 +20,10 @@ class FakeCursor:
         self._docs.sort(key=lambda d: d.get(key), reverse=direction < 0)
         return self
 
+    def limit(self, count: int) -> "FakeCursor":
+        self._docs = self._docs[:count]
+        return self
+
     def __iter__(self):
         return iter(self._docs)
 
@@ -63,6 +67,58 @@ class FakeCollection:
         return name
 
     def aggregate(self, pipeline):
+        """Support the two aggregation shapes this program uses.
+
+        A pipeline starting with $vectorSearch is a similarity search (below); one
+        starting with $group is a summary over the collection, used by the
+        documentation corpus screen to count pages per source.
+        """
+        if pipeline and "$group" in pipeline[0]:
+            return self._aggregate_group(pipeline)
+        return self._aggregate_vector_search(pipeline)
+
+    def _aggregate_group(self, pipeline):
+        """$group with $sum/$max/$min accumulators, then an optional $sort."""
+        spec = pipeline[0]["$group"]
+        key = spec["_id"]
+        groups: dict[Any, list[dict]] = {}
+        for doc in self.docs:
+            group_key = doc.get(key.lstrip("$")) if isinstance(key, str) else None
+            groups.setdefault(group_key, []).append(doc)
+
+        def field_values(docs, expression):
+            path = list(expression.values())[0]
+            if path == 1:
+                return [1] * len(docs)
+            name = path.lstrip("$")
+            return [d.get(name) for d in docs if d.get(name) is not None]
+
+        rows = []
+        for group_key, docs in groups.items():
+            row: dict[str, Any] = {"_id": group_key}
+            for field, expression in spec.items():
+                if field == "_id":
+                    continue
+                operator = next(iter(expression))
+                values = field_values(docs, expression)
+                if operator == "$sum":
+                    row[field] = sum(values) if values else 0
+                elif operator == "$max":
+                    row[field] = max(values) if values else None
+                elif operator == "$min":
+                    row[field] = min(values) if values else None
+                else:
+                    raise NotImplementedError(f"accumulator {operator} not faked")
+            rows.append(row)
+
+        for stage in pipeline[1:]:
+            if "$sort" in stage:
+                field, direction = next(iter(stage["$sort"].items()))
+                rows.sort(key=lambda r: (r.get(field) is None, r.get(field)),
+                          reverse=direction < 0)
+        return rows
+
+    def _aggregate_vector_search(self, pipeline):
         """Support only the $vectorSearch + $project shape this program uses.
 
         The real index is configured with autoEmbed, so the query is text and Atlas
@@ -112,7 +168,10 @@ class FakeCollection:
                     return False
                 continue
             actual = doc.get(key)
-            if isinstance(expected, dict) and "$ne" in expected:
+            if isinstance(expected, dict) and "$in" in expected:
+                if actual not in expected["$in"]:
+                    return False
+            elif isinstance(expected, dict) and "$ne" in expected:
                 if actual == expected["$ne"]:
                     return False
             elif isinstance(expected, dict) and "$exists" in expected:
@@ -189,6 +248,12 @@ class FakeCollection:
             self.docs.append(stored)
             ids.append(stored["_id"])
         return ids
+
+    def delete_many(self, query: dict) -> "FakeDeleteResult":
+        keep = [d for d in self.docs if not self._matches(d, query)]
+        removed = len(self.docs) - len(keep)
+        self.docs = keep
+        return FakeDeleteResult(removed)
 
     def delete_one(self, query: dict) -> "FakeDeleteResult":
         for index, doc in enumerate(self.docs):

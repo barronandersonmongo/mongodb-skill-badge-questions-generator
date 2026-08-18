@@ -1,0 +1,364 @@
+{% extends "base.html" %}
+{% set api = "/api/admin/docs" %}
+
+{% block title %}Documentation — Skill Badge Questions{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <div>
+    <h1 class="h3 mb-1">Documentation corpus</h1>
+    <p class="text-body-secondary mb-0">
+      A stored copy of MongoDB's documentation, so question authoring reads its source
+      material from the database instead of fetching the web mid-run. Refresh it
+      whenever you like — a full crawl is around 10,000 pages, so most of the time you
+      want just the sources a badge draws on.
+    </p>
+  </div>
+  <div class="text-nowrap">
+    <button class="btn btn-primary" id="refresh-selected-btn" type="button">
+      Refresh selected
+    </button>
+    <button class="btn btn-outline-secondary" id="refresh-all-btn" type="button">
+      Refresh everything
+    </button>
+  </div>
+</div>
+
+<div id="run-alert" class="alert d-none" role="status"></div>
+
+{% if storage_error %}
+<div class="alert alert-danger">
+  <strong>Cannot reach MongoDB.</strong>
+  <div class="small font-monospace mt-1">{{ storage_error }}</div>
+</div>
+{% endif %}
+
+{% if last_error %}
+<div class="alert alert-danger">
+  <strong>Last refresh failed.</strong>
+  <div class="small mt-1">{{ last_error }}</div>
+  {% if last_traceback %}
+  <details class="mt-2">
+    <summary class="small">Show stack trace</summary>
+    <pre class="small font-monospace mb-0 mt-2 p-2 bg-body rounded border overflow-auto"
+         style="max-height: 20rem;">{{ last_traceback }}</pre>
+  </details>
+  {% endif %}
+</div>
+{% elif last_result %}
+<div class="alert alert-success">
+  <strong>Last refresh:</strong>
+  {{ last_result.inserted }} new,
+  {{ last_result.updated }} updated,
+  {{ last_result.unchanged }} unchanged
+  across {{ last_result.sources_done }} source(s).
+  {% if last_result.failure_count %}
+  <details class="mt-2">
+    <summary class="small" data-refresh-failures="true">
+      {{ last_result.failure_count }} page(s) could not be fetched
+    </summary>
+    <ul class="small mb-0 mt-2">
+      {% for failure in last_result.failures %}
+      <li class="font-monospace">{{ failure.url }} — {{ failure.error }}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card mb-3">
+  <div class="card-body py-2 d-flex gap-4 align-items-center">
+    <div>
+      <div class="small text-body-secondary">Pages stored</div>
+      <div class="h4 mb-0" data-total-pages="true">{{ totals.pages }}</div>
+    </div>
+    <div>
+      <div class="small text-body-secondary">Size</div>
+      <div class="h4 mb-0" data-total-bytes="true">
+        {{ (totals.bytes / (1024 * 1024)) | round(1) }} MB
+      </div>
+    </div>
+    <div>
+      <div class="small text-body-secondary">Last fetched</div>
+      <div class="mb-0" data-total-newest="true">
+        {% if totals.newest %}{{ totals.newest.strftime("%Y-%m-%d %H:%M UTC") }}{% else %}never{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header py-2 d-flex justify-content-between align-items-center">
+    <span class="fw-semibold">Sources</span>
+    <span class="small">
+      <a href="#" id="select-none">none</a> ·
+      <a href="#" id="select-stored">stored</a> ·
+      <a href="#" id="select-all">all</a>
+    </span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0" id="sources-table">
+      <thead class="table-light">
+        <tr>
+          <th style="width:3rem;"></th>
+          <th>Index</th>
+          <th class="text-end">Pages</th>
+          <th class="text-end">Size</th>
+          <th>Last fetched</th>
+          <th class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="sources-body">
+        <tr><td colspan="6" class="text-center text-body-secondary py-4">Loading sources…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<p class="text-body-secondary small mt-3 mb-0">
+  Pages come from MongoDB's published documentation index and are stored as Markdown.
+  <strong>Refresh everything</strong> crawls every index it names; a source already
+  stored is only rewritten when its content changed.
+</p>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = "{{ api }}";
+const alertBox = document.getElementById("run-alert");
+const body = document.getElementById("sources-body");
+let elapsedTimer = null;
+let startedAt = null;
+let clockSkewMs = 0;
+
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const pad = (n) => String(n).padStart(2, "0");
+  return pad(Math.floor(total / 3600)) + ":" + pad(Math.floor((total % 3600) / 60)) +
+    ":" + pad(total % 60);
+}
+
+function elapsedSinceStart(until = null) {
+  if (startedAt === null) return null;
+  const end = until !== null ? until : Date.now() - clockSkewMs;
+  return end - startedAt;
+}
+
+// The run's start time comes from the server, so leaving this screen and returning
+// does not restart the timer at zero while the crawl continues.
+function adoptServerClock(state) {
+  if (state.server_time) clockSkewMs = Date.now() - state.server_time * 1000;
+  startedAt = state.started_at ? state.started_at * 1000 : null;
+}
+
+function showAlert(kind, message, {timed = false} = {}) {
+  alertBox.className = "alert alert-" + kind;
+  alertBox.textContent = message;
+  if (!timed) { stopElapsed(); return; }
+  const label = document.createElement("span");
+  label.className = "ms-2 font-monospace";
+  label.dataset.elapsed = "true";
+  const current = elapsedSinceStart();
+  label.textContent = current === null ? "" : formatElapsed(current);
+  alertBox.append(label);
+  if (elapsedTimer === null) {
+    elapsedTimer = setInterval(() => {
+      const shown = alertBox.querySelector("[data-elapsed]");
+      const running = elapsedSinceStart();
+      if (shown && running !== null) shown.textContent = formatElapsed(running);
+    }, 1000);
+  }
+}
+
+function stopElapsed() {
+  if (elapsedTimer !== null) { clearInterval(elapsedTimer); elapsedTimer = null; }
+}
+
+function shortName(url) {
+  return url.replace("https://www.mongodb.com/", "");
+}
+
+function megabytes(bytes) {
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+async function loadSources() {
+  const response = await fetch(API + "/sources");
+  if (!response.ok) {
+    body.textContent = "";
+    const row = body.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 6;
+    cell.className = "text-center text-danger py-4";
+    cell.textContent = "Could not load sources (HTTP " + response.status + ").";
+    return;
+  }
+  const state = await response.json();
+  const stored = new Map(state.stored.map((s) => [s.source, s]));
+  // A source that exists upstream but has never been crawled must still be listed,
+  // or it can never be selected for a first fetch.
+  const all = Array.from(new Set([...state.available, ...stored.keys()])).sort();
+
+  body.textContent = "";
+  if (state.discovery_error) {
+    const row = body.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 6;
+    cell.className = "small text-warning-emphasis bg-warning-subtle";
+    cell.dataset.discoveryError = "true";
+    cell.textContent = "Could not read the published index (" + state.discovery_error +
+      "). Showing only what is already stored.";
+  }
+  for (const source of all) {
+    const info = stored.get(source);
+    const row = body.insertRow();
+    row.dataset.source = source;
+
+    const pick = row.insertCell();
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "form-check-input js-pick";
+    box.value = source;
+    pick.append(box);
+
+    const name = row.insertCell();
+    const link = document.createElement("a");
+    link.href = source;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.className = "small font-monospace";
+    link.textContent = shortName(source);
+    name.append(link);
+
+    const pages = row.insertCell();
+    pages.className = "text-end";
+    pages.textContent = info ? info.pages : "—";
+
+    const size = row.insertCell();
+    size.className = "text-end small";
+    size.textContent = info ? megabytes(info.bytes) : "—";
+
+    const fetched = row.insertCell();
+    fetched.className = "small";
+    fetched.textContent = info && info.newest
+      ? new Date(info.newest).toISOString().slice(0, 16).replace("T", " ") + " UTC"
+      : "never";
+
+    const actions = row.insertCell();
+    actions.className = "text-end text-nowrap";
+    const one = document.createElement("button");
+    one.className = "btn btn-sm btn-outline-primary js-refresh-one";
+    one.textContent = "Refresh";
+    actions.append(one);
+    if (info) {
+      const drop = document.createElement("button");
+      drop.className = "btn btn-sm btn-outline-danger ms-1 js-drop";
+      drop.textContent = "Delete";
+      actions.append(drop);
+    }
+  }
+}
+
+async function startRefresh(sources) {
+  const scope = sources === null ? "the whole corpus" : sources.length + " source(s)";
+  if (sources === null && !window.confirm(
+    "Refresh the whole corpus?\n\nThat is around 10,000 pages and takes a while. " +
+    "Refreshing only the sources you need is much faster."
+  )) return;
+  showAlert("info", "Refreshing " + scope + "…", {timed: true});
+  const response = await fetch(API + "/refresh", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({sources: sources}),
+  });
+  if (response.status === 409) {
+    showAlert("warning", "A refresh is already in progress.");
+    return;
+  }
+  if (!response.ok) {
+    showAlert("danger", "Could not start the refresh (HTTP " + response.status + ").");
+    return;
+  }
+  pollStatus();
+}
+
+async function pollStatus() {
+  const response = await fetch(API + "/refresh/status");
+  const state = await response.json();
+  adoptServerClock(state);
+  if (state.running) {
+    const p = state.progress;
+    const detail = p
+      ? " — " + p.sources_done + "/" + p.sources_requested + " source(s), " +
+        p.pages_seen + " page(s), " + p.inserted + " new, " + p.updated + " updated"
+      : "";
+    showAlert("info", "Refreshing documentation" + detail, {timed: true});
+    setTimeout(pollStatus, 3000);
+    return;
+  }
+  if (state.last_error) {
+    showAlert("danger", "Refresh failed: " + state.last_error);
+    return;
+  }
+  const duration = state.finished_at
+    ? elapsedSinceStart(state.finished_at * 1000)
+    : elapsedSinceStart();
+  const took = duration === null ? "" : " Took " + formatElapsed(duration) + ".";
+  showAlert("success", "Refresh finished." + took + " Reloading…");
+  window.location.reload();
+}
+
+function picked() {
+  return Array.from(document.querySelectorAll(".js-pick:checked")).map((b) => b.value);
+}
+
+document.getElementById("refresh-all-btn").addEventListener("click", () => startRefresh(null));
+document.getElementById("refresh-selected-btn").addEventListener("click", () => {
+  const sources = picked();
+  if (sources.length === 0) {
+    window.alert("Tick the sources to refresh, or use Refresh everything.");
+    return;
+  }
+  startRefresh(sources);
+});
+
+document.getElementById("sources-body").addEventListener("click", async (event) => {
+  const row = event.target.closest("tr");
+  if (!row) return;
+  const source = row.dataset.source;
+  if (event.target.classList.contains("js-refresh-one")) {
+    startRefresh([source]);
+  } else if (event.target.classList.contains("js-drop")) {
+    if (!window.confirm("Delete every stored page from " + shortName(source) + "?")) return;
+    const response = await fetch(API + "/sources?source=" + encodeURIComponent(source),
+      {method: "DELETE"});
+    if (!response.ok) {
+      showAlert("danger", "Could not delete (HTTP " + response.status + ").");
+      return;
+    }
+    window.location.reload();
+  }
+});
+
+document.getElementById("select-all").addEventListener("click", (e) => {
+  e.preventDefault();
+  document.querySelectorAll(".js-pick").forEach((b) => { b.checked = true; });
+});
+document.getElementById("select-none").addEventListener("click", (e) => {
+  e.preventDefault();
+  document.querySelectorAll(".js-pick").forEach((b) => { b.checked = false; });
+});
+document.getElementById("select-stored").addEventListener("click", (e) => {
+  e.preventDefault();
+  document.querySelectorAll("#sources-body tr").forEach((row) => {
+    const box = row.querySelector(".js-pick");
+    const pages = row.cells[2] ? row.cells[2].textContent.trim() : "—";
+    if (box) box.checked = pages !== "—" && pages !== "";
+  });
+});
+
+loadSources();
+if ({{ "true" if running else "false" }}) { pollStatus(); }
+</script>
+{% endblock %}

@@ -1,0 +1,367 @@
+"""Tests for the documentation corpus screen and its API.
+
+Assertions on the page are on markup, never a bare word: the template ships
+JavaScript containing the same labels it renders.
+
+Every test carries an Intent / Success / Feature block. Those blocks are the
+recorded requirement and are never edited: if behavior must change, the
+program changes, or a new test is added alongside with its own block.
+"""
+
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+from pymongo.errors import ServerSelectionTimeoutError
+
+from app.main import app
+from app.repositories import doc_pages
+from app.routers import admin_docs as api_module
+
+API = "/api/admin/docs"
+PAGE = "/admin/docs"
+
+
+@pytest.fixture
+def client() -> TestClient:
+    return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def configured_env(monkeypatch):
+    monkeypatch.setenv("MONGODB_URI", "mongodb://test")
+
+
+@pytest.fixture(autouse=True)
+def reset_run_state():
+    reset = dict(
+        running=False, last_result=None, last_error=None, last_traceback=None,
+        started_at=None, finished_at=None, progress=None,
+    )
+    api_module._run_state.update(reset)
+    yield
+    api_module._run_state.update(reset)
+
+
+def seed(url: str = "https://www.mongodb.com/docs/a.md", source: str = "ix-1") -> None:
+    doc_pages.upsert_pages([{"url": url, "source": source, "title": "A", "text": "# A\nbody"}])
+
+
+def test_a_refresh_runs_in_the_background(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: A whole-corpus crawl is around 10,000 pages and takes minutes. Doing it inside
+        the request would hold the browser open past its timeout and lose the run.
+    Success: POST /refresh returns started immediately, and the crawl runs.
+    Feature: Documentation corpus — long refreshes do not block the request.
+    """
+    calls: list = []
+    monkeypatch.setattr(api_module.doc_corpus, "refresh",
+                        lambda sources, **kw: calls.append(sources) or {})
+    response = client.post(API + "/refresh", json={})
+    assert response.status_code == 200
+    assert response.json() == {"started": True}
+    assert calls == [None]
+
+
+def test_named_sources_reach_the_crawl(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: Refreshing one source instead of ten thousand pages is the normal case. If the
+        selection were dropped the button would silently crawl everything.
+    Success: The requested source list is passed through unchanged.
+    Feature: Documentation corpus — targeted refresh.
+    """
+    calls: list = []
+    monkeypatch.setattr(api_module.doc_corpus, "refresh",
+                        lambda sources, **kw: calls.append(sources) or {})
+    client.post(API + "/refresh", json={"sources": ["ix-1", "ix-2"]})
+    assert calls == [["ix-1", "ix-2"]]
+
+
+def test_a_second_refresh_is_refused_while_one_runs(client, fake_doc_pages):
+    """
+    Intent: Two concurrent crawls would fight over the same documents and overwrite each
+        other's reported progress, so the screen would describe neither run accurately.
+    Success: A refresh returns 409 while one is in progress.
+    Feature: Documentation corpus — one refresh at a time.
+    """
+    api_module._run_state["running"] = True
+    assert client.post(API + "/refresh", json={}).status_code == 409
+
+
+def test_a_refresh_does_not_block_the_other_jobs(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: A docs crawl takes minutes. If it shared run state with generation or the badge
+        sync, it would block unrelated work and its result could be reported as theirs.
+    Success: A running docs refresh leaves the question-generation state untouched.
+    Feature: Documentation corpus — independent run state.
+    """
+    from app.routers import questions as questions_api
+
+    api_module._run_state["running"] = True
+    assert questions_api.run_state()["running"] is False
+
+
+def test_progress_is_reported_while_a_refresh_runs(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: Without progress the screen shows a spinner for minutes and an operator cannot
+        tell a slow crawl from a stuck one.
+    Success: The status endpoint exposes the crawl's progress snapshot.
+    Feature: Documentation corpus — visible progress.
+    """
+    def crawl(sources, progress=None):
+        progress({"sources_done": 1, "sources_requested": 2, "pages_seen": 40,
+                  "inserted": 40, "updated": 0})
+        return {"inserted": 40}
+
+    monkeypatch.setattr(api_module.doc_corpus, "refresh", crawl)
+    client.post(API + "/refresh", json={})
+    state = client.get(API + "/refresh/status").json()
+    assert state["progress"]["pages_seen"] == 40
+
+
+def test_the_refresh_is_timed_on_the_server(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: A crawl outlives the page. Timing it in the browser would restart the elapsed
+        count at zero whenever someone navigated away and back, as happened on the other
+        screens.
+    Success: The status reports started_at, finished_at and the server clock.
+    Feature: Documentation corpus — elapsed time survives leaving the page.
+    """
+    monkeypatch.setattr(api_module.doc_corpus, "refresh", lambda sources, **kw: {"inserted": 0})
+    client.post(API + "/refresh", json={})
+    state = client.get(API + "/refresh/status").json()
+    assert state["finished_at"] >= state["started_at"]
+    assert abs(state["server_time"] - time.time()) < 5
+
+
+def test_a_failed_refresh_is_reported_with_its_traceback(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: A background failure has nowhere to surface. Swallowed, it looks like a corpus
+        that simply has no pages.
+    Success: The status reports the error and a traceback, and is no longer running.
+    Feature: Documentation corpus — failures are surfaced.
+    """
+    def explode(sources, **kwargs):
+        raise RuntimeError("index unreachable")
+
+    monkeypatch.setattr(api_module.doc_corpus, "refresh", explode)
+    client.post(API + "/refresh", json={})
+    state = client.get(API + "/refresh/status").json()
+    assert state["running"] is False
+    assert "index unreachable" in state["last_error"]
+    assert "RuntimeError" in state["last_traceback"]
+
+
+def test_the_sources_endpoint_reports_stored_and_available_sources(
+    client, monkeypatch, fake_doc_pages
+):
+    """
+    Intent: A source that exists upstream but has never been crawled must be listable, or it
+        can never be selected for a first fetch. Reporting only what is stored would hide
+        every new product's docs.
+    Success: Both the stored summary and the upstream source list are returned.
+    Feature: Documentation corpus — uncrawled sources are visible.
+    """
+    seed(source="ix-1")
+    monkeypatch.setattr(api_module.doc_corpus, "discover_sources",
+                        lambda: ["ix-1", "ix-2-never-crawled"])
+    body = client.get(API + "/sources").json()
+    assert [s["source"] for s in body["stored"]] == ["ix-1"]
+    assert "ix-2-never-crawled" in body["available"]
+    assert body["totals"]["pages"] == 1
+
+
+def test_an_unreachable_index_does_not_hide_what_is_stored(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: If reading the published index failed and that blanked the screen, an operator
+        would conclude the corpus was empty and re-crawl 10,000 pages they already had.
+    Success: The stored sources are still returned, with the discovery error named.
+    Feature: Documentation corpus — storage survives an upstream outage.
+    """
+    seed(source="ix-1")
+
+    def explode():
+        raise RuntimeError("dns failure")
+
+    monkeypatch.setattr(api_module.doc_corpus, "discover_sources", explode)
+    body = client.get(API + "/sources").json()
+    assert [s["source"] for s in body["stored"]] == ["ix-1"]
+    assert "dns failure" in body["discovery_error"]
+
+
+def test_stored_pages_can_be_listed_without_their_text(client, fake_doc_pages):
+    """
+    Intent: Confirming what a crawl captured needs the page list; the corpus is ~80 MB, so
+        that list must not carry the text.
+    Success: Listed pages omit the text field.
+    Feature: Documentation corpus — lightweight listing.
+    """
+    seed()
+    body = client.get(API + "/pages").json()
+    assert body and "text" not in body[0]
+    assert body[0]["url"].endswith("a.md")
+
+
+def test_a_single_page_can_be_read_with_its_text(client, fake_doc_pages):
+    """
+    Intent: Authoring reads the stored text, and a reviewer checking grounding needs to see
+        exactly what was captured for a URL.
+    Success: The page endpoint returns the stored text.
+    Feature: Documentation corpus — a page's text is retrievable.
+    """
+    seed()
+    body = client.get(API + "/page", params={"url": "https://www.mongodb.com/docs/a.md"}).json()
+    assert body["text"] == "# A\nbody"
+
+
+def test_asking_for_an_unstored_page_is_a_404(client, fake_doc_pages):
+    """
+    Intent: A URL that was never crawled must be reported as absent rather than as an empty
+        page, which authoring would treat as real but contentless source material.
+    Success: An unknown URL returns 404.
+    Feature: Documentation corpus — unknown pages are reported.
+    """
+    assert client.get(API + "/page", params={"url": "https://x/none.md"}).status_code == 404
+
+
+def test_a_source_can_be_deleted(client, fake_doc_pages):
+    """
+    Intent: A crawl can capture the wrong thing — a renamed index, or irrelevant bulk.
+        Without a way to drop it the only remedy is editing the collection by hand.
+    Success: Deleting a source removes its pages and reports the count.
+    Feature: Documentation corpus — a bad crawl can be undone.
+    """
+    seed(source="ix-1")
+    response = client.delete(API + "/sources", params={"source": "ix-1"})
+    assert response.json() == {"source": "ix-1", "deleted": 1}
+    assert doc_pages.totals()["pages"] == 0
+
+
+def test_deleting_an_unknown_source_is_a_404(client, fake_doc_pages):
+    """
+    Intent: A stale screen must not report a successful delete of pages that were already
+        gone.
+    Success: Deleting an unknown source returns 404.
+    Feature: Documentation corpus — unknown source is reported.
+    """
+    assert client.delete(API + "/sources", params={"source": "nope"}).status_code == 404
+
+
+# --- the screen ---
+
+
+def test_the_screen_is_in_the_admin_area(client, fake_doc_pages):
+    """
+    Intent: Maintaining the corpus is curation work, like the badge catalog — nobody writing
+        a question should have to think about it. It belongs behind /admin and must be
+        reachable from the nav.
+    Success: The page renders under /admin with its nav link marked as admin.
+    Feature: Documentation corpus — an admin screen.
+    """
+    response = client.get(PAGE)
+    assert response.status_code == 200
+    assert 'href="/admin/docs"' in response.text
+    assert 'data-admin-area="true"' in response.text
+
+
+def test_the_screen_says_how_much_is_stored(client, fake_doc_pages):
+    """
+    Intent: The first question anyone asks is whether the corpus is populated and how fresh
+        it is. Without totals the screen cannot answer either.
+    Success: Page count, size and last-fetched time are rendered.
+    Feature: Documentation corpus — the screen reports what is stored.
+    """
+    seed()
+    body = client.get(PAGE).text
+    assert 'data-total-pages="true"' in body
+    assert 'data-total-bytes="true"' in body
+    assert 'data-total-newest="true"' in body
+
+
+def test_the_screen_offers_refresh_on_demand(client, fake_doc_pages):
+    """
+    Intent: The refresh is explicitly ad-hoc — nothing schedules it. Both a whole-corpus
+        crawl and a targeted one need a control, or the feature exists only as an API call.
+    Success: The page offers both refresh buttons.
+    Feature: Documentation corpus — ad-hoc refresh from the screen.
+    """
+    body = client.get(PAGE).text
+    assert 'id="refresh-all-btn"' in body
+    assert 'id="refresh-selected-btn"' in body
+
+
+def test_a_refresh_in_progress_is_picked_up_on_load(client, fake_doc_pages):
+    """
+    Intent: A crawl outlives the page — an operator reloading, or opening a second tab, must
+        see it is running rather than starting a second one.
+    Success: With a refresh running, the page starts polling on load.
+    Feature: Documentation corpus — run state survives a page load.
+    """
+    api_module._run_state["running"] = True
+    body = client.get(PAGE).text
+    assert "if (true) { pollStatus(); }" in body
+    assert "adoptServerClock(state)" in body
+
+
+def test_the_last_refresh_result_is_reported(client, fake_doc_pages):
+    """
+    Intent: After the page reloads the run alert is gone, so the page itself must say what
+        the crawl did — otherwise a completed refresh looks like it did nothing.
+    Success: The counts and the failure summary are rendered.
+    Feature: Documentation corpus — the last refresh is reported.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "docs-refresh", "sources_done": 3, "inserted": 120,
+        "updated": 4, "unchanged": 900, "failure_count": 2,
+        "failures": [{"url": "https://x/a.md", "error": "timeout"}],
+    }
+    body = client.get(PAGE).text
+    assert "120 new" in body
+    assert 'data-refresh-failures="true"' in body
+    assert "timeout" in body
+
+
+def test_a_failed_refresh_is_explained_on_the_screen(client, fake_doc_pages):
+    """
+    Intent: A background failure has nowhere else to surface, and without the message an
+        operator has to read server logs to learn the index was unreachable.
+    Success: A danger alert carries the error and the trace.
+    Feature: Documentation corpus — failures are explained on screen.
+    """
+    api_module._run_state.update(
+        last_error="index unreachable", last_traceback="Traceback: RuntimeError"
+    )
+    body = client.get(PAGE).text
+    assert 'class="alert alert-danger"' in body
+    assert "index unreachable" in body
+    assert "<details" in body
+
+
+def test_an_unreachable_database_is_explained_rather_than_crashing(
+    client, monkeypatch, fake_doc_pages
+):
+    """
+    Intent: A wrong connection string is the likeliest setup mistake, and a stack trace
+        tells an operator nothing about which variable to fix.
+    Success: The page still returns 200 and names the failure.
+    Feature: Documentation corpus — storage failures are explained.
+    """
+    def explode():
+        raise ServerSelectionTimeoutError("no route to host")
+
+    monkeypatch.setattr(doc_pages, "totals", explode)
+    response = client.get(PAGE)
+    assert response.status_code == 200
+    assert "no route to host" in response.text
+
+
+def test_the_docs_api_is_mounted(client):
+    """
+    Intent: A router written but never included fails only in production, on a screen whose
+        buttons then do nothing.
+    Success: The refresh and sources endpoints appear in the served schema.
+    Feature: Application wiring — documentation corpus API is reachable.
+    """
+    paths = client.get("/openapi.json").json()["paths"]
+    assert API + "/refresh" in paths
+    assert API + "/sources" in paths

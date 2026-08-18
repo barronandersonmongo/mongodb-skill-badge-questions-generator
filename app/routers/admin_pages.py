@@ -20,7 +20,8 @@ from pymongo.errors import PyMongoError
 
 from app.config import get_settings
 from app.logging_config import DEFAULT_LINES, MAX_BYTES, TOTAL_FILES, log_file_path
-from app.repositories import skill_badges
+from app.repositories import doc_pages, skill_badges
+from app.routers.admin_docs import run_state as docs_run_state
 from app.routers.admin_skill_badges import run_state
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
@@ -41,6 +42,37 @@ CONFIDENCE_STYLES = {"high": "success", "medium": "warning", "low": "danger"}
 def admin_home() -> RedirectResponse:
     """The admin area's one screen is the badge catalog; go straight there."""
     return RedirectResponse("/admin/skill-badges", status_code=307)
+
+
+@router.get("/docs")
+def docs_page(request: Request):
+    """The documentation corpus screen.
+
+    Counts are read here so the page says what is stored even when the published
+    index is unreachable; the source list itself is fetched by the page, because
+    reaching MongoDB's site takes long enough to be worth not blocking a render on.
+    """
+    totals: dict = {"pages": 0, "bytes": 0, "newest": None}
+    storage_error: str | None = None
+    try:
+        totals = doc_pages.totals()
+    except PyMongoError as exc:
+        storage_error = str(exc)
+
+    state = docs_run_state()
+    return templates.TemplateResponse(
+        request,
+        "admin/docs.html",
+        {
+            "active_page": "docs",
+            "totals": totals,
+            "storage_error": storage_error,
+            "running": state["running"],
+            "last_result": state["last_result"],
+            "last_error": state["last_error"],
+            "last_traceback": state["last_traceback"],
+        },
+    )
 
 
 @router.get("/logs")

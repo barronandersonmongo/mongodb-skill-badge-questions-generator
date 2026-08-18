@@ -32,7 +32,7 @@ visible to cron, systemd, or anything started as a service.
 
 Optional overrides: `ANTHROPIC_MODEL`, `WEB_SEARCH_TOOL_TYPE`, `WEB_FETCH_TOOL_TYPE`,
 `SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`,
-`QUESTIONS_VECTOR_INDEX_NAME`, `LOG_DIR`, `LOG_LEVEL`.
+`QUESTIONS_VECTOR_INDEX_NAME`, `DOCS_INDEX_URL`, `LOG_DIR`, `LOG_LEVEL`.
 
 Storage target is the `skill-badge-questions` database on the `PTM-Hackathon`
 cluster (Atlas project "Barry Anderson").
@@ -222,6 +222,45 @@ exactly the filtered set from the same endpoint the screen reads.
 | `POST` | `/api/questions/{id}/status` | Approve, reject or re-open |
 | `DELETE` | `/api/questions/{id}` | Delete a question |
 
+### Documentation corpus
+
+`/admin/docs` keeps a stored copy of MongoDB's documentation, so question authoring
+can read source material from the database instead of fetching the web mid-run —
+which is where most of a run's wall-clock time goes, and why two runs on the same
+badge see different source text.
+
+Pages come from MongoDB's published agent index (`llms.txt`), which names each page
+and serves it as Markdown. That is the only enumerable route to the corpus: the MCP
+server's `search-knowledge` answers a query with its best few chunks and cannot be
+asked for everything, which makes it the right tool at authoring time and the wrong
+one for building a cache.
+
+- **Refresh everything** crawls every index the root names — around **10,000 pages**
+  (~80 MB). Most of that is driver and CLI reference a badge quiz never draws on.
+- **Refresh selected** crawls only the sources you tick. This is the normal case.
+- A page is only rewritten when its content hash changed, so a re-run is cheap and
+  the reported `updated` count means something.
+- Sources that exist upstream but have never been crawled are listed too, so a new
+  product's docs can be picked up.
+- Per-page failures are collected, not fatal: across 10,000 requests to a site this
+  program does not own, some will fail. The list is capped at 50 with a true count.
+- Oversized pages (>2 MB) are skipped — those are generated API dumps, not prose.
+- Progress is reported while the crawl runs, and the elapsed timer is server-timed,
+  so leaving the screen and returning does not restart it.
+
+Nothing schedules this; it is refreshed on demand. `DOCS_INDEX_URL` overrides the
+index location.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/admin/docs` | The corpus screen |
+| `POST` | `/api/admin/docs/refresh` | Crawl everything, or the named sources |
+| `GET` | `/api/admin/docs/refresh/status` | Poll a crawl, with progress |
+| `GET` | `/api/admin/docs/sources` | Stored sources, upstream sources, totals |
+| `GET` | `/api/admin/docs/pages?source=` | Stored pages, without their text |
+| `GET` | `/api/admin/docs/page?url=` | One page, with its text |
+| `DELETE` | `/api/admin/docs/sources?source=` | Drop a source's pages |
+
 ### Logging
 
 Everything the service logs goes to `logs/app.log`, rotating at **100 MB** and
@@ -325,19 +364,27 @@ app/services/question_duplicates.py  the ad-hoc duplicate sweep ($vectorSearch +
 app/services/discover_cli.py         shell entry point
 app/repositories/skill_badges.py     upsert / list / status, indexes
 app/repositories/questions.py        insert / filter / status, indexes
+app/repositories/doc_pages.py        the stored documentation corpus
 app/routers/questions.py             question JSON endpoints under /api/questions
 app/routers/pages.py                 the questions screen, served at /
 app/routers/admin_skill_badges.py    badge JSON endpoints under /api/admin
 app/routers/admin_pages.py           server-rendered pages under /admin
 app/routers/admin_logs.py            log tail endpoint under /api/admin
+app/routers/admin_docs.py            documentation corpus endpoints
+app/services/doc_corpus.py           crawls the published docs index
 app/templates/base.html              nav shell shared by every screen
 app/templates/questions.html         the main screen: review and generate
 app/templates/admin/skill_badges.html  badge review screen
 app/templates/admin/logs.html        log viewer
+app/templates/admin/docs.html        documentation corpus screen
 tests/                               pytest suite + fakes (see tests/README.md)
 ```
 
 ## Known limitations
+
+- The documentation corpus is stored but **not yet read by authoring** — generation
+  still uses web search. Wiring it in is the next step, and is the reason the corpus
+  exists.
 
 - Run state is in-process; it needs to move into MongoDB before running multiple
   uvicorn workers. Badge runs and question runs hold separate state, so one of

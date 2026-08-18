@@ -1,7 +1,7 @@
 import pytest
 
 from app.config import Settings
-from app.repositories import questions, skill_badges
+from app.repositories import doc_pages, questions, skill_badges
 from tests.fakes import FakeCollection
 
 
@@ -74,6 +74,14 @@ def fake_questions(monkeypatch) -> FakeCollection:
     """Point the questions repository at an in-memory collection."""
     collection = FakeCollection()
     monkeypatch.setattr(questions, "collection", lambda: collection)
+    return collection
+
+
+@pytest.fixture
+def fake_doc_pages(monkeypatch) -> FakeCollection:
+    """Point the documentation-corpus repository at an in-memory collection."""
+    collection = FakeCollection()
+    monkeypatch.setattr(doc_pages, "collection", lambda: collection)
     return collection
 
 

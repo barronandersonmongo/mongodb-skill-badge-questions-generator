@@ -26,6 +26,13 @@
         </a>
       </li>
       <li class="nav-item">
+        <a class="nav-link {% if active_page == 'docs' %}active{% endif %}"
+           href="/admin/docs">
+          Documentation
+          <span class="badge text-bg-secondary fw-normal" data-admin-area="true">admin</span>
+        </a>
+      </li>
+      <li class="nav-item">
         <a class="nav-link {% if active_page == 'logs' %}active{% endif %}"
            href="/admin/logs">
           Logs

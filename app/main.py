@@ -13,7 +13,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.logging_config import configure_logging, log_file_path
-from app.routers import admin_logs, admin_pages, admin_skill_badges, pages, questions
+from app.routers import (
+    admin_docs,
+    admin_logs,
+    admin_pages,
+    admin_skill_badges,
+    pages,
+    questions,
+)
 
 # Attached before the routers are touched, so anything they log while being
 # imported is captured. Only the handler is set up here — importing this module is
@@ -42,6 +49,7 @@ app.include_router(questions.router)
 app.include_router(admin_pages.router)
 app.include_router(admin_skill_badges.router)
 app.include_router(admin_logs.router)
+app.include_router(admin_docs.router)
 
 
 @app.get("/healthz")

@@ -10,6 +10,7 @@ class Settings:
     database: str = "skill-badge-questions"
     skill_badges_collection: str = "skill_badges"
     questions_collection: str = "questions"
+    doc_pages_collection: str = "doc_pages"
     # Claude Opus 5: adaptive thinking is on by default; effort tunes depth.
     model: str = "claude-opus-5"
     effort: str = "high"
@@ -57,6 +58,15 @@ class Settings:
     question_rerank_delete_threshold: float = 0.85
     # How many neighbours each question is shortlisted against.
     question_duplicate_neighbours: int = 5
+    # MongoDB publishes an agent-oriented index of its documentation, and serves
+    # every page as Markdown. That is the only enumerable route to the whole corpus:
+    # search-knowledge returns the best chunks for a query and cannot be asked "give
+    # me everything".
+    docs_index_url: str = "https://www.mongodb.com/docs/llms.txt"
+    # ~10,000 pages, so the crawl is concurrent — but politely so, against a site
+    # this program does not own.
+    docs_fetch_concurrency: int = 8
+    docs_request_timeout: float = 30.0
 
     @property
     def uses_gateway(self) -> bool:
@@ -113,4 +123,5 @@ def get_settings() -> Settings:
         vector_index_name=os.environ.get("VECTOR_INDEX_NAME") or Settings.vector_index_name,
         questions_vector_index_name=os.environ.get("QUESTIONS_VECTOR_INDEX_NAME")
         or Settings.questions_vector_index_name,
+        docs_index_url=os.environ.get("DOCS_INDEX_URL") or Settings.docs_index_url,
     )
