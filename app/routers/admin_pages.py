@@ -31,6 +31,8 @@ router = APIRouter(prefix="/admin", tags=["admin-ui"])
 # One source runs to nearly a thousand pages; a listing longer than this is scrolled
 # past rather than read, and the search box is the way through it.
 PAGE_LIST_LIMIT = 500
+# Beyond this many hits, the query is too broad to be read — refine it instead.
+SEARCH_RESULT_LIMIT = 100
 
 STATUS_TABS = [
     ("", "All"),
@@ -75,6 +77,36 @@ def docs_page(request: Request):
             "last_result": state["last_result"],
             "last_error": state["last_error"],
             "last_traceback": state["last_traceback"],
+        },
+    )
+
+
+@router.get("/docs/search")
+def docs_search_page(request: Request, q: str | None = None):
+    """Keyword search across every stored page.
+
+    Corpus-wide on purpose: which of the 74 sources holds a topic is not something an
+    author knows, so a per-source search would only work for someone who already knew
+    where to look.
+    """
+    results: list[dict] = []
+    storage_error: str | None = None
+    query = (q or "").strip()
+    if query:
+        try:
+            results = doc_pages.search_pages(query, limit=SEARCH_RESULT_LIMIT)
+        except PyMongoError as exc:
+            storage_error = str(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "admin/docs_search.html",
+        {
+            "active_page": "docs",
+            "query": query,
+            "results": results,
+            "limit": SEARCH_RESULT_LIMIT,
+            "storage_error": storage_error,
         },
     )
 

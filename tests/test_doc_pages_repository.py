@@ -282,3 +282,168 @@ def test_the_page_listing_is_capped(fake_doc_pages):
         for i in range(10)
     ])
     assert len(doc_pages.list_pages("ix", limit=4)) == 4
+
+
+# --- searching the whole corpus ---
+
+
+def content(title: str, body: str, url: str, source: str = "ix-1") -> dict:
+    return {"url": url, "source": source, "title": title, "text": body}
+
+
+def test_a_page_is_found_by_words_in_its_text(fake_doc_pages):
+    """
+    Intent: Which of the 74 sources holds a topic is not something an author knows — the
+        C# driver's real documentation is not under the drivers index — so searching the
+        whole corpus by keyword is the only practical way to find source material.
+    Success: A page is returned for a term that appears only in its body.
+    Feature: Documentation search — find a page by its content.
+    """
+    doc_pages.upsert_pages([
+        content("Pipelines", "The $lookup stage joins another collection.", "https://x/a.md"),
+        content("Indexes", "A compound index covers several fields.", "https://x/b.md"),
+    ])
+    found = doc_pages.search_pages("lookup")
+    assert [p["url"] for p in found] == ["https://x/a.md"]
+
+
+def test_a_title_match_outranks_a_passing_mention(fake_doc_pages):
+    """
+    Intent: A page titled for the topic is nearly always the one being looked for, while a
+        page that merely mentions the word once is nearly never. Unranked, the useful
+        result sits below the noise.
+    Success: The page whose title matches is returned first.
+    Feature: Documentation search — ranked results.
+    """
+    doc_pages.upsert_pages([
+        content("Release Notes", "Fixed an aggregation bug.", "https://x/notes.md"),
+        content("Aggregation", "Aggregation combines documents.", "https://x/agg.md"),
+    ])
+    found = doc_pages.search_pages("aggregation")
+    assert found[0]["url"] == "https://x/agg.md"
+    assert found[0]["score"] >= found[-1]["score"]
+
+
+def test_results_carry_an_excerpt_around_the_match(fake_doc_pages):
+    """
+    Intent: A list of titles cannot answer "is this the page I meant" — the alternative is
+        opening every result, which is what the search exists to avoid.
+    Success: The excerpt contains the matched term and is far shorter than the page.
+    Feature: Documentation search — excerpts show why a page matched.
+    """
+    body = ("padding " * 100) + "the $unwind stage flattens arrays" + (" padding" * 100)
+    doc_pages.upsert_pages([content("Stages", body, "https://x/a.md")])
+    found = doc_pages.search_pages("unwind")
+    assert "unwind" in found[0]["excerpt"]
+    assert len(found[0]["excerpt"]) < len(body) / 2
+
+
+def test_an_excerpt_is_a_single_readable_line(fake_doc_pages):
+    """
+    Intent: Documentation is Markdown — headings, code fences, blank lines. Dropped into a
+        list row verbatim it renders as unreadable fragments.
+    Success: The excerpt has no newlines and no runs of whitespace.
+    Feature: Documentation search — excerpts are readable in a list.
+    """
+    body = "# Heading\n\n```js\ndb.c.aggregate([])\n```\n\nThe aggregate command runs a pipeline." * 5
+    doc_pages.upsert_pages([content("Aggregate", body, "https://x/a.md")])
+    excerpt = doc_pages.search_pages("aggregate")[0]["excerpt"]
+    assert "\n" not in excerpt and "  " not in excerpt
+
+
+def test_search_results_do_not_carry_the_whole_page(fake_doc_pages):
+    """
+    Intent: A hundred results carrying full page text would move megabytes to render one
+        list, when the excerpt is all the list shows.
+    Success: Results carry an excerpt and no full text field.
+    Feature: Documentation search — results are lightweight.
+    """
+    doc_pages.upsert_pages([content("Pipelines", "The $lookup stage joins.", "https://x/a.md")])
+    found = doc_pages.search_pages("lookup")
+    assert "excerpt" in found[0]
+    assert "text" not in found[0]
+
+
+def test_an_empty_search_returns_nothing_rather_than_everything(fake_doc_pages):
+    """
+    Intent: A blank query reaching the database as a text search would either error or
+        return the whole corpus. Neither is what an empty search box means.
+    Success: An empty or whitespace query returns no results.
+    Feature: Documentation search — an empty query is not a match-all.
+    """
+    doc_pages.upsert_pages([content("Pipelines", "The $lookup stage joins.", "https://x/a.md")])
+    assert doc_pages.search_pages("") == []
+    assert doc_pages.search_pages("   ") == []
+
+
+def test_the_search_result_count_is_bounded(fake_doc_pages):
+    """
+    Intent: A broad term matches thousands of pages in a 7,000-page corpus. Returning all
+        of them would be unreadable and would carry every excerpt.
+    Success: The limit bounds how many results come back.
+    Feature: Documentation search — bounded results.
+    """
+    doc_pages.upsert_pages([
+        content("Page", "aggregation pipeline", f"https://x/p{i}.md") for i in range(10)
+    ])
+    assert len(doc_pages.search_pages("aggregation", limit=3)) == 3
+
+
+def test_the_corpus_is_text_indexed_on_title_and_content(fake_doc_pages):
+    """
+    Intent: Without a text index the search is a full scan of 72 MB on every keystroke-worth
+        of query. The title is weighted because a title match is nearly always the wanted
+        page.
+    Success: A text index exists over title and text, with the title weighted higher.
+    Feature: Documentation search — indexed and weighted.
+    """
+    doc_pages.ensure_indexes()
+    text_index = next(i for i in fake_doc_pages.indexes if i["name"] == "title_text_search")
+    assert dict(text_index["keys"]) == {"title": "text", "text": "text"}
+    assert text_index["weights"]["title"] > text_index["weights"]["text"]
+
+
+def test_stubs_stored_before_the_floor_existed_can_be_pruned(fake_doc_pages):
+    """
+    Intent: A refresh would drop them, since the sweep removes what a run did not write —
+        but that means a full crawl before the listings stop being cluttered by pages
+        nothing can be written from.
+    Success: Pruning removes pages under the floor and keeps the rest.
+    Feature: Documentation corpus — existing stubs can be removed without a full crawl.
+    """
+    doc_pages.upsert_pages([
+        content("Stub", "x" * 50, "https://x/stub.md"),
+        content("Real", "y" * 5000, "https://x/real.md"),
+    ])
+    assert doc_pages.delete_stubs(500) == 1
+    assert [d["url"] for d in fake_doc_pages.docs] == ["https://x/real.md"]
+
+
+def test_a_title_only_match_still_gets_an_excerpt(fake_doc_pages):
+    """
+    Intent: A page can match on its title alone, with the term absent from the body. With no
+        excerpt the result row would be a bare title, which is the case where context is
+        most needed — nothing on screen would say what the page contains.
+    Success: The excerpt falls back to the start of the page rather than being empty.
+    Feature: Documentation search — every result shows context.
+    """
+    doc_pages.upsert_pages([
+        content("Aggregation", "Documents pass through stages in order.", "https://x/a.md")
+    ])
+    found = doc_pages.search_pages("aggregation")
+    assert found[0]["excerpt"].startswith("Documents pass through stages")
+
+
+def test_a_long_page_matched_only_by_title_is_excerpted_not_dumped(fake_doc_pages):
+    """
+    Intent: Falling back to "the start of the page" must still be a window. A 77 KB page
+        returned whole would defeat the point of excerpts and move megabytes into a list.
+    Success: The fallback excerpt is truncated and marked as truncated.
+    Feature: Documentation search — excerpts stay short.
+    """
+    doc_pages.upsert_pages([
+        content("Aggregation", "prose " * 5000, "https://x/a.md")
+    ])
+    excerpt = doc_pages.search_pages("aggregation")[0]["excerpt"]
+    assert len(excerpt) < 400
+    assert excerpt.endswith("…")

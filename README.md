@@ -433,6 +433,14 @@ now — around **10,000 pages** (~80 MB), a few minutes.
   program does not own, some will fail, and aborting would mean the crawl never
   finishes. The reported list is capped at 50 with a true count.
 - Oversized pages (>2 MB) are skipped — generated API dumps, not prose.
+- **Navigation stubs are skipped.** A page that is a title and a list of links is not
+  something a question can be written from: `drivers/csharp-drivers.md` is 108 bytes and
+  only points at the real C# driver docs. Anything under `docs_min_page_bytes` (500) is
+  excluded, counted separately from failures, since skipping one is the intended
+  outcome. The floor is deliberately conservative — stubs continue up to roughly 900
+  bytes, but so do a few genuinely short pages, and dropping real content is the worse
+  mistake. `POST /api/admin/docs/prune-stubs` removes ones stored before the floor
+  existed, without waiting for a full crawl.
 - **Progress is reported in detail.** The crawl reads every index first, so before
   fetching a single page it knows how many there are. The panel then shows the phase,
   a percentage, pages done of the total, the rate in pages per second, elapsed time and
@@ -443,6 +451,17 @@ now — around **10,000 pages** (~80 MB), a few minutes.
   the timer.
 - A page named by two indexes is fetched and counted once, so the total is a real
   denominator.
+
+**Search the whole corpus.** `/admin/docs/search` searches every stored page by keyword,
+ranked, with an excerpt around the match. Corpus-wide on purpose: which of the 74
+sources holds a topic is not something an author knows — the C# driver's real
+documentation is not under the `drivers` index, it is under its own, 81 pages of it —
+so a per-source search would only work for someone who already knew where to look.
+
+A plain MongoDB text index over `title` and `text`, with the title weighted ten times:
+the corpus is browsed by keyword rather than by meaning, and a text index needs no
+definition maintained outside this repository. A page whose title matches is nearly
+always the wanted one.
 
 **Reading what is stored.** The source table is not just an inventory — open a source
 to list its pages, then open a page to read it. Long sources are capped at 500 rows
@@ -462,6 +481,9 @@ index location.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/admin/docs` | The corpus screen |
+| `GET` | `/admin/docs/search?q=` | Keyword search across every stored page |
+| `GET` | `/api/admin/docs/search?q=&limit=` | The same search, as JSON |
+| `POST` | `/api/admin/docs/prune-stubs` | Delete navigation stubs already stored |
 | `GET` | `/admin/docs/source?source=&q=` | Pages in one source, filterable |
 | `GET` | `/admin/docs/page?url=` | One page, rendered as Markdown |
 | `POST` | `/api/admin/docs/refresh` | Replace the corpus with a fresh crawl |
@@ -586,6 +608,7 @@ app/templates/questions.html         the main screen: review and generate
 app/templates/admin/skill_badges.html  badge review screen
 app/templates/admin/logs.html        log viewer
 app/templates/admin/docs.html        documentation corpus screen
+app/templates/admin/docs_search.html corpus-wide keyword search
 app/templates/admin/docs_source.html pages in one source
 app/templates/admin/docs_page.html   Markdown viewer for one page
 tests/                               pytest suite + fakes (see tests/README.md)

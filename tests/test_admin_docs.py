@@ -554,3 +554,146 @@ def test_the_panel_shows_no_percentage_until_the_total_is_known(client, fake_doc
     body = client.get(PAGE).text
     assert "p.percent !== null" in body
     assert "indexes read" in body
+
+
+# --- corpus-wide search ---
+
+
+def seed_content(title: str, body: str, url: str, source: str = "ix-1") -> None:
+    doc_pages.upsert_pages([{"url": url, "source": source, "title": title, "text": body}])
+
+
+def test_the_search_endpoint_returns_ranked_results_with_excerpts(client, fake_doc_pages):
+    """
+    Intent: Finding source material for a question means searching the whole corpus by
+        keyword; a result without an excerpt cannot be judged without opening it.
+    Success: The endpoint returns the matching page with a score and an excerpt.
+    Feature: Documentation search — the API answers keyword queries.
+    """
+    seed_content("Pipelines", "The $lookup stage joins another collection.", "https://x/a.md")
+    body = client.get(API + "/search", params={"q": "lookup"}).json()
+    assert body and body[0]["url"] == "https://x/a.md"
+    assert "lookup" in body[0]["excerpt"]
+    assert body[0]["score"] > 0
+
+
+@pytest.mark.parametrize(
+    "params", [{"q": "a"}, {"q": ""}, {"q": "ok", "limit": 0}, {"q": "ok", "limit": 5000}],
+    ids=["too-short", "empty", "no-limit", "limit-too-high"],
+)
+def test_a_malformed_search_is_refused(client, fake_doc_pages, params):
+    """
+    Intent: A one-character query matches most of a 7,000-page corpus, and an unbounded
+        limit would return all of it with an excerpt each. Both are caught at the boundary.
+    Success: Each malformed search is a validation error.
+    Feature: Documentation search — bounded request.
+    """
+    assert client.get(API + "/search", params=params).status_code == 422
+
+
+def test_stubs_can_be_pruned_without_a_full_crawl(client, fake_doc_pages):
+    """
+    Intent: A refresh drops stubs by sweeping what it did not write, but that means waiting
+        twelve minutes before the listings stop being cluttered by pages nothing can be
+        written from.
+    Success: The prune endpoint deletes pages under the floor and reports the count and the
+        floor it used.
+    Feature: Documentation corpus — existing stubs can be pruned on demand.
+    """
+    seed_content("Stub", "x" * 50, "https://x/stub.md")
+    seed_content("Real", "y" * 5000, "https://x/real.md")
+    body = client.post(API + "/prune-stubs").json()
+    assert body == {"deleted": 1, "smaller_than": 500}
+    assert [p["url"] for p in doc_pages.list_pages()] == ["https://x/real.md"]
+
+
+# --- the search screen ---
+
+
+def test_the_search_screen_finds_pages_across_every_source(client, fake_doc_pages):
+    """
+    Intent: The corpus looked useless because its content was reachable only by guessing
+        which of 74 sources held it — the C# driver's real documentation is not under the
+        drivers index. Searching everything is what makes the corpus usable for writing
+        questions.
+    Success: A page in one source is found by a keyword search that names no source, and
+        links to the viewer.
+    Feature: Documentation search — corpus-wide, from the screen.
+    """
+    seed_content("LINQ", "The aggregation pipeline is built from stages.", "https://x/a.md",
+                 source="ix-csharp")
+    response = client.get("/admin/docs/search", params={"q": "aggregation pipeline"})
+    assert response.status_code == 200
+    assert 'data-search-result="true"' in response.text
+    assert "/admin/docs/page?url=" in response.text
+    assert 'data-excerpt="true"' in response.text
+
+
+def test_the_corpus_screen_offers_the_search(client, fake_doc_pages):
+    """
+    Intent: A search nobody can find does not fix findability. The route in belongs on the
+        screen where someone has just discovered a source is a hub of links.
+    Success: The corpus screen carries a search form pointing at the search screen.
+    Feature: Documentation search — reachable from the corpus screen.
+    """
+    body = client.get(PAGE).text
+    assert 'data-corpus-search="true"' in body
+    assert 'action="/admin/docs/search"' in body
+
+
+def test_the_search_screen_reports_how_many_results_it_found(client, fake_doc_pages):
+    """
+    Intent: Results are capped, so a reader needs to know whether they are seeing everything
+        or the top of a broad match they should narrow.
+    Success: The count is shown for a query.
+    Feature: Documentation search — honest result count.
+    """
+    seed_content("Pipelines", "The $lookup stage joins.", "https://x/a.md")
+    body = client.get("/admin/docs/search", params={"q": "lookup"}).text
+    assert 'data-result-count="true"' in body
+    assert "1 result(s)" in body
+
+
+def test_a_search_with_no_match_says_so(client, fake_doc_pages):
+    """
+    Intent: "The corpus has nothing on this" is a useful answer — it tells an author the
+        material for a question is not there — but only if it is distinguishable from a
+        broken search.
+    Success: A query with no match names the query in the empty state.
+    Feature: Documentation search — distinct empty state.
+    """
+    body = client.get("/admin/docs/search", params={"q": "quantum tunnelling"}).text
+    assert 'data-empty="true"' in body
+    assert "quantum tunnelling" in body
+
+
+def test_the_search_screen_prompts_before_a_query_is_entered(client, fake_doc_pages):
+    """
+    Intent: Arriving at the screen with no query must not look like a search that found
+        nothing, which would read as an empty corpus.
+    Success: With no query the screen prompts rather than reporting no results.
+    Feature: Documentation search — a bare screen invites a query.
+    """
+    body = client.get("/admin/docs/search").text
+    assert "Enter a search above" in body
+    assert "result(s)" not in body
+
+
+def test_a_missing_text_index_is_explained_rather_than_crashing(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: A corpus stored before search existed has no text index, so the query fails. That
+        is a fixable state — refresh once — and saying so is more useful than a stack trace
+        or an empty result that reads as "we have nothing on that".
+    Success: The screen returns 200 and explains, naming the failure.
+    Feature: Documentation search — a missing index is explained.
+    """
+    from pymongo.errors import OperationFailure
+
+    def explode(*args, **kwargs):
+        raise OperationFailure("text index required for $text query")
+
+    monkeypatch.setattr(doc_pages, "search_pages", explode)
+    response = client.get("/admin/docs/search", params={"q": "anything"})
+    assert response.status_code == 200
+    assert 'data-search-error="true"' in response.text
+    assert "text index required" in response.text

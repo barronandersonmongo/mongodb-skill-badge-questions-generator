@@ -15,6 +15,12 @@
     </p>
   </div>
   <div class="text-nowrap">
+    <form method="get" action="/admin/docs/search" class="d-inline-flex gap-1 me-2"
+          data-corpus-search="true">
+      <input class="form-control form-control-sm" type="search" name="q"
+             placeholder="search all pages" style="min-width: 16rem;">
+      <button class="btn btn-sm btn-outline-primary" type="submit">Search</button>
+    </form>
     <button class="btn btn-primary" id="refresh-btn" type="button">
       Refresh documentation
     </button>
@@ -69,8 +75,14 @@
   {{ last_result.inserted }} new,
   {{ last_result.updated }} updated,
   {{ last_result.unchanged }} unchanged,
-  {{ last_result.removed }} removed
+  {{ last_result.removed }} removed,
+  {{ last_result.skipped_stubs }} nav stub(s) skipped
   across {{ last_result.sources_done }} source(s).
+  {% if last_result.sweep_skipped %}
+  <div class="mt-1 small" data-sweep-skipped="true">
+    Nothing was removed: {{ last_result.sweep_skipped }}
+  </div>
+  {% endif %}
   {% if last_result.failure_count %}
   <details class="mt-2">
     <summary class="small" data-refresh-failures="true">

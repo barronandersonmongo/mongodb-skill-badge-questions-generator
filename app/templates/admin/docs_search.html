@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Search documentation{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small" data-breadcrumb="true">
+    <li class="breadcrumb-item"><a href="/admin/docs">Documentation corpus</a></li>
+    <li class="breadcrumb-item active" aria-current="page">Search</li>
+  </ol>
+</nav>
+
+<h1 class="h4 mb-1">Search the documentation</h1>
+<p class="text-body-secondary small">
+  Every stored page, not one source — the documentation for a topic is often not under
+  the index you would expect it to be.
+</p>
+
+<form method="get" action="/admin/docs/search" class="d-flex gap-1 mb-3"
+      data-search-form="true">
+  <input class="form-control" type="search" name="q" value="{{ query }}" autofocus
+         placeholder="e.g. aggregation pipeline stage, $lookup, schema validation">
+  <button class="btn btn-primary" type="submit">Search</button>
+</form>
+
+{% if storage_error %}
+<div class="alert alert-danger" data-search-error="true">
+  <strong>Search is unavailable.</strong>
+  <div class="small font-monospace mt-1">{{ storage_error }}</div>
+  <div class="small mt-1">
+    A text index is created when the corpus is refreshed; if this is a corpus stored
+    before search existed, refresh it once.
+  </div>
+</div>
+{% endif %}
+
+{% if query and not storage_error %}
+<p class="text-body-secondary small" data-result-count="true">
+  {{ results | length }} result(s){% if results | length == limit %} (capped — refine the
+  query to narrow it){% endif %}.
+</p>
+{% endif %}
+
+<div class="card">
+  <div class="list-group list-group-flush">
+    {% for result in results %}
+    <a class="list-group-item list-group-item-action py-3" data-search-result="true"
+       href="/admin/docs/page?url={{ result.url | urlencode }}">
+      <div class="d-flex justify-content-between align-items-baseline">
+        <span class="fw-semibold">{{ result.title }}</span>
+        <span class="badge text-bg-light border font-monospace" data-score="true">
+          {{ "%.2f"|format(result.score) }}
+        </span>
+      </div>
+      <div class="small text-body-secondary" data-excerpt="true">{{ result.excerpt }}</div>
+      <div class="small text-body-tertiary font-monospace text-truncate mt-1">
+        {{ result.url.replace("https://www.mongodb.com/docs/", "") }}
+        · {{ (result.bytes / 1024) | round(1) }} KB
+      </div>
+    </a>
+    {% else %}
+    <div class="list-group-item text-center text-body-secondary py-5" data-empty="true">
+      {% if query and not storage_error %}
+        Nothing in the corpus matches “{{ query }}”.
+      {% elif not storage_error %}
+        Enter a search above.
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

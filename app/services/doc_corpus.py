@@ -87,22 +87,36 @@ def page_title(text: str, url: str) -> str:
     return url.rsplit("/", 1)[-1].removesuffix(".md")
 
 
+def is_stub(text: str, settings: Settings) -> bool:
+    """Is this a navigation page rather than documentation?
+
+    A stub is a title and a list of links to the real pages — nothing a question can be
+    written from. Judged on size because that is what separates them cleanly in the
+    published corpus, and because judging on link density would also discard genuine
+    reference pages that are mostly tables of links.
+    """
+    return len(text.encode("utf-8")) < settings.docs_min_page_bytes
+
+
 def fetch_pages(
     urls: Iterable[str],
     source: str,
     *,
     settings: Settings | None = None,
     on_page: Callable[[], None] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    """Fetch pages concurrently. Returns the pages and the per-page failures.
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], list[str]]:
+    """Fetch pages concurrently. Returns the pages, the failures, and the stubs skipped.
 
     One unreachable page must not lose the thousands that fetched cleanly, so
-    failures are collected and reported rather than raised.
+    failures are collected and reported rather than raised. Stubs are returned
+    separately: skipping a navigation page is the intended outcome, not a failure, and
+    counting it as one would make the failure figure meaningless.
     """
     settings = settings or get_settings()
     urls = list(urls)
     pages: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
+    stubs: list[str] = []
 
     def fetch(url: str):
         try:
@@ -125,6 +139,9 @@ def fetch_pages(
                 logger.error("Docs page failed: %s — %s", url, error)
                 failures.append({"url": url, "error": error})
                 continue
+            if is_stub(text, settings):
+                stubs.append(url)
+                continue
             pages.append(
                 {
                     "url": url,
@@ -133,7 +150,7 @@ def fetch_pages(
                     "text": text,
                 }
             )
-    return pages, failures
+    return pages, failures, stubs
 
 
 # Pages are written in batches rather than all at once, so a long crawl makes
@@ -215,8 +232,10 @@ def refresh(
         "inserted": 0,
         "updated": 0,
         "unchanged": 0,
+        "skipped_stubs": 0,
         "failed": 0,
         "removed": 0,
+        "sweep_skipped": None,
         "failures": [],
         "per_source": [],
     }
@@ -279,11 +298,11 @@ def refresh(
 
     for index_url, urls in by_source.items():
         stats = {"source": index_url, "pages": len(urls), "inserted": 0,
-                 "updated": 0, "unchanged": 0, "failed": 0}
+                 "updated": 0, "unchanged": 0, "skipped_stubs": 0, "failed": 0}
 
         for start in range(0, len(urls), WRITE_BATCH):
             batch = urls[start : start + WRITE_BATCH]
-            pages, failures = fetch_pages(
+            pages, failures, stubs = fetch_pages(
                 batch, index_url, settings=settings,
                 on_page=lambda: (
                     summary.__setitem__("pages_seen", summary["pages_seen"] + 1),
@@ -296,16 +315,19 @@ def refresh(
                 stats[key] += written[key]
             stats["failed"] += len(failures)
             summary["failed"] += len(failures)
+            stats["skipped_stubs"] += len(stubs)
+            summary["skipped_stubs"] += len(stubs)
             summary["failures"].extend(failures)
             report()
 
         summary["per_source"].append(stats)
         source_line = (
-            "Docs refresh: %s — %d page(s), %d new, %d updated, %d unchanged, %d failed"
+            "Docs refresh: %s — %d page(s), %d new, %d updated, %d unchanged, "
+            "%d nav stub(s) skipped, %d failed"
         )
         source_figures = (
             index_url, stats["pages"], stats["inserted"], stats["updated"],
-            stats["unchanged"], stats["failed"],
+            stats["unchanged"], stats["skipped_stubs"], stats["failed"],
         )
         if stats["failed"]:
             logger.error(source_line, *source_figures)
@@ -322,14 +344,14 @@ def refresh(
     if stored_anything:
         summary["removed"] = doc_pages.delete_not_in_run(run_id)
     else:
-        summary["failures"].append(
-            {
-                "url": settings.docs_index_url,
-                "error": "no pages were stored, so nothing was removed — the existing "
-                "corpus was left untouched",
-            }
+        # Reported on its own rather than as a failure: the crawl may have worked
+        # perfectly and simply found nothing storable, and counting this as a failure
+        # would make the failure figure — the thing a reader scans for — untrustworthy.
+        summary["sweep_skipped"] = (
+            "no pages were stored, so nothing was removed and the existing corpus was "
+            "left untouched"
         )
-        summary["failed"] += 1
+        logger.error("Docs refresh stored no pages; corpus left untouched")
 
     # The whole list would be thousands of entries on a bad network; the count is
     # what matters on screen and the first few are what a person acts on.
@@ -341,12 +363,13 @@ def refresh(
 
     finished = (
         "Docs refresh finished in %.1fs: %d source(s), %d of %d page(s) fetched, "
-        "%d new, %d updated, %d unchanged, %d removed, %d failed"
+        "%d new, %d updated, %d unchanged, %d nav stub(s) skipped, %d removed, %d failed"
     )
     figures = (
         summary["elapsed_seconds"], summary["sources_total"], summary["pages_seen"],
         summary["pages_total"], summary["inserted"], summary["updated"],
-        summary["unchanged"], summary["removed"], summary["failure_count"],
+        summary["unchanged"], summary["skipped_stubs"], summary["removed"],
+        summary["failure_count"],
     )
     # A run with failures is reported at ERROR so it is findable by level, rather than
     # sitting among thousands of INFO lines with one number quietly non-zero.

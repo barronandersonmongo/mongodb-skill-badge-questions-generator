@@ -16,7 +16,16 @@ class FakeCursor:
     def __init__(self, docs: list[dict[str, Any]]):
         self._docs = docs
 
-    def sort(self, key: str, direction: int = 1) -> "FakeCursor":
+    def sort(self, key, direction: int = 1) -> "FakeCursor":
+        # pymongo accepts either a field name or a list of (field, direction) pairs;
+        # a text search sorts by {"$meta": "textScore"}, which is descending.
+        if isinstance(key, list):
+            field, spec = key[0]
+            descending = isinstance(spec, dict) or spec < 0
+            self._docs.sort(
+                key=lambda d: (d.get(field) is None, d.get(field)), reverse=descending
+            )
+            return self
         self._docs.sort(key=lambda d: d.get(key), reverse=direction < 0)
         return self
 
@@ -155,8 +164,25 @@ class FakeCollection:
         return name
 
     # --- reads ---
+    @staticmethod
+    def _text_score(doc: dict, search: str) -> float:
+        """Stand in for MongoDB's textScore, with the same title weighting.
+
+        Real scoring is term-frequency based and weighted per field; this counts term
+        occurrences and weights the title ten times, which is enough to order results
+        and to exercise "the title match comes first".
+        """
+        terms = [t.strip('"').casefold() for t in search.split() if t.strip('"')]
+        title = (doc.get("title") or "").casefold()
+        body = (doc.get("text") or "").casefold()
+        return sum(title.count(t) * 10 + body.count(t) for t in terms)
+
     def _matches(self, doc: dict, query: dict) -> bool:
         for key, expected in query.items():
+            if key == "$text":
+                if not self._text_score(doc, expected["$search"]):
+                    return False
+                continue
             if key == "$or":
                 if not any(self._matches(doc, clause) for clause in expected):
                     return False
@@ -171,6 +197,19 @@ class FakeCollection:
             if isinstance(expected, dict) and "$in" in expected:
                 if actual not in expected["$in"]:
                     return False
+            elif isinstance(expected, dict) and expected.keys() & {"$lt", "$lte", "$gt", "$gte"}:
+                # Range comparisons, used to select pages by size.
+                if actual is None:
+                    return False
+                for operator, bound in expected.items():
+                    if operator == "$lt" and not actual < bound:
+                        return False
+                    if operator == "$lte" and not actual <= bound:
+                        return False
+                    if operator == "$gt" and not actual > bound:
+                        return False
+                    if operator == "$gte" and not actual >= bound:
+                        return False
             elif isinstance(expected, dict) and "$ne" in expected:
                 if actual == expected["$ne"]:
                     return False
@@ -189,13 +228,25 @@ class FakeCollection:
     def _project(self, doc: dict, projection: dict | None) -> dict:
         out = dict(doc)
         for field, keep in (projection or {}).items():
+            if isinstance(keep, dict):
+                continue  # a meta field, filled in by the caller
             if not keep:
                 out.pop(field, None)
         return out
 
     def find(self, query: dict | None = None, projection: dict | None = None):
-        matched = [d for d in self.docs if self._matches(d, query or {})]
-        return FakeCursor([self._project(d, projection) for d in matched])
+        query = query or {}
+        matched = [d for d in self.docs if self._matches(d, query)]
+        projected = []
+        for doc in matched:
+            out = self._project(doc, projection)
+            # A projection may ask for the text score as a meta field; only a text
+            # query can supply one.
+            for field, spec in (projection or {}).items():
+                if isinstance(spec, dict) and "$meta" in spec and "$text" in query:
+                    out[field] = self._text_score(doc, query["$text"]["$search"])
+            projected.append(out)
+        return FakeCursor(projected)
 
     def find_one(self, query: dict, projection: dict | None = None):
         for doc in self.docs:

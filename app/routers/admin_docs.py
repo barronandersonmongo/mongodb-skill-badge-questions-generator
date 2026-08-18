@@ -12,7 +12,7 @@ import logging
 import time
 import traceback
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from app.repositories import doc_pages
 from app.services import doc_corpus
@@ -98,6 +98,26 @@ def list_sources() -> dict:
         "totals": doc_pages.totals(),
         "discovery_error": discovery_error,
     }
+
+
+@router.get("/search")
+def search(
+    q: str = Query(min_length=2, max_length=200),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[dict]:
+    """Keyword search across the whole corpus, best match first, with excerpts."""
+    return doc_pages.search_pages(q, limit=limit)
+
+
+@router.post("/prune-stubs")
+def prune_stubs() -> dict:
+    """Delete navigation stubs stored before they were being skipped."""
+    from app.config import get_settings
+
+    floor = get_settings().docs_min_page_bytes
+    deleted = doc_pages.delete_stubs(floor)
+    logger.info("Pruned %d navigation stub(s) under %d bytes", deleted, floor)
+    return {"deleted": deleted, "smaller_than": floor}
 
 
 @router.get("/pages")

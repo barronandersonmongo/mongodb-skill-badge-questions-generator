@@ -18,6 +18,18 @@ INDEX = "https://www.mongodb.com/docs/manual/llms.txt"
 
 
 @pytest.fixture
+def settings() -> Settings:
+    """Shadow the shared fixture: these tests use short page bodies.
+
+    The crawl skips pages under `docs_min_page_bytes` as navigation stubs. Real pages
+    average 10 KB, but padding every fixture to clear that floor would bury what each
+    test is actually about, so the floor is disabled here and exercised by its own
+    tests below.
+    """
+    return Settings(mongodb_uri="mongodb://test", docs_min_page_bytes=0)
+
+
+@pytest.fixture
 def web(monkeypatch):
     """Serve canned pages, and record what was requested."""
     def install(pages: dict[str, str], failures: dict[str, Exception] | None = None):
@@ -247,8 +259,7 @@ def test_the_reported_failure_list_is_capped(web, settings, stored, monkeypatch)
         failures={u: RuntimeError("boom") for u in urls},
     )
     result = doc_corpus.refresh(settings=settings)
-    # One extra failure records that nothing was stored, so nothing was swept.
-    assert result["failure_count"] == 61
+    assert result["failure_count"] == 60
     assert len(result["failures"]) == 50
 
 
@@ -384,7 +395,10 @@ def test_a_crawl_that_stored_nothing_does_not_wipe_the_corpus(web, settings, mon
     result = doc_corpus.refresh(settings=settings)
     assert swept == []
     assert result["removed"] == 0
-    assert any("nothing was removed" in f["error"] for f in result["failures"])
+    # Reported on its own rather than in `failures`: the crawl itself may have been
+    # healthy and simply found nothing storable, and a guard firing must not inflate the
+    # failure count that a reader scans for.
+    assert "nothing was removed" in result["sweep_skipped"]
 
 
 def test_each_refresh_uses_its_own_run_stamp(web, settings, stored):
@@ -619,3 +633,70 @@ def test_a_clean_run_is_summarised_at_info_level(web, settings, stored, caplog):
         doc_corpus.refresh(settings=settings)
     finishing = [r for r in caplog.records if "refresh finished" in r.getMessage()]
     assert finishing and finishing[-1].levelname == "INFO"
+
+
+# --- navigation stubs are not documentation ---
+
+REAL_SETTINGS = Settings(mongodb_uri="mongodb://test")
+
+
+def test_a_navigation_stub_is_skipped_rather_than_stored(web, stored):
+    """
+    Intent: A page that is a title and a list of links — drivers/csharp-drivers.md is 108
+        bytes and only points at the real C# docs — is not something a question can be
+        written from, and it crowds the listings so the corpus looks empty of content when
+        it is not.
+    Success: A page under the size floor is not stored, and is counted as a skipped stub.
+    Feature: Documentation corpus — navigation stubs are excluded.
+    """
+    web(root_with({INDEX: "[Stub](https://x/stub.md)", "https://x/stub.md": "# Stub\n[a](b)"}))
+    result = doc_corpus.refresh(settings=REAL_SETTINGS)
+    assert stored == []
+    assert result["skipped_stubs"] == 1
+
+
+def test_a_skipped_stub_is_not_counted_as_a_failure(web, stored):
+    """
+    Intent: Skipping a navigation page is the intended outcome. Counted as a failure it
+        would make the failure figure meaningless — hundreds of "errors" on a healthy
+        crawl — and the finishing line would be logged at ERROR every time.
+    Success: A skipped stub leaves the failure count at zero.
+    Feature: Documentation corpus — the failure count means failures.
+    """
+    web(root_with({INDEX: "[Stub](https://x/stub.md)", "https://x/stub.md": "# Stub"}))
+    result = doc_corpus.refresh(settings=REAL_SETTINGS)
+    assert result["skipped_stubs"] == 1
+    assert result["failure_count"] == 0
+    assert result["failures"] == []
+
+
+def test_a_real_page_is_kept(web, stored):
+    """
+    Intent: The floor exists to remove link lists, not short documentation. If it were set
+        or applied wrongly the crawl would silently discard genuine content, which is the
+        worse failure and would be invisible.
+    Success: A page above the floor is stored.
+    Feature: Documentation corpus — real content is kept.
+    """
+    body = "# Aggregation\n\n" + ("Pipeline stages process documents in sequence. " * 40)
+    web(root_with({INDEX: "[Real](https://x/real.md)", "https://x/real.md": body}))
+    doc_corpus.refresh(settings=REAL_SETTINGS)
+    assert [p["url"] for p in stored] == ["https://x/real.md"]
+
+
+def test_the_stub_floor_is_configurable(web, stored):
+    """
+    Intent: The floor was chosen from one crawl's size distribution. It will need adjusting
+        as the published corpus changes, and that must not require editing code.
+    Success: Raising the floor excludes a page that a lower floor keeps.
+    Feature: Documentation corpus — configurable stub floor.
+    """
+    body = "# Short\n" + ("word " * 40)  # roughly 200 bytes
+    web(root_with({INDEX: "[P](https://x/p.md)", "https://x/p.md": body}))
+    kept = Settings(mongodb_uri="mongodb://test", docs_min_page_bytes=100)
+    doc_corpus.refresh(settings=kept)
+    assert len(stored) == 1
+    stored.clear()
+    dropped = Settings(mongodb_uri="mongodb://test", docs_min_page_bytes=5000)
+    result = doc_corpus.refresh(settings=dropped)
+    assert stored == [] and result["skipped_stubs"] == 1

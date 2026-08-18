@@ -67,6 +67,14 @@ class Settings:
     # this program does not own.
     docs_fetch_concurrency: int = 8
     docs_request_timeout: float = 30.0
+    # Below this, a documentation page is a navigation stub — a title and a list of
+    # links to the real pages. Measured on the first full crawl: every page under 500
+    # bytes was one of those (drivers/csharp-drivers.md is 108 bytes and only points at
+    # the C# driver docs), while the corpus averages 10 KB. They are excluded because a
+    # question cannot be written from a link list, and they crowd the source listings.
+    # Deliberately conservative: nav stubs continue up to roughly 900 bytes, but so do
+    # a few genuinely short pages, and dropping real content is the worse mistake.
+    docs_min_page_bytes: int = 500
 
     @property
     def uses_gateway(self) -> bool:

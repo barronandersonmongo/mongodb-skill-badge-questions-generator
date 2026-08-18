@@ -22,7 +22,7 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
-from pymongo import ASCENDING, UpdateOne
+from pymongo import ASCENDING, TEXT, UpdateOne
 from pymongo.collection import Collection
 
 from app.config import get_settings
@@ -42,6 +42,15 @@ def ensure_indexes() -> None:
     coll.create_index([("url", ASCENDING)], unique=True, name="url_unique")
     coll.create_index([("source", ASCENDING)], name="source")
     coll.create_index([("fetched_at", ASCENDING)], name="fetched_at")
+    # A plain MongoDB text index, not Atlas Search: the corpus is browsed by keyword
+    # ("aggregation pipeline", "$lookup"), not by meaning, and a text index needs no
+    # index definition maintained outside this repository. Weighted towards the title
+    # because a page whose title matches is nearly always the one being looked for.
+    coll.create_index(
+        [("title", TEXT), ("text", TEXT)],
+        name="title_text_search",
+        weights={"title": 10, "text": 1},
+    )
 
 
 def content_hash(text: str) -> str:
@@ -185,6 +194,72 @@ def list_pages(
             or needle in page["url"].casefold()
         ]
     return found[:limit]
+
+
+EXCERPT_RADIUS = 130
+
+
+def excerpt(text: str, terms: list[str]) -> str:
+    """A short window of the page around the first matching term.
+
+    Search results need enough context to tell "this is the page I meant" from "this
+    merely mentions the word", and the alternative — opening each result to find out —
+    is what the search exists to avoid.
+    """
+    lowered = text.casefold()
+    position = min(
+        (lowered.find(term.casefold()) for term in terms if term.casefold() in lowered),
+        default=-1,
+    )
+    if position < 0:
+        window = text[: EXCERPT_RADIUS * 2]
+        prefix, suffix = "", "…" if len(text) > EXCERPT_RADIUS * 2 else ""
+    else:
+        start = max(0, position - EXCERPT_RADIUS)
+        window = text[start : position + EXCERPT_RADIUS]
+        prefix = "…" if start > 0 else ""
+        suffix = "…" if position + EXCERPT_RADIUS < len(text) else ""
+    # Collapsed to one line: the excerpt sits in a list row, and Markdown newlines and
+    # heading marks make it unreadable there.
+    return prefix + " ".join(window.split()) + suffix
+
+
+def search_pages(query: str, *, limit: int = 50) -> list[dict[str, Any]]:
+    """Pages matching a keyword search, best match first, each with an excerpt.
+
+    Searches the whole corpus rather than one source. Which of the 74 sources holds a
+    topic is not something an author knows — the C# driver's real documentation is not
+    under the drivers index, it is under its own — so requiring them to guess makes the
+    corpus unusable for writing questions.
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    projection = {**LIST_PROJECTION, "text": True, "score": {"$meta": "textScore"}}
+    found = list(
+        collection()
+        .find({"$text": {"$search": query}}, projection)
+        .sort([("score", {"$meta": "textScore"})])
+        .limit(limit)
+    )
+
+    terms = [t.strip('"') for t in query.split() if t.strip('"')]
+    results = []
+    for page in found:
+        text = page.pop("text", "") or ""
+        results.append({**page, "excerpt": excerpt(text, terms)})
+    return results
+
+
+def delete_stubs(smaller_than: int) -> int:
+    """Remove navigation stubs stored before they were being skipped.
+
+    A refresh would drop them anyway, since they are no longer stored and the sweep
+    removes what a run did not write — but that means waiting for a full crawl to see
+    the listings stop being cluttered by pages nothing can be written from.
+    """
+    return collection().delete_many({"bytes": {"$lt": smaller_than}}).deleted_count
 
 
 def count_pages(source: str | None = None) -> int:
