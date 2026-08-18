@@ -17,6 +17,7 @@ program does not own: failures are collected per page rather than aborting the r
 
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Iterable
 from uuid import uuid4
@@ -136,6 +137,46 @@ def fetch_pages(
 WRITE_BATCH = 200
 
 
+def plan_pages(
+    sources: list[str],
+    *,
+    settings: Settings | None = None,
+    on_source: Callable[[int, int], None] | None = None,
+) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
+    """Read every index first, so the crawl knows how much work it has.
+
+    Without this the progress report can only count what it has already done, which
+    cannot express "how far through" or "how much longer" — the two things a person
+    watching a ten-minute crawl actually wants. Reading the indexes costs one request
+    each, against thousands for the pages themselves.
+    """
+    settings = settings or get_settings()
+    plan: list[tuple[str, str]] = []
+    failures: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def read(index_url: str):
+        try:
+            return index_url, source_pages(index_url, settings=settings), None
+        except Exception as exc:
+            return index_url, [], f"index unreadable: {exc}"
+
+    with ThreadPoolExecutor(max_workers=settings.docs_fetch_concurrency) as pool:
+        for done, (index_url, urls, error) in enumerate(pool.map(read, sources), 1):
+            if error:
+                failures.append({"url": index_url, "error": error})
+            for url in urls:
+                # The same page is named by more than one index; fetching it twice
+                # would inflate both the cost and the totals shown on screen.
+                if url in seen:
+                    continue
+                seen.add(url)
+                plan.append((index_url, url))
+            if on_source:
+                on_source(done, len(sources))
+    return plan, failures
+
+
 def refresh(
     *,
     settings: Settings | None = None,
@@ -146,77 +187,126 @@ def refresh(
     Around 10,000 pages. Pages are stamped with this run and anything left from an
     earlier one is deleted at the end, so the corpus ends up as exactly what the
     published index currently names — without a window in which it is empty.
+
+    Progress is reported continuously: which phase, how many pages of how many, the
+    rate, and the time left at that rate. A crawl this long is unreadable without it.
     """
     settings = settings or get_settings()
     run_id = uuid4().hex
-    targets = discover_sources(settings=settings)
+    started = time.monotonic()
 
     summary: dict[str, Any] = {
         "source": "docs-refresh",
         "run_id": run_id,
-        "sources_requested": len(targets),
+        "phase": "planning",
+        "sources_total": 0,
         "sources_done": 0,
+        "pages_total": 0,
         "pages_seen": 0,
         "inserted": 0,
         "updated": 0,
         "unchanged": 0,
+        "failed": 0,
+        "removed": 0,
         "failures": [],
         "per_source": [],
     }
 
+    def snapshot() -> dict[str, Any]:
+        """Add the derived numbers a watcher needs: rate, share done, time left."""
+        elapsed = time.monotonic() - started
+        done = summary["pages_seen"]
+        total = summary["pages_total"]
+        rate = done / elapsed if elapsed > 0 and done else 0.0
+        state = dict(summary)
+        state["elapsed_seconds"] = round(elapsed, 1)
+        state["pages_per_second"] = round(rate, 2)
+        # Only claim a percentage and an estimate once the total is known and work has
+        # actually started — a confident "0%, 0 seconds left" is worse than no estimate.
+        state["percent"] = round(done / total * 100, 1) if total else None
+        remaining = max(total - done, 0)
+        state["eta_seconds"] = round(remaining / rate) if rate and total else None
+        return state
+
     def report():
         if progress:
-            progress(dict(summary))
+            progress(snapshot())
 
-    for index_url in targets:
-        try:
-            urls = source_pages(index_url, settings=settings)
-        except Exception as exc:
-            summary["failures"].append(
-                {"url": index_url, "error": f"index unreadable: {exc}"}
-            )
-            summary["sources_done"] += 1
-            report()
-            continue
+    report()
 
-        source_stats = {"source": index_url, "pages": len(urls), "inserted": 0,
-                        "updated": 0, "unchanged": 0, "failed": 0}
+    try:
+        sources = discover_sources(settings=settings)
+    except Exception as exc:
+        # Without the root index there is nothing to crawl, and sweeping now would
+        # delete a corpus this run cannot replace.
+        summary["phase"] = "failed"
+        summary["failures"].append(
+            {"url": settings.docs_index_url, "error": f"index unreadable: {exc}"}
+        )
+        summary["failure_count"] = 1
+        logger.exception("Docs refresh could not read the root index: %s", exc)
+        report()
+        return summary
+
+    summary["sources_total"] = len(sources)
+    report()
+
+    def planned(done: int, total: int) -> None:
+        summary["sources_done"] = done
+        report()
+
+    plan, plan_failures = plan_pages(sources, settings=settings, on_source=planned)
+    summary["failures"].extend(plan_failures)
+    summary["failed"] += len(plan_failures)
+    summary["pages_total"] = len(plan)
+    summary["phase"] = "fetching"
+    report()
+
+    # Grouped by source so each write batch belongs to one source, which keeps the
+    # per-source figures meaningful and the stored `source` field correct.
+    by_source: dict[str, list[str]] = {}
+    for index_url, url in plan:
+        by_source.setdefault(index_url, []).append(url)
+
+    for index_url, urls in by_source.items():
+        stats = {"source": index_url, "pages": len(urls), "inserted": 0,
+                 "updated": 0, "unchanged": 0, "failed": 0}
 
         for start in range(0, len(urls), WRITE_BATCH):
             batch = urls[start : start + WRITE_BATCH]
             pages, failures = fetch_pages(
                 batch, index_url, settings=settings,
-                on_page=lambda: summary.__setitem__("pages_seen", summary["pages_seen"] + 1),
+                on_page=lambda: (
+                    summary.__setitem__("pages_seen", summary["pages_seen"] + 1),
+                    report(),
+                ),
             )
             written = doc_pages.upsert_pages(pages, run_id)
             for key in ("inserted", "updated", "unchanged"):
                 summary[key] += written[key]
-                source_stats[key] += written[key]
-            source_stats["failed"] += len(failures)
+                stats[key] += written[key]
+            stats["failed"] += len(failures)
+            summary["failed"] += len(failures)
             summary["failures"].extend(failures)
             report()
 
-        summary["per_source"].append(source_stats)
-        summary["sources_done"] += 1
+        summary["per_source"].append(stats)
         logger.info(
             "Docs refresh: %s — %d page(s), %d new, %d updated, %d unchanged, %d failed",
-            index_url,
-            source_stats["pages"],
-            source_stats["inserted"],
-            source_stats["updated"],
-            source_stats["unchanged"],
-            source_stats["failed"],
+            index_url, stats["pages"], stats["inserted"], stats["updated"],
+            stats["unchanged"], stats["failed"],
         )
         report()
 
     # Only sweep once something was actually stored. A crawl that fetched nothing —
     # no network, a moved index — would otherwise delete the entire corpus and
     # report it as a successful replacement.
+    summary["phase"] = "sweeping"
+    report()
     stored_anything = summary["inserted"] + summary["updated"] + summary["unchanged"]
     if stored_anything:
         summary["removed"] = doc_pages.delete_not_in_run(run_id)
     else:
-        summary["removed"] = 0
         summary["failures"].append(
             {
                 "url": settings.docs_index_url,
@@ -224,20 +314,21 @@ def refresh(
                 "corpus was left untouched",
             }
         )
+        summary["failed"] += 1
 
     # The whole list would be thousands of entries on a bad network; the count is
     # what matters on screen and the first few are what a person acts on.
-    summary["failure_count"] = len(summary["failures"])
+    summary["failure_count"] = summary["failed"]
     summary["failures"] = summary["failures"][:50]
+    summary["phase"] = "done"
+    summary["elapsed_seconds"] = round(time.monotonic() - started, 1)
+    report()
+
     logger.info(
-        "Docs refresh finished: %d source(s), %d page(s) seen, %d new, %d updated, "
-        "%d unchanged, %d removed, %d failed",
-        summary["sources_done"],
-        summary["pages_seen"],
-        summary["inserted"],
-        summary["updated"],
-        summary["unchanged"],
-        summary["removed"],
-        summary["failure_count"],
+        "Docs refresh finished in %.1fs: %d source(s), %d of %d page(s) fetched, "
+        "%d new, %d updated, %d unchanged, %d removed, %d failed",
+        summary["elapsed_seconds"], summary["sources_total"], summary["pages_seen"],
+        summary["pages_total"], summary["inserted"], summary["updated"],
+        summary["unchanged"], summary["removed"], summary["failure_count"],
     )
     return summary

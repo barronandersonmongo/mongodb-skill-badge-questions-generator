@@ -399,3 +399,154 @@ def test_each_refresh_uses_its_own_run_stamp(web, settings, stored):
     first = doc_corpus.refresh(settings=settings)["run_id"]
     second = doc_corpus.refresh(settings=settings)["run_id"]
     assert first != second
+
+
+# --- progress reporting: how far through, how fast, how much longer ---
+
+
+def test_the_total_is_known_before_any_page_is_fetched(web, settings, stored):
+    """
+    Intent: A progress report that only counts what it has already done cannot say how far
+        through it is or how much longer it will take — the two things a person watching a
+        ten-minute crawl actually wants. Reading the indexes first costs one request each
+        against thousands for the pages.
+    Success: The first fetching-phase snapshot already knows the page total.
+    Feature: Documentation corpus — progress knows the size of the job.
+    """
+    web({
+        ROOT: f"[Manual]({INDEX})",
+        INDEX: "[A](https://x/a.md)\n[B](https://x/b.md)",
+        "https://x/a.md": "# A", "https://x/b.md": "# B",
+    })
+    seen: list[dict] = []
+    doc_corpus.refresh(settings=settings, progress=seen.append)
+    fetching = [s for s in seen if s["phase"] == "fetching"]
+    assert fetching and fetching[0]["pages_total"] == 2
+
+
+def test_the_planning_phase_is_reported_as_its_own_phase(web, settings, stored):
+    """
+    Intent: Reading 74 indexes takes seconds during which no page has been fetched. Reported
+        as "0 of 0 pages" that reads as a stuck crawl, so the phase has to be visible.
+    Success: A planning snapshot is reported, with no page total yet, before fetching.
+    Feature: Documentation corpus — the planning phase is visible.
+    """
+    web({ROOT: f"[Manual]({INDEX})", INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"})
+    seen: list[dict] = []
+    doc_corpus.refresh(settings=settings, progress=seen.append)
+    phases = [s["phase"] for s in seen]
+    assert phases[0] == "planning"
+    assert phases.index("planning") < phases.index("fetching")
+    assert seen[0]["percent"] is None
+
+
+def test_progress_reports_rate_share_and_time_remaining(web, settings, stored):
+    """
+    Intent: "How fast", "how far" and "how much longer" are the three questions a long crawl
+        has to answer, and each is derived from figures only the crawl holds.
+    Success: A fetching snapshot carries a rate, a percentage and an estimate, and the final
+        snapshot is at 100%.
+    Feature: Documentation corpus — useful progress figures.
+    """
+    urls = [f"https://x/p{i}.md" for i in range(6)]
+    web({
+        ROOT: f"[Manual]({INDEX})",
+        INDEX: "\n".join(f"[P]({u})" for u in urls),
+        **{u: "# P" for u in urls},
+    })
+    seen: list[dict] = []
+    doc_corpus.refresh(settings=settings, progress=seen.append)
+    mid = [s for s in seen if s["phase"] == "fetching" and s["pages_seen"]]
+    assert mid, "no page-level progress was reported"
+    assert mid[-1]["percent"] == 100.0
+    assert all("pages_per_second" in s and "eta_seconds" in s for s in seen)
+    assert all(s["elapsed_seconds"] >= 0 for s in seen)
+
+
+def test_no_estimate_is_invented_before_the_work_is_understood(web, settings, stored):
+    """
+    Intent: A confident "0% complete, 0 seconds remaining" is worse than admitting the crawl
+        does not know yet — it reads as finished, or as broken.
+    Success: While planning, the percentage and the estimate are both absent.
+    Feature: Documentation corpus — honest progress.
+    """
+    web({ROOT: f"[Manual]({INDEX})", INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"})
+    seen: list[dict] = []
+    doc_corpus.refresh(settings=settings, progress=seen.append)
+    planning = [s for s in seen if s["phase"] == "planning"]
+    assert planning
+    assert all(s["percent"] is None and s["eta_seconds"] is None for s in planning)
+
+
+def test_a_page_named_by_two_indexes_is_counted_and_fetched_once(web, settings, stored):
+    """
+    Intent: The indexes overlap. Counting a shared page twice would inflate the total, so the
+        crawl would appear to stall short of 100%, and fetching it twice would pay for it
+        twice.
+    Success: A page named by two indexes appears once in the total and once in storage.
+    Feature: Documentation corpus — no duplicate work.
+    """
+    other = "https://www.mongodb.com/docs/other/llms.txt"
+    web({
+        ROOT: f"[One]({INDEX})\n[Two]({other})",
+        INDEX: "[Shared](https://x/shared.md)",
+        other: "[Shared](https://x/shared.md)",
+        "https://x/shared.md": "# Shared",
+    })
+    result = doc_corpus.refresh(settings=settings)
+    assert result["pages_total"] == 1
+    assert [p["url"] for p in stored] == ["https://x/shared.md"]
+
+
+def test_the_phases_end_at_done(web, settings, stored):
+    """
+    Intent: The screen decides what to show from the phase. A run that never reports a final
+        phase would leave the progress bar animating after the crawl had finished.
+    Success: The last snapshot's phase is "done" and includes the total elapsed time.
+    Feature: Documentation corpus — the end of a run is reported.
+    """
+    web({ROOT: f"[Manual]({INDEX})", INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"})
+    seen: list[dict] = []
+    doc_corpus.refresh(settings=settings, progress=seen.append)
+    assert seen[-1]["phase"] == "done"
+    assert seen[-1]["elapsed_seconds"] >= 0
+    assert "sweeping" in [s["phase"] for s in seen]
+
+
+def test_an_unreadable_root_index_fails_the_run_without_sweeping(web, settings, monkeypatch):
+    """
+    Intent: Without the root index there is nothing to crawl, so a sweep would delete a
+        corpus this run cannot replace. This is the one failure that must stop the run
+        rather than be collected and carried on from.
+    Success: The run reports the failure, phase "failed", and never sweeps.
+    Feature: Documentation corpus — an unreachable index cannot destroy the corpus.
+    """
+    swept: list[str] = []
+    monkeypatch.setattr(doc_corpus.doc_pages, "delete_not_in_run",
+                        lambda run_id: swept.append(run_id) or 0)
+    web({}, failures={ROOT: RuntimeError("dns failure")})
+    result = doc_corpus.refresh(settings=settings)
+    assert result["phase"] == "failed"
+    assert swept == []
+    assert "dns failure" in result["failures"][0]["error"]
+
+
+def test_every_source_is_planned_even_when_one_index_is_unreadable(web, settings, stored):
+    """
+    Intent: One bad index among 74 must not reduce the total to the pages of the sources read
+        before it — the percentage would then be measured against the wrong denominator and
+        the crawl would appear to overshoot.
+    Success: The readable source's pages are planned and fetched, and the bad index is
+        reported as a failure.
+    Feature: Documentation corpus — planning survives a bad index.
+    """
+    bad = "https://www.mongodb.com/docs/bad/llms.txt"
+    web({
+        ROOT: f"[Bad]({bad})\n[Manual]({INDEX})",
+        INDEX: "[A](https://x/a.md)",
+        "https://x/a.md": "# A",
+    }, failures={bad: RuntimeError("500 error")})
+    result = doc_corpus.refresh(settings=settings)
+    assert result["pages_total"] == 1
+    assert result["pages_seen"] == 1
+    assert any("index unreadable" in f["error"] for f in result["failures"])

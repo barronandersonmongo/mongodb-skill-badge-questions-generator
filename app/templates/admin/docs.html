@@ -23,6 +23,27 @@
 
 <div id="run-alert" class="alert d-none" role="status"></div>
 
+<div class="card mb-3 d-none" id="progress-panel" data-progress-panel="true">
+  <div class="card-body py-3">
+    <div class="d-flex justify-content-between align-items-baseline mb-2">
+      <span class="fw-semibold" data-phase="true">Starting…</span>
+      <span class="font-monospace small" data-headline="true"></span>
+    </div>
+    <div class="progress mb-2" role="progressbar" style="height: 1.25rem;">
+      <div class="progress-bar progress-bar-striped progress-bar-animated"
+           id="progress-bar" data-progress-bar="true" style="width: 0%;">0%</div>
+    </div>
+    <div class="row row-cols-2 row-cols-md-6 g-2 small" data-progress-stats="true">
+      <div><div class="text-body-secondary">Pages</div><div data-stat="pages">—</div></div>
+      <div><div class="text-body-secondary">Rate</div><div data-stat="rate">—</div></div>
+      <div><div class="text-body-secondary">Elapsed</div><div data-stat="elapsed">—</div></div>
+      <div><div class="text-body-secondary">Remaining</div><div data-stat="eta">—</div></div>
+      <div><div class="text-body-secondary">Sources</div><div data-stat="sources">—</div></div>
+      <div><div class="text-body-secondary">Stored</div><div data-stat="stored">—</div></div>
+    </div>
+  </div>
+</div>
+
 {% if storage_error %}
 <div class="alert alert-danger">
   <strong>Cannot reach MongoDB.</strong>
@@ -262,30 +283,81 @@ async function startRefresh() {
   pollStatus();
 }
 
+const panel = document.getElementById("progress-panel");
+const bar = document.getElementById("progress-bar");
+
+const PHASES = {
+  planning: "Reading the documentation indexes…",
+  fetching: "Fetching pages…",
+  sweeping: "Removing pages no longer published…",
+  done: "Finished",
+  failed: "Failed",
+};
+
+function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return total + "s";
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return minutes + "m " + String(total % 60).padStart(2, "0") + "s";
+  return Math.floor(minutes / 60) + "h " + String(minutes % 60).padStart(2, "0") + "m";
+}
+
+function setStat(name, value) {
+  const cell = panel.querySelector('[data-stat="' + name + '"]');
+  if (cell) cell.textContent = value;
+}
+
+function showProgress(p) {
+  if (!p) return;
+  panel.classList.remove("d-none");
+  panel.querySelector("[data-phase]").textContent = PHASES[p.phase] || p.phase;
+
+  // A percentage is only shown once the total is known — during planning the crawl
+  // genuinely does not know how much work there is, and inventing a number would be
+  // worse than admitting it.
+  const known = p.percent !== null && p.percent !== undefined;
+  bar.style.width = (known ? p.percent : 100) + "%";
+  bar.textContent = known ? p.percent.toFixed(1) + "%" : "";
+  bar.classList.toggle("bg-secondary", !known);
+
+  panel.querySelector("[data-headline]").textContent = known
+    ? p.pages_seen + " / " + p.pages_total + " pages"
+    : p.sources_done + " / " + p.sources_total + " indexes read";
+
+  setStat("pages", p.pages_total ? p.pages_seen + " of " + p.pages_total : String(p.pages_seen));
+  setStat("rate", p.pages_per_second ? p.pages_per_second.toFixed(1) + "/s" : "—");
+  setStat("elapsed", formatDuration(p.elapsed_seconds));
+  setStat("eta", p.phase === "done" ? "—" : formatDuration(p.eta_seconds));
+  setStat("sources", p.sources_done + " of " + p.sources_total);
+  setStat("stored", p.inserted + " new · " + p.updated + " upd · " + p.unchanged + " same"
+    + (p.failed ? " · " + p.failed + " failed" : ""));
+}
+
 async function pollStatus() {
   const response = await fetch(API + "/refresh/status");
   const state = await response.json();
   adoptServerClock(state);
+  showProgress(state.progress);
   if (state.running) {
-    const p = state.progress;
-    const detail = p
-      ? " — " + p.sources_done + "/" + p.sources_requested + " source(s), " +
-        p.pages_seen + " page(s) fetched"
-      : "";
-    showAlert("info", "Refreshing documentation" + detail, {timed: true});
-    setTimeout(pollStatus, 3000);
+    showAlert("info", "Refreshing documentation…", {timed: true});
+    setTimeout(pollStatus, 2000);
     return;
   }
+  bar.classList.remove("progress-bar-animated");
   if (state.last_error) {
     showAlert("danger", "Refresh failed: " + state.last_error);
     return;
   }
+  // The finished run carries the final figures, which the last progress snapshot may
+  // predate — the sweep happens after it.
+  if (state.last_result) showProgress(state.last_result);
   const duration = state.finished_at
     ? elapsedSinceStart(state.finished_at * 1000)
     : elapsedSinceStart();
   const took = duration === null ? "" : " Took " + formatElapsed(duration) + ".";
   showAlert("success", "Refresh finished." + took + " Reloading…");
-  window.location.reload();
+  setTimeout(() => window.location.reload(), 2500);
 }
 
 document.getElementById("refresh-btn").addEventListener("click", startRefresh);

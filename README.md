@@ -433,8 +433,16 @@ now — around **10,000 pages** (~80 MB), a few minutes.
   program does not own, some will fail, and aborting would mean the crawl never
   finishes. The reported list is capped at 50 with a true count.
 - Oversized pages (>2 MB) are skipped — generated API dumps, not prose.
-- Progress is reported while the crawl runs, and the run is timed on the server, so
-  leaving the screen and returning does not restart the timer.
+- **Progress is reported in detail.** The crawl reads every index first, so before
+  fetching a single page it knows how many there are. The panel then shows the phase,
+  a percentage, pages done of the total, the rate in pages per second, elapsed time and
+  the time remaining at that rate, plus new/updated/unchanged/failed counts. During the
+  planning phase no percentage or estimate is shown — the crawl does not know yet, and a
+  confident "0%, 0s remaining" reads as a stalled run.
+- The run is timed on the server, so leaving the screen and returning does not restart
+  the timer.
+- A page named by two indexes is fetched and counted once, so the total is a real
+  denominator.
 
 **Reading what is stored.** The source table is not just an inventory — open a source
 to list its pages, then open a page to read it. Long sources are capped at 500 rows

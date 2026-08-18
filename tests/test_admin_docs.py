@@ -508,3 +508,49 @@ def test_the_page_viewer_survives_an_unreachable_database(client, monkeypatch, f
     response = client.get("/admin/docs/page", params={"url": "https://x/a.md"})
     assert response.status_code == 200
     assert "no route to host" in response.text
+
+
+# --- the progress panel ---
+
+
+def test_the_screen_has_a_progress_panel_with_the_useful_figures(client, fake_doc_pages):
+    """
+    Intent: A ten-minute crawl behind a spinner is indistinguishable from a stuck one. The
+        panel has to answer how far through, how fast, how long so far and how much longer,
+        or an operator cannot tell progress from a hang.
+    Success: The page carries a progress bar and cells for pages, rate, elapsed, remaining,
+        sources and stored counts.
+    Feature: Documentation corpus — useful refresh status.
+    """
+    body = client.get(PAGE).text
+    assert 'data-progress-panel="true"' in body
+    assert 'data-progress-bar="true"' in body
+    for stat in ("pages", "rate", "elapsed", "eta", "sources", "stored"):
+        assert f'data-stat="{stat}"' in body
+
+
+def test_the_panel_is_driven_by_the_servers_progress_snapshot(client, fake_doc_pages):
+    """
+    Intent: The figures must come from the crawl itself. Derived in the browser they would be
+        wrong after a reload, and could not know the page total the planning pass discovered.
+    Success: The page reads pages_total, pages_per_second, eta_seconds and percent from the
+        polled state.
+    Feature: Documentation corpus — progress figures come from the server.
+    """
+    body = client.get(PAGE).text
+    for field in ("pages_total", "pages_seen", "pages_per_second", "eta_seconds",
+                  "percent", "phase"):
+        assert field in body
+
+
+def test_the_panel_shows_no_percentage_until_the_total_is_known(client, fake_doc_pages):
+    """
+    Intent: During planning the crawl genuinely does not know how much work there is. A
+        rendered "0%" would read as a stalled run, so the page must handle an absent
+        percentage rather than formatting a null.
+    Success: The page guards on the percentage being present before showing one.
+    Feature: Documentation corpus — honest progress display.
+    """
+    body = client.get(PAGE).text
+    assert "p.percent !== null" in body
+    assert "indexes read" in body
