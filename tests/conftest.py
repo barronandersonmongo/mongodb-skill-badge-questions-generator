@@ -1,7 +1,7 @@
 import pytest
 
 from app.config import Settings
-from app.repositories import skill_badges
+from app.repositories import doc_pages, questions, skill_badges
 from tests.fakes import FakeCollection
 
 
@@ -27,6 +27,26 @@ def clean_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolate_log_file(tmp_path, monkeypatch):
+    """No test may write to the operator's real log file.
+
+    Setting LOG_DIR is not enough on its own: pytest imports app.main during
+    collection, which configures logging against the real directory before any
+    fixture runs, and that handler keeps writing there however the environment
+    changes afterwards. So the handler is rebuilt here, pointed at this test's
+    temporary directory.
+    """
+    from app import logging_config
+
+    monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
+    logging_config.configure_logging(force=True)
+    yield
+    # Leave the flag clear so the next test rebuilds the handler for its own
+    # directory rather than inheriting this one's.
+    logging_config._configured = False
+
+
+@pytest.fixture(autouse=True)
 def clear_settings_cache():
     """get_settings() is not cached, but get_client() is — drop it between tests."""
     from app.db import get_client
@@ -46,6 +66,27 @@ def fake_collection(monkeypatch) -> FakeCollection:
     """Point the skill_badges repository at an in-memory collection."""
     collection = FakeCollection()
     monkeypatch.setattr(skill_badges, "collection", lambda: collection)
+    return collection
+
+
+@pytest.fixture
+def fake_questions(monkeypatch) -> FakeCollection:
+    """Point the questions repository at an in-memory collection."""
+    collection = FakeCollection()
+    monkeypatch.setattr(questions, "collection", lambda: collection)
+    return collection
+
+
+@pytest.fixture
+def fake_doc_pages(monkeypatch) -> FakeCollection:
+    """Point the documentation-corpus repository at an in-memory collection.
+
+    A connection string is set as well: the search reads index settings, which are
+    resolved through the same Settings object that requires the URI.
+    """
+    monkeypatch.setenv("MONGODB_URI", "mongodb://test")
+    collection = FakeCollection()
+    monkeypatch.setattr(doc_pages, "collection", lambda: collection)
     return collection
 
 

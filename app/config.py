@@ -9,6 +9,8 @@ class Settings:
     mongodb_uri: str
     database: str = "skill-badge-questions"
     skill_badges_collection: str = "skill_badges"
+    questions_collection: str = "questions"
+    doc_pages_collection: str = "doc_pages"
     # Claude Opus 5: adaptive thinking is on by default; effort tunes depth.
     model: str = "claude-opus-5"
     effort: str = "high"
@@ -36,10 +38,63 @@ class Settings:
     # configured with autoEmbed on `description`, so Atlas embeds both the stored
     # descriptions and the query text — this program stores no vectors.
     vector_index_name: str = "skill-badge-description-vector"
+    # The questions index: autoEmbed on `embedding_text` (voyage-4-large), so Atlas
+    # embeds both the stored questions and the query text.
+    questions_vector_index_name: str = "questions_embedding_text_vector"
     # Neighbours below this score are not worth a model call. Measured against the
     # Atlas index (voyage-4-large): real duplicates score around 0.80 and rank
     # below some non-duplicates, so this floor only trims cost — the model decides.
     duplicate_score_threshold: float = 0.75
+    # The duplicate sweep shortlists with vector search and decides with the native
+    # $rerank stage, in one aggregation. Nothing here needs an API key: the cluster
+    # runs the reranker, as it does the embedding.
+    rerank_model: str = "rerank-2.5"
+    # What $rerank must score for two questions to be treated as the same one.
+    # Measured on 2026-08-18 against rerank-2.5 on the live collection: five
+    # genuinely distinct questions scored 0.379-0.512 against each other, a
+    # deliberately reworded copy scored 0.945, and identical text scored 0.941 (the
+    # reranker does not return 1.0 for identity). This sits in the wide gap between
+    # those bands.
+    question_rerank_delete_threshold: float = 0.85
+    # How many neighbours each question is shortlisted against.
+    question_duplicate_neighbours: int = 5
+    # Documentation search. The index is configured with autoEmbed on `text`, so Atlas
+    # embeds both the stored pages and the query — this program stores no vectors and
+    # needs no embedding API key. Searching by meaning rather than by keyword is what
+    # lets an author ask for a topic ("how do I model a one-to-many relationship")
+    # without knowing the words the documentation happens to use.
+    doc_pages_vector_index_name: str = "doc_pages_text_vector"
+    doc_pages_vector_path: str = "text"
+    # A page is not compared against the whole corpus: Atlas narrows to this many
+    # approximate neighbours before scoring them exactly. Roughly 10x the result cap,
+    # which is the usual recommendation for recall at this corpus size.
+    doc_search_num_candidates: int = 500
+    # MongoDB publishes an agent-oriented index of its documentation, and serves
+    # every page as Markdown. That is the only enumerable route to the whole corpus:
+    # search-knowledge returns the best chunks for a query and cannot be asked "give
+    # me everything".
+    docs_index_url: str = "https://www.mongodb.com/docs/llms.txt"
+    # ~10,000 pages, so the crawl is concurrent — but politely so, against a site
+    # this program does not own.
+    docs_fetch_concurrency: int = 8
+    docs_request_timeout: float = 30.0
+    # Below this, a documentation page is a navigation stub — a title and a list of
+    # links to the real pages. Measured on the first full crawl: every page under 500
+    # bytes was one of those (drivers/csharp-drivers.md is 108 bytes and only points at
+    # the C# driver docs), while the corpus averages 10 KB. They are excluded because a
+    # question cannot be written from a link list, and they crowd the source listings.
+    # Deliberately conservative: nav stubs continue up to roughly 900 bytes, but so do
+    # a few genuinely short pages, and dropping real content is the worse mistake.
+    docs_min_page_bytes: int = 500
+    # The docs are served through CloudFront, which returns 403 when it decides a client
+    # is asking for too much. Retrying with a growing pause clears a transient block;
+    # hammering through it does not, and risks a longer one.
+    docs_retry_attempts: int = 3
+    docs_retry_backoff_seconds: float = 2.0
+    # If this many pages fail in a row, the crawl is being refused rather than hitting
+    # bad links. Stopping then keeps what was fetched, leaves the corpus intact, and
+    # produces one clear message instead of seven thousand identical failures.
+    docs_block_threshold: int = 25
 
     @property
     def uses_gateway(self) -> bool:
@@ -94,4 +149,9 @@ def get_settings() -> Settings:
         credly_collection_url=os.environ.get("CREDLY_COLLECTION_URL")
         or Settings.credly_collection_url,
         vector_index_name=os.environ.get("VECTOR_INDEX_NAME") or Settings.vector_index_name,
+        questions_vector_index_name=os.environ.get("QUESTIONS_VECTOR_INDEX_NAME")
+        or Settings.questions_vector_index_name,
+        doc_pages_vector_index_name=os.environ.get("DOC_PAGES_VECTOR_INDEX_NAME")
+        or Settings.doc_pages_vector_index_name,
+        docs_index_url=os.environ.get("DOCS_INDEX_URL") or Settings.docs_index_url,
     )

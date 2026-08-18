@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "mongodb@claude-plugins-official": true,
+    "mongodb-atlas@claude-plugins-official": true
+  }
+}

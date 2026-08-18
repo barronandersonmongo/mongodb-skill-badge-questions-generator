@@ -46,11 +46,22 @@ suite from the repository root with quiet output.
 | `test_config.py` | `app/config.py` — credential resolution, defaults, immutability |
 | `test_db.py` | `app/db.py` — Atlas client, pooling, fail-fast on missing credentials |
 | `test_models.py` | `app/models/skill_badge.py` — badge schemas and constraints |
+| `test_models_question.py` | `app/models/question.py` — question schemas and constraints |
+| `test_question_generation.py` | `app/services/question_generation.py` — authoring, extraction, format validation, attribution |
+| `test_question_duplicates.py` | `app/services/question_duplicates.py` — the ad-hoc duplicate sweep |
+| `test_repositories_questions.py` | `app/repositories/questions.py` — insert, filter, lifecycle |
+| `test_questions_router.py` | `app/routers/questions.py` — question JSON API under `/api/questions` |
+| `test_questions_page.py` | `app/routers/pages.py` + `questions.html` — the main screen at `/` |
 | `test_badge_discovery.py` | `app/services/badge_discovery.py` — the two Claude passes |
 | `test_repositories_skill_badges.py` | `app/repositories/skill_badges.py` — upsert, listing, lifecycle |
 | `test_admin_skill_badges_router.py` | `app/routers/admin_skill_badges.py`, `app/main.py` — JSON API under `/api/admin` |
-| `test_admin_pages.py` | `app/routers/admin_pages.py` + templates — the `/admin` screens |
+| `test_admin_pages.py` | `app/routers/admin_pages.py` + templates — the `/admin` badge screens |
 | `test_discover_cli.py` | `app/services/discover_cli.py` — shell entry point |
+| `test_doc_corpus.py` | `app/services/doc_corpus.py` — crawling the published docs index |
+| `test_doc_pages_repository.py` | `app/repositories/doc_pages.py` — the stored corpus |
+| `test_admin_docs.py` | `app/routers/admin_docs.py` + `admin/docs.html` — the corpus screen |
+| `test_logging_config.py` | `app/logging_config.py` — rotation budget, tailing the file |
+| `test_admin_logs.py` | `app/routers/admin_logs.py` + `admin/logs.html` — the log viewer |
 | `test_test_documentation.py` | The suite itself — enforces the convention below |
 | `conftest.py` | Shared fixtures (credential scrubbing, in-memory collection) |
 | `fakes.py` | Test doubles: in-memory MongoDB collection, scripted Anthropic client |

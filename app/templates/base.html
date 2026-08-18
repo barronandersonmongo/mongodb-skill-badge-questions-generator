@@ -12,14 +12,32 @@
 <body class="bg-body-tertiary">
 <nav class="navbar navbar-expand-lg bg-dark border-bottom" data-bs-theme="dark">
   <div class="container-fluid">
-    <a class="navbar-brand" href="/admin">Skill Badge Questions</a>
+    <a class="navbar-brand" href="/">Skill Badge Questions</a>
     <ul class="navbar-nav me-auto">
       <li class="nav-item">
-        <a class="nav-link {% if active_page == 'skill_badges' %}active{% endif %}"
-           href="/admin/skill-badges">Skill badges</a>
+        <a class="nav-link {% if active_page == 'questions' %}active{% endif %}"
+           href="/">Questions</a>
       </li>
       <li class="nav-item">
-        <span class="nav-link disabled" aria-disabled="true">Questions</span>
+        <a class="nav-link {% if active_page == 'skill_badges' %}active{% endif %}"
+           href="/admin/skill-badges">
+          Skill badges
+          <span class="badge text-bg-secondary fw-normal" data-admin-area="true">admin</span>
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link {% if active_page == 'docs' %}active{% endif %}"
+           href="/admin/docs">
+          Documentation
+          <span class="badge text-bg-secondary fw-normal" data-admin-area="true">admin</span>
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link {% if active_page == 'logs' %}active{% endif %}"
+           href="/admin/logs">
+          Logs
+          <span class="badge text-bg-secondary fw-normal" data-admin-area="true">admin</span>
+        </a>
       </li>
     </ul>
     <span class="navbar-text small">Internal authoring tool</span>

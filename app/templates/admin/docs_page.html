@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title if page else "Documentation page" }}{% endblock %}
+
+{% block content %}
+{% if storage_error %}
+<div class="alert alert-danger">
+  <strong>Cannot reach MongoDB.</strong>
+  <div class="small font-monospace mt-1">{{ storage_error }}</div>
+</div>
+{% else %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb small" data-breadcrumb="true">
+    <li class="breadcrumb-item"><a href="/admin/docs">Documentation corpus</a></li>
+    <li class="breadcrumb-item">
+      <a href="/admin/docs/source?source={{ page.source | urlencode }}">
+        {{ page.source.replace("https://www.mongodb.com/", "") }}
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">{{ page.title }}</li>
+  </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <div>
+    <h1 class="h4 mb-1" data-page-title="true">{{ page.title }}</h1>
+    <p class="text-body-secondary small mb-0">
+      <a href="{{ page.url }}" target="_blank" rel="noopener" class="font-monospace"
+         data-source-link="true">{{ page.url }}</a>
+    </p>
+    <p class="text-body-secondary small mb-0">
+      {{ (page.bytes / 1024) | round(1) }} KB
+      {% if page.fetched_at %}· fetched {{ page.fetched_at.strftime("%Y-%m-%d %H:%M UTC") }}{% endif %}
+    </p>
+  </div>
+  <div class="btn-group btn-group-sm" role="group">
+    <button class="btn btn-outline-secondary active" id="view-rendered" type="button">Rendered</button>
+    <button class="btn btn-outline-secondary" id="view-raw" type="button">Markdown</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    <div id="rendered" data-rendered="true" class="doc-body">
+      <p class="text-body-secondary">Rendering…</p>
+    </div>
+    <pre id="raw" data-raw="true" class="d-none mb-0 font-monospace small overflow-auto"
+         style="white-space: pre-wrap; max-height: 75vh;"></pre>
+  </div>
+</div>
+
+<style>
+  /* Documentation is prose; keep it readable and stop wide tables and code blocks
+     from stretching the page. */
+  .doc-body { max-width: 60rem; }
+  .doc-body pre { background: var(--bs-tertiary-bg); padding: .75rem; border-radius: .375rem;
+                  overflow-x: auto; }
+  .doc-body code { font-size: .875em; }
+  .doc-body img { max-width: 100%; height: auto; }
+  .doc-body table { display: block; overflow-x: auto; width: max-content; max-width: 100%; }
+  .doc-body table, .doc-body th, .doc-body td { border: 1px solid var(--bs-border-color); }
+  .doc-body th, .doc-body td { padding: .35rem .6rem; }
+  .doc-body h1, .doc-body h2 { margin-top: 1.5rem; }
+</style>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if page %}
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"
+        integrity="sha384-H+hy9ULve6xfxRkWIh/YOtvDdpXgV2fmAGQkIDTxIgZwNoaoBal14Di2YTMR6MzR"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"
+        integrity="sha384-eEu5CTj3qGvu9PdJuS+YlkNi7d2XxQROAFYOr59zgObtlcux1ae1Il3u7jvdCSWu"
+        crossorigin="anonymous"></script>
+<script>
+// The page text is passed as JSON rather than interpolated into the document, so
+// nothing in a fetched documentation page can be parsed as part of this page.
+const MARKDOWN = {{ page.text | tojson }};
+
+const rendered = document.getElementById("rendered");
+const raw = document.getElementById("raw");
+
+// textContent, never innerHTML: the raw view shows the stored bytes as text.
+raw.textContent = MARKDOWN;
+
+// Rendered Markdown is sanitised before it reaches the document. The corpus comes
+// from MongoDB's own site, but it is still fetched content and this program does not
+// get to assume what is in it.
+rendered.innerHTML = DOMPurify.sanitize(marked.parse(MARKDOWN));
+
+const renderedBtn = document.getElementById("view-rendered");
+const rawBtn = document.getElementById("view-raw");
+
+function show(which) {
+  const showRaw = which === "raw";
+  raw.classList.toggle("d-none", !showRaw);
+  rendered.classList.toggle("d-none", showRaw);
+  rawBtn.classList.toggle("active", showRaw);
+  renderedBtn.classList.toggle("active", !showRaw);
+}
+
+renderedBtn.addEventListener("click", () => show("rendered"));
+rawBtn.addEventListener("click", () => show("raw"));
+</script>
+{% endif %}
+{% endblock %}

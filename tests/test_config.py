@@ -300,3 +300,73 @@ def test_the_vector_index_name_is_configurable(monkeypatch):
 
     monkeypatch.setenv("VECTOR_INDEX_NAME", "another-index")
     assert get_settings().vector_index_name == "another-index"
+
+
+def test_the_questions_vector_index_can_be_renamed_without_a_code_change():
+    """
+    Intent: The index is created by hand in Atlas and may be rebuilt under a different
+        name. If the name were only a literal in code, a rebuild would mean editing and
+        redeploying the application.
+    Success: QUESTIONS_VECTOR_INDEX_NAME overrides the configured index name.
+    Feature: Question search — configurable index name.
+    """
+    import os
+
+    os.environ["MONGODB_URI"] = "mongodb://test"
+    os.environ["QUESTIONS_VECTOR_INDEX_NAME"] = "some_other_index"
+    try:
+        assert get_settings().questions_vector_index_name == "some_other_index"
+    finally:
+        del os.environ["QUESTIONS_VECTOR_INDEX_NAME"]
+        del os.environ["MONGODB_URI"]
+
+
+def test_the_questions_index_defaults_to_the_one_that_exists():
+    """
+    Intent: The default must match the index actually built in Atlas, or a fresh checkout
+        searches a name that does not exist and reports every question as unique — a
+        silent failure, since an empty result looks like a clean collection.
+    Success: The default index name is the one created for this collection.
+    Feature: Question search — default matches the deployed index.
+    """
+    settings = Settings(mongodb_uri="mongodb://test")
+    assert settings.questions_vector_index_name == "questions_embedding_text_vector"
+
+
+def test_the_delete_threshold_sits_between_the_measured_rerank_bands():
+    """
+    Intent: This threshold decides irreversible deletion with no judge behind it, so it is
+        measured, not guessed. Against rerank-2.5 on the live collection: five genuinely
+        distinct questions scored 0.379-0.512 against each other, a deliberately reworded
+        copy scored 0.945, and identical text scored 0.941 — the reranker does not return
+        1.0 for identity, so a threshold near 1.0 would never fire. An edit drifting outside
+        that gap should have to confront these numbers. Replaces two tests written when this
+        value was an unmeasured guess and a vector-score floor still existed.
+    Success: The threshold is above the observed distinct band and below the observed
+        duplicate scores.
+    Feature: Question duplicate sweep — the delete threshold reflects measured behaviour.
+    """
+    threshold = Settings(mongodb_uri="mongodb://test").question_rerank_delete_threshold
+    assert 0.512 < threshold < 0.941
+
+
+def test_the_sweep_bounds_how_many_neighbours_each_question_is_compared_against():
+    """
+    Intent: Comparing every pair grows as the square of the collection. The neighbour count
+        is the only thing bounding the sweep's cost, so it must be a small number and
+        settable.
+    Success: The default neighbour count is small and positive.
+    Feature: Question duplicate sweep — bounded cost.
+    """
+    neighbours = Settings(mongodb_uri="mongodb://test").question_duplicate_neighbours
+    assert 0 < neighbours <= 20
+
+
+def test_the_rerank_model_is_named_in_configuration():
+    """
+    Intent: The $rerank stage requires a model name, and rerank-2.5-lite trades accuracy for
+        cost. Hardcoding it would mean editing code to change that trade-off.
+    Success: A model name is configured.
+    Feature: Question duplicate sweep — configurable rerank model.
+    """
+    assert Settings(mongodb_uri="mongodb://test").rerank_model == "rerank-2.5"

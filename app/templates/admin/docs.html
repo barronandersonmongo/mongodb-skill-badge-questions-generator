@@ -1,0 +1,399 @@
+{% extends "base.html" %}
+{% set api = "/api/admin/docs" %}
+
+{% block title %}Documentation — Skill Badge Questions{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <div>
+    <h1 class="h3 mb-1">Documentation corpus</h1>
+    <p class="text-body-secondary mb-0">
+      A stored copy of MongoDB's documentation, so question authoring reads its source
+      material from the database instead of fetching the web mid-run. Refresh it
+      whenever you like — a full crawl is around 10,000 pages, so most of the time you
+      want just the sources a badge draws on.
+    </p>
+  </div>
+  <div class="text-nowrap">
+    <form method="get" action="/admin/docs/search" class="d-inline-flex gap-1 me-2"
+          data-corpus-search="true">
+      <input class="form-control form-control-sm" type="search" name="q"
+             placeholder="search all pages" style="min-width: 16rem;">
+      <button class="btn btn-sm btn-outline-primary" type="submit">Search</button>
+    </form>
+    <button class="btn btn-outline-primary" id="fill-btn" type="button"
+            title="Fetch only pages the corpus is missing. Removes nothing.">
+      Fill gaps
+    </button>
+    <button class="btn btn-primary" id="refresh-btn" type="button">
+      Refresh documentation
+    </button>
+  </div>
+</div>
+
+<div id="run-alert" class="alert d-none" role="status"></div>
+
+<div class="card mb-3 d-none" id="progress-panel" data-progress-panel="true">
+  <div class="card-body py-3">
+    <div class="d-flex justify-content-between align-items-baseline mb-2">
+      <span class="fw-semibold" data-phase="true">Starting…</span>
+      <span class="font-monospace small" data-headline="true"></span>
+    </div>
+    <div class="progress mb-2" role="progressbar" style="height: 1.25rem;">
+      <div class="progress-bar progress-bar-striped progress-bar-animated"
+           id="progress-bar" data-progress-bar="true" style="width: 0%;">0%</div>
+    </div>
+    <div class="row row-cols-2 row-cols-md-6 g-2 small" data-progress-stats="true">
+      <div><div class="text-body-secondary">Pages</div><div data-stat="pages">—</div></div>
+      <div><div class="text-body-secondary">Rate</div><div data-stat="rate">—</div></div>
+      <div><div class="text-body-secondary">Elapsed</div><div data-stat="elapsed">—</div></div>
+      <div><div class="text-body-secondary">Remaining</div><div data-stat="eta">—</div></div>
+      <div><div class="text-body-secondary">Sources</div><div data-stat="sources">—</div></div>
+      <div><div class="text-body-secondary">Stored</div><div data-stat="stored">—</div></div>
+    </div>
+  </div>
+</div>
+
+{% if storage_error %}
+<div class="alert alert-danger">
+  <strong>Cannot reach MongoDB.</strong>
+  <div class="small font-monospace mt-1">{{ storage_error }}</div>
+</div>
+{% endif %}
+
+{% if last_error %}
+<div class="alert alert-danger">
+  <strong>Last refresh failed.</strong>
+  <div class="small mt-1">{{ last_error }}</div>
+  {% if last_traceback %}
+  <details class="mt-2">
+    <summary class="small">Show stack trace</summary>
+    <pre class="small font-monospace mb-0 mt-2 p-2 bg-body rounded border overflow-auto"
+         style="max-height: 20rem;">{{ last_traceback }}</pre>
+  </details>
+  {% endif %}
+</div>
+{% elif last_result %}
+<div class="alert alert-success">
+  <strong>Last refresh:</strong>
+  {{ last_result.inserted }} new,
+  {{ last_result.updated }} updated,
+  {{ last_result.unchanged }} unchanged,
+  {{ last_result.removed }} removed,
+  {{ last_result.skipped_stubs }} nav stub(s) skipped
+  across {{ last_result.sources_done }} source(s).
+  {% if last_result.mode == "fill" %}
+  <div class="mt-1" data-fill-summary="true">
+    Fill run: {{ last_result.already_present }} page(s) already present were left alone.
+  </div>
+  {% endif %}
+  {% if last_result.blocked %}
+  <div class="alert alert-warning mt-2 mb-0" data-blocked="true">
+    <strong>The crawl was refused part way through.</strong>
+    <div class="small mt-1">{{ last_result.block_reason }}</div>
+  </div>
+  {% endif %}
+  {% if last_result.sweep_skipped %}
+  <div class="mt-1 small" data-sweep-skipped="true">
+    Nothing was removed: {{ last_result.sweep_skipped }}
+  </div>
+  {% endif %}
+  {% if last_result.failure_count %}
+  <details class="mt-2">
+    <summary class="small" data-refresh-failures="true">
+      {{ last_result.failure_count }} page(s) could not be fetched
+    </summary>
+    <ul class="small mb-0 mt-2">
+      {% for failure in last_result.failures %}
+      <li class="font-monospace">{{ failure.url }} — {{ failure.error }}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card mb-3">
+  <div class="card-body py-2 d-flex gap-4 align-items-center">
+    <div>
+      <div class="small text-body-secondary">Pages stored</div>
+      <div class="h4 mb-0" data-total-pages="true">{{ totals.pages }}</div>
+    </div>
+    <div>
+      <div class="small text-body-secondary">Size</div>
+      <div class="h4 mb-0" data-total-bytes="true">
+        {{ (totals.bytes / (1024 * 1024)) | round(1) }} MB
+      </div>
+    </div>
+    <div>
+      <div class="small text-body-secondary">Last fetched</div>
+      <div class="mb-0" data-total-newest="true">
+        {% if totals.newest %}{{ totals.newest.strftime("%Y-%m-%d %H:%M UTC") }}{% else %}never{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header py-2">
+    <span class="fw-semibold">Sources</span>
+    <span class="small text-body-secondary ms-2">
+      what the corpus is made of — all of these are crawled on every refresh.
+      Open a source to read its pages.
+    </span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0" id="sources-table">
+      <thead class="table-light">
+        <tr>
+          <th>Index</th>
+          <th class="text-end">Pages</th>
+          <th class="text-end">Size</th>
+          <th>Last fetched</th>
+        </tr>
+      </thead>
+      <tbody id="sources-body">
+        <tr><td colspan="4" class="text-center text-body-secondary py-4">Loading sources…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<p class="text-body-secondary small mt-3 mb-0">
+  Pages come from MongoDB's published documentation index and are stored as Markdown.
+  <strong>Refresh documentation</strong> crawls every index it names and then drops
+  anything left from a previous crawl, so the corpus matches what is published now. A
+  page is only rewritten when its content changed.
+</p>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = "{{ api }}";
+const alertBox = document.getElementById("run-alert");
+const body = document.getElementById("sources-body");
+let elapsedTimer = null;
+let startedAt = null;
+let clockSkewMs = 0;
+
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const pad = (n) => String(n).padStart(2, "0");
+  return pad(Math.floor(total / 3600)) + ":" + pad(Math.floor((total % 3600) / 60)) +
+    ":" + pad(total % 60);
+}
+
+function elapsedSinceStart(until = null) {
+  if (startedAt === null) return null;
+  const end = until !== null ? until : Date.now() - clockSkewMs;
+  return end - startedAt;
+}
+
+// The run's start time comes from the server, so leaving this screen and returning
+// does not restart the timer at zero while the crawl continues.
+function adoptServerClock(state) {
+  if (state.server_time) clockSkewMs = Date.now() - state.server_time * 1000;
+  startedAt = state.started_at ? state.started_at * 1000 : null;
+}
+
+function showAlert(kind, message, {timed = false} = {}) {
+  alertBox.className = "alert alert-" + kind;
+  alertBox.textContent = message;
+  if (!timed) { stopElapsed(); return; }
+  const label = document.createElement("span");
+  label.className = "ms-2 font-monospace";
+  label.dataset.elapsed = "true";
+  const current = elapsedSinceStart();
+  label.textContent = current === null ? "" : formatElapsed(current);
+  alertBox.append(label);
+  if (elapsedTimer === null) {
+    elapsedTimer = setInterval(() => {
+      const shown = alertBox.querySelector("[data-elapsed]");
+      const running = elapsedSinceStart();
+      if (shown && running !== null) shown.textContent = formatElapsed(running);
+    }, 1000);
+  }
+}
+
+function stopElapsed() {
+  if (elapsedTimer !== null) { clearInterval(elapsedTimer); elapsedTimer = null; }
+}
+
+function shortName(url) {
+  return url.replace("https://www.mongodb.com/", "");
+}
+
+function megabytes(bytes) {
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+async function loadSources() {
+  const response = await fetch(API + "/sources");
+  if (!response.ok) {
+    body.textContent = "";
+    const row = body.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 4;
+    cell.className = "text-center text-danger py-4";
+    cell.textContent = "Could not load sources (HTTP " + response.status + ").";
+    return;
+  }
+  const state = await response.json();
+  const stored = new Map(state.stored.map((s) => [s.source, s]));
+  // A source that exists upstream but has never been crawled must still be listed,
+  // or it can never be selected for a first fetch.
+  const all = Array.from(new Set([...state.available, ...stored.keys()])).sort();
+
+  body.textContent = "";
+  if (state.discovery_error) {
+    const row = body.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 4;
+    cell.className = "small text-warning-emphasis bg-warning-subtle";
+    cell.dataset.discoveryError = "true";
+    cell.textContent = "Could not read the published index (" + state.discovery_error +
+      "). Showing only what is already stored.";
+  }
+  for (const source of all) {
+    const info = stored.get(source);
+    const row = body.insertRow();
+    row.dataset.source = source;
+
+    const name = row.insertCell();
+    if (info) {
+      // Only a source with stored pages can be drilled into; one that has never been
+      // crawled would open an empty list.
+      const link = document.createElement("a");
+      link.href = "/admin/docs/source?source=" + encodeURIComponent(source);
+      link.className = "small font-monospace";
+      link.dataset.drillIn = "true";
+      link.textContent = shortName(source);
+      name.append(link);
+    } else {
+      const label = document.createElement("span");
+      label.className = "small font-monospace text-body-secondary";
+      label.textContent = shortName(source);
+      name.append(label);
+    }
+
+    const pages = row.insertCell();
+    pages.className = "text-end";
+    pages.textContent = info ? info.pages : "—";
+
+    const size = row.insertCell();
+    size.className = "text-end small";
+    size.textContent = info ? megabytes(info.bytes) : "—";
+
+    const fetched = row.insertCell();
+    fetched.className = "small";
+    fetched.textContent = info && info.newest
+      ? new Date(info.newest).toISOString().slice(0, 16).replace("T", " ") + " UTC"
+      : "never";
+  }
+}
+
+async function startRefresh(mode) {
+  if (mode === "replace" && !window.confirm(
+    "Refresh the whole documentation corpus?\n\nAround 7,000 pages, so it takes about " +
+    "twelve minutes. Pages no longer published are removed at the end.\n\nIf a previous " +
+    "run was refused part way through, Fill gaps is faster and gentler."
+  )) return;
+  showAlert("info", mode === "fill"
+    ? "Fetching only the pages that are missing…"
+    : "Refreshing documentation…", {timed: true});
+  const response = await fetch(API + "/refresh?mode=" + mode, {method: "POST"});
+  if (response.status === 409) {
+    showAlert("warning", "A refresh is already in progress.");
+    return;
+  }
+  if (!response.ok) {
+    showAlert("danger", "Could not start the refresh (HTTP " + response.status + ").");
+    return;
+  }
+  pollStatus();
+}
+
+const panel = document.getElementById("progress-panel");
+const bar = document.getElementById("progress-bar");
+
+const PHASES = {
+  planning: "Reading the documentation indexes…",
+  fetching: "Fetching pages…",
+  sweeping: "Removing pages no longer published…",
+  done: "Finished",
+  failed: "Failed",
+};
+
+function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return total + "s";
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return minutes + "m " + String(total % 60).padStart(2, "0") + "s";
+  return Math.floor(minutes / 60) + "h " + String(minutes % 60).padStart(2, "0") + "m";
+}
+
+function setStat(name, value) {
+  const cell = panel.querySelector('[data-stat="' + name + '"]');
+  if (cell) cell.textContent = value;
+}
+
+function showProgress(p) {
+  if (!p) return;
+  panel.classList.remove("d-none");
+  panel.querySelector("[data-phase]").textContent = PHASES[p.phase] || p.phase;
+
+  // A percentage is only shown once the total is known — during planning the crawl
+  // genuinely does not know how much work there is, and inventing a number would be
+  // worse than admitting it.
+  const known = p.percent !== null && p.percent !== undefined;
+  bar.style.width = (known ? p.percent : 100) + "%";
+  bar.textContent = known ? p.percent.toFixed(1) + "%" : "";
+  bar.classList.toggle("bg-secondary", !known);
+
+  panel.querySelector("[data-headline]").textContent = known
+    ? p.pages_seen + " / " + p.pages_total + " pages"
+    : p.sources_done + " / " + p.sources_total + " indexes read";
+
+  setStat("pages", p.pages_total ? p.pages_seen + " of " + p.pages_total : String(p.pages_seen));
+  setStat("rate", p.pages_per_second ? p.pages_per_second.toFixed(1) + "/s" : "—");
+  setStat("elapsed", formatDuration(p.elapsed_seconds));
+  setStat("eta", p.phase === "done" ? "—" : formatDuration(p.eta_seconds));
+  setStat("sources", p.sources_done + " of " + p.sources_total);
+  setStat("stored", p.inserted + " new · " + p.updated + " upd · " + p.unchanged + " same"
+    + (p.failed ? " · " + p.failed + " failed" : ""));
+}
+
+async function pollStatus() {
+  const response = await fetch(API + "/refresh/status");
+  const state = await response.json();
+  adoptServerClock(state);
+  showProgress(state.progress);
+  if (state.running) {
+    showAlert("info", "Refreshing documentation…", {timed: true});
+    setTimeout(pollStatus, 2000);
+    return;
+  }
+  bar.classList.remove("progress-bar-animated");
+  if (state.last_error) {
+    showAlert("danger", "Refresh failed: " + state.last_error);
+    return;
+  }
+  // The finished run carries the final figures, which the last progress snapshot may
+  // predate — the sweep happens after it.
+  if (state.last_result) showProgress(state.last_result);
+  const duration = state.finished_at
+    ? elapsedSinceStart(state.finished_at * 1000)
+    : elapsedSinceStart();
+  const took = duration === null ? "" : " Took " + formatElapsed(duration) + ".";
+  showAlert("success", "Refresh finished." + took + " Reloading…");
+  setTimeout(() => window.location.reload(), 2500);
+}
+
+document.getElementById("refresh-btn").addEventListener("click", () => startRefresh("replace"));
+document.getElementById("fill-btn").addEventListener("click", () => startRefresh("fill"));
+
+loadSources();
+if ({{ "true" if running else "false" }}) { pollStatus(); }
+</script>
+{% endblock %}

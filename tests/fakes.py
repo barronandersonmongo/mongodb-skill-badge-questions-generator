@@ -1,14 +1,15 @@
 """Test doubles: an in-memory MongoDB collection and a fake Anthropic client.
 
 The collection implements only the operators this program uses ($set,
-$setOnInsert, $addToSet, equality/$ne/$exists/$or/$expr filters, projection,
-sort, search-index creation and a cosine $vectorSearch) — enough to assert real
+$setOnInsert, $addToSet, equality/array-membership/$ne/$exists/$or/$expr filters,
+projection, sort, search-index creation and a cosine $vectorSearch) — enough to assert real
 semantics such as "$setOnInsert must not overwrite an existing field".
 
 mongomock is not used: as of mongomock 4.3.0 / pymongo 4.17.0 its
 bulk_write path breaks on pymongo's newer add_update() signature.
 """
 
+import re
 from typing import Any
 
 
@@ -16,8 +17,21 @@ class FakeCursor:
     def __init__(self, docs: list[dict[str, Any]]):
         self._docs = docs
 
-    def sort(self, key: str, direction: int = 1) -> "FakeCursor":
+    def sort(self, key, direction: int = 1) -> "FakeCursor":
+        # pymongo accepts either a field name or a list of (field, direction) pairs;
+        # a text search sorts by {"$meta": "textScore"}, which is descending.
+        if isinstance(key, list):
+            field, spec = key[0]
+            descending = isinstance(spec, dict) or spec < 0
+            self._docs.sort(
+                key=lambda d: (d.get(field) is None, d.get(field)), reverse=descending
+            )
+            return self
         self._docs.sort(key=lambda d: d.get(key), reverse=direction < 0)
+        return self
+
+    def limit(self, count: int) -> "FakeCursor":
+        self._docs = self._docs[:count]
         return self
 
     def __iter__(self):
@@ -63,11 +77,67 @@ class FakeCollection:
         return name
 
     def aggregate(self, pipeline):
+        """Support the two aggregation shapes this program uses.
+
+        A pipeline starting with $vectorSearch is a similarity search (below); one
+        starting with $group is a summary over the collection, used by the
+        documentation corpus screen to count pages per source.
+        """
+        if pipeline and "$group" in pipeline[0]:
+            return self._aggregate_group(pipeline)
+        return self._aggregate_vector_search(pipeline)
+
+    def _aggregate_group(self, pipeline):
+        """$group with $sum/$max/$min accumulators, then an optional $sort."""
+        spec = pipeline[0]["$group"]
+        key = spec["_id"]
+        groups: dict[Any, list[dict]] = {}
+        for doc in self.docs:
+            group_key = doc.get(key.lstrip("$")) if isinstance(key, str) else None
+            groups.setdefault(group_key, []).append(doc)
+
+        def field_values(docs, expression):
+            path = list(expression.values())[0]
+            if path == 1:
+                return [1] * len(docs)
+            name = path.lstrip("$")
+            return [d.get(name) for d in docs if d.get(name) is not None]
+
+        rows = []
+        for group_key, docs in groups.items():
+            row: dict[str, Any] = {"_id": group_key}
+            for field, expression in spec.items():
+                if field == "_id":
+                    continue
+                operator = next(iter(expression))
+                values = field_values(docs, expression)
+                if operator == "$sum":
+                    row[field] = sum(values) if values else 0
+                elif operator == "$max":
+                    row[field] = max(values) if values else None
+                elif operator == "$min":
+                    row[field] = min(values) if values else None
+                else:
+                    raise NotImplementedError(f"accumulator {operator} not faked")
+            rows.append(row)
+
+        for stage in pipeline[1:]:
+            if "$sort" in stage:
+                field, direction = next(iter(stage["$sort"].items()))
+                rows.sort(key=lambda r: (r.get(field) is None, r.get(field)),
+                          reverse=direction < 0)
+        return rows
+
+    def _aggregate_vector_search(self, pipeline):
         """Support only the $vectorSearch + $project shape this program uses.
 
         The real index is configured with autoEmbed, so the query is text and Atlas
         does the embedding. Similarity is approximated here by word overlap, which
         is enough to order neighbours and exercise the score threshold.
+
+        The $project stage is honoured rather than assumed: badges and questions
+        project different fields, and a fake that returned one shape for both would
+        let a caller pass while asking for fields it never receives in production.
         """
         stage = pipeline[0]["$vectorSearch"]
         limit = stage["limit"]
@@ -77,13 +147,27 @@ class FakeCollection:
             text = doc.get(stage["path"])
             if not text:
                 continue
-            scored.append((_word_overlap(query, text), doc))
+            # A stored documentation page is Markdown beginning with its title heading,
+            # so the embedding of its text sees the title too. Fixtures here set the
+            # title as a separate field, so it is scored alongside the body rather than
+            # being invisible to the stand-in.
+            text = f"{doc.get('title') or ''} {text}"
+            similarity = _word_overlap(query, text)
+            if similarity <= 0:
+                # A document sharing nothing with the query is not a neighbour. Atlas
+                # returns the nearest `limit` documents whatever their score, but its
+                # scores are never zero — approximating that here would make every
+                # search in a small fake corpus return the whole corpus.
+                continue
+            scored.append((similarity, doc))
         scored.sort(key=lambda pair: pair[0], reverse=True)
+
+        projection = next(
+            (s["$project"] for s in pipeline[1:] if "$project" in s), None
+        )
         out = []
         for score, doc in scored[:limit]:
-            item = {k: doc.get(k) for k in ("slug", "name", "description", "status")}
-            item["score"] = score
-            out.append(item)
+            out.append(_project_search_result(doc, projection, score))
         return out
 
     # --- indexes ---
@@ -93,8 +177,25 @@ class FakeCollection:
         return name
 
     # --- reads ---
+    @staticmethod
+    def _text_score(doc: dict, search: str) -> float:
+        """Stand in for MongoDB's textScore, with the same title weighting.
+
+        Real scoring is term-frequency based and weighted per field; this counts term
+        occurrences and weights the title ten times, which is enough to order results
+        and to exercise "the title match comes first".
+        """
+        terms = [t.strip('"').casefold() for t in search.split() if t.strip('"')]
+        title = (doc.get("title") or "").casefold()
+        body = (doc.get("text") or "").casefold()
+        return sum(title.count(t) * 10 + body.count(t) for t in terms)
+
     def _matches(self, doc: dict, query: dict) -> bool:
         for key, expected in query.items():
+            if key == "$text":
+                if not self._text_score(doc, expected["$search"]):
+                    return False
+                continue
             if key == "$or":
                 if not any(self._matches(doc, clause) for clause in expected):
                     return False
@@ -106,26 +207,83 @@ class FakeCollection:
                     return False
                 continue
             actual = doc.get(key)
-            if isinstance(expected, dict) and "$ne" in expected:
+            if isinstance(expected, dict) and "$in" in expected:
+                if actual not in expected["$in"]:
+                    return False
+            elif isinstance(expected, dict) and expected.keys() & {"$lt", "$lte", "$gt", "$gte"}:
+                # Range comparisons, used to select pages by size.
+                if actual is None:
+                    return False
+                for operator, bound in expected.items():
+                    if operator == "$lt" and not actual < bound:
+                        return False
+                    if operator == "$lte" and not actual <= bound:
+                        return False
+                    if operator == "$gt" and not actual > bound:
+                        return False
+                    if operator == "$gte" and not actual >= bound:
+                        return False
+            elif isinstance(expected, dict) and "$ne" in expected:
                 if actual == expected["$ne"]:
                     return False
             elif isinstance(expected, dict) and "$exists" in expected:
                 if (key in doc) != expected["$exists"]:
+                    return False
+            elif isinstance(actual, list) and not isinstance(expected, list):
+                # MongoDB matches a scalar against any element of an array field,
+                # which is how questions are filtered by badge and by category.
+                if expected not in actual:
                     return False
             elif actual != expected:
                 return False
         return True
 
     def _project(self, doc: dict, projection: dict | None) -> dict:
+        """Apply MongoDB's projection semantics, which are all-or-nothing.
+
+        A projection naming any field for inclusion returns *only* those fields; one
+        naming only exclusions returns everything else. Mixing the two (beyond _id) is
+        an error in MongoDB. Modelling this matters: an earlier version of this fake
+        returned the whole document whichever form was used, which hid a real bug where
+        a search projection returned neither title nor url.
+        """
+        if not projection:
+            return dict(doc)
+
+        included = [
+            field
+            for field, spec in projection.items()
+            if field != "_id" and spec is True
+        ]
+        meta = [field for field, spec in projection.items() if isinstance(spec, dict)]
+
+        if included:
+            out = {field: doc.get(field) for field in included if field in doc}
+            if projection.get("_id", True) and "_id" in doc:
+                out["_id"] = doc["_id"]
+            return out
+
         out = dict(doc)
-        for field, keep in (projection or {}).items():
-            if not keep:
+        for field, spec in projection.items():
+            if field in meta:
+                continue
+            if not spec:
                 out.pop(field, None)
         return out
 
     def find(self, query: dict | None = None, projection: dict | None = None):
-        matched = [d for d in self.docs if self._matches(d, query or {})]
-        return FakeCursor([self._project(d, projection) for d in matched])
+        query = query or {}
+        matched = [d for d in self.docs if self._matches(d, query)]
+        projected = []
+        for doc in matched:
+            out = self._project(doc, projection)
+            # A projection may ask for the text score as a meta field; only a text
+            # query can supply one.
+            for field, spec in (projection or {}).items():
+                if isinstance(spec, dict) and "$meta" in spec and "$text" in query:
+                    out[field] = self._text_score(doc, query["$text"]["$search"])
+            projected.append(out)
+        return FakeCursor(projected)
 
     def find_one(self, query: dict, projection: dict | None = None):
         for doc in self.docs:
@@ -170,6 +328,21 @@ class FakeCollection:
         self.docs.append(doc)
         return doc["_id"]
 
+    def insert_many(self, docs: list[dict]) -> list[Any]:
+        ids = []
+        for doc in docs:
+            stored = {"_id": self._next_id, **doc}
+            self._next_id += 1
+            self.docs.append(stored)
+            ids.append(stored["_id"])
+        return ids
+
+    def delete_many(self, query: dict) -> "FakeDeleteResult":
+        keep = [d for d in self.docs if not self._matches(d, query)]
+        removed = len(self.docs) - len(keep)
+        self.docs = keep
+        return FakeDeleteResult(removed)
+
     def delete_one(self, query: dict) -> "FakeDeleteResult":
         for index, doc in enumerate(self.docs):
             if self._matches(doc, query):
@@ -191,9 +364,31 @@ class FakeCollection:
         return FakeBulkResult(matched, modified, upserted)
 
 
+def _project_search_result(doc: dict, projection: dict | None, score: float) -> dict:
+    """Apply a $vectorSearch pipeline's $project stage, including the score meta field."""
+    if not projection:
+        return {**doc, "score": score}
+    item: dict[str, Any] = {}
+    for field, spec in projection.items():
+        if isinstance(spec, dict) and "$meta" in spec:
+            item[field] = score
+        elif spec:
+            item[field] = doc.get(field)
+    return item
+
+
+def _tokens(text: str) -> set[str]:
+    """Words, without punctuation: "$lookup" and "lookup" are the same term.
+
+    An embedding model does not see the punctuation as a difference, so a stand-in
+    that did would fail searches the real index answers.
+    """
+    return {word for word in re.split(r"[^a-z0-9$]+", text.lower()) if word.strip("$")}
+
+
 def _word_overlap(left: str, right: str) -> float:
     """Jaccard overlap, standing in for cosine similarity over embeddings."""
-    a, b = set(left.lower().split()), set(right.lower().split())
+    a, b = {t.strip("$") for t in _tokens(left)}, {t.strip("$") for t in _tokens(right)}
     union = a | b
     return len(a & b) / len(union) if union else 0.0
 
@@ -251,9 +446,13 @@ class FakeParsedResponse:
 
 
 class FakeMessages:
-    def __init__(self, stream_messages: list[FakeMessage], parsed=None):
+    def __init__(self, stream_messages: list[FakeMessage], parsed=None, parsed_by_format=None):
         self._stream_messages = list(stream_messages)
         self._parsed = parsed
+        # A single run can make several parse() calls against different schemas
+        # (extraction, then badge attribution). Scripting by output_format lets a
+        # test answer each one without depending on call order.
+        self._parsed_by_format = parsed_by_format or {}
         self.stream_calls: list[dict] = []
         self.parse_calls: list[dict] = []
 
@@ -265,13 +464,19 @@ class FakeMessages:
 
     def parse(self, **kwargs) -> FakeParsedResponse:
         self.parse_calls.append(kwargs)
+        scripted = self._parsed_by_format.get(kwargs.get("output_format"), self._parsed)
         return (
-            self._parsed
-            if isinstance(self._parsed, FakeParsedResponse)
-            else FakeParsedResponse(self._parsed)
+            scripted
+            if isinstance(scripted, FakeParsedResponse)
+            else FakeParsedResponse(scripted)
         )
 
 
 class FakeAnthropic:
-    def __init__(self, stream_messages: list[FakeMessage] | None = None, parsed=None):
-        self.messages = FakeMessages(stream_messages or [], parsed)
+    def __init__(
+        self,
+        stream_messages: list[FakeMessage] | None = None,
+        parsed=None,
+        parsed_by_format=None,
+    ):
+        self.messages = FakeMessages(stream_messages or [], parsed, parsed_by_format)

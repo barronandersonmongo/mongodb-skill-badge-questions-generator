@@ -59,10 +59,11 @@ def seed(**overrides) -> None:
 # --- navigation ---
 
 
-def test_admin_home_redirects_to_the_badge_screen(client, fake_collection):
+def test_admin_home_opens_the_badge_catalog(client, fake_collection):
     """
-    Intent: /admin must be a usable entry point — someone typing it should land on a
-        working screen rather than a 404 while the area has one page.
+    Intent: /admin is the curation area — the functions that maintain the badge
+        catalog. Someone typing it should land on that area's screen rather than a
+        404, and not be bounced out to the authoring surface at the site root.
     Success: GET /admin follows through to the skill badges page and returns HTML.
     Feature: Admin area — navigation entry point.
     """
@@ -70,18 +71,6 @@ def test_admin_home_redirects_to_the_badge_screen(client, fake_collection):
     assert response.status_code == 200
     assert response.url.path == "/admin/skill-badges"
     assert "text/html" in response.headers["content-type"]
-
-
-def test_site_root_redirects_into_the_admin_area(client, fake_collection):
-    """
-    Intent: This tool has no public front page, so the site root should take an
-        internal user straight to the work rather than showing nothing.
-    Success: GET / lands on the skill badges page.
-    Feature: Admin area — navigation entry point.
-    """
-    response = client.get("/")
-    assert response.status_code == 200
-    assert response.url.path == "/admin/skill-badges"
 
 
 def test_page_renders_the_shared_shell(client, fake_collection):
@@ -708,3 +697,35 @@ def test_the_page_offers_slug_normalisation(client, fake_collection):
     Feature: Admin area — normalising slugs.
     """
     assert 'id="normalise-slugs-btn"' in client.get("/admin/skill-badges").text
+
+
+def test_the_badge_screens_elapsed_timer_is_driven_by_the_servers_start_time(
+    client, fake_collection
+):
+    """
+    Intent: The badge screen times its runs with the same mechanism as the questions
+        screen and had the same defect: the start time lived only in page memory, so
+        navigating away and back restarted the count at 00:00 while the sync continued.
+        Fixing one screen and not the other would leave the same misleading timer here.
+    Success: The badge screen's polling adopts the server's start time and clock, and
+        does not seed the timer from the browser's own clock.
+    Feature: Badge discovery — elapsed time survives leaving the page.
+    """
+    body = client.get("/admin/skill-badges").text
+    assert "adoptServerClock(state)" in body
+    assert "state.started_at" in body
+    assert "startedAt = Date.now()" not in body
+
+
+def test_a_badge_run_reports_when_it_started_and_finished(client, fake_collection, monkeypatch):
+    """
+    Intent: The badge screen's timer can only survive a reload if the run's start and end
+        are recorded on the server, as they are for question generation.
+    Success: A completed catalog sync reports started_at and finished_at, in that order.
+    Feature: Badge discovery — runs are timestamped on the server.
+    """
+    monkeypatch.setattr(api_module, "synchronize_from_catalog", lambda: {"inserted": 0})
+    client.post("/api/admin/skill-badges/sync-catalog")
+    state = client.get("/api/admin/skill-badges/discover/status").json()
+    assert state["finished_at"] >= state["started_at"]
+    assert state["running"] is False
