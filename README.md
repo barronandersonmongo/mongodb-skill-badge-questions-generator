@@ -235,18 +235,26 @@ server's `search-knowledge` answers a query with its best few chunks and cannot 
 asked for everything, which makes it the right tool at authoring time and the wrong
 one for building a cache.
 
-- **Refresh everything** crawls every index the root names — around **10,000 pages**
-  (~80 MB). Most of that is driver and CLI reference a badge quiz never draws on.
-- **Refresh selected** crawls only the sources you tick. This is the normal case.
-- A page is only rewritten when its content hash changed, so a re-run is cheap and
-  the reported `updated` count means something.
-- Sources that exist upstream but have never been crawled are listed too, so a new
-  product's docs can be picked up.
+One button: **Refresh documentation** replaces the corpus with what MongoDB publishes
+now — around **10,000 pages** (~80 MB), a few minutes.
+
+- Pages are stamped with the run that wrote them, and anything left from an earlier
+  run is deleted at the end. Same end state as emptying the collection first, except a
+  crawl that dies half way through leaves the previous corpus in place rather than
+  nothing.
+- If a crawl stores no pages at all — a moved index, no network — nothing is swept and
+  the run says so. That is the one case where a blind replace would destroy the corpus
+  and report success.
+- A page is only rewritten when its content hash changed, so most of a re-run is
+  cheap and `updated` means something.
 - Per-page failures are collected, not fatal: across 10,000 requests to a site this
-  program does not own, some will fail. The list is capped at 50 with a true count.
-- Oversized pages (>2 MB) are skipped — those are generated API dumps, not prose.
-- Progress is reported while the crawl runs, and the elapsed timer is server-timed,
-  so leaving the screen and returning does not restart it.
+  program does not own, some will fail, and aborting would mean the crawl never
+  finishes. The reported list is capped at 50 with a true count.
+- Oversized pages (>2 MB) are skipped — generated API dumps, not prose.
+- Progress is reported while the crawl runs, and the run is timed on the server, so
+  leaving the screen and returning does not restart the timer.
+
+The source table is informational: everything in it is crawled on every refresh.
 
 Nothing schedules this; it is refreshed on demand. `DOCS_INDEX_URL` overrides the
 index location.
@@ -254,12 +262,11 @@ index location.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/admin/docs` | The corpus screen |
-| `POST` | `/api/admin/docs/refresh` | Crawl everything, or the named sources |
+| `POST` | `/api/admin/docs/refresh` | Replace the corpus with a fresh crawl |
 | `GET` | `/api/admin/docs/refresh/status` | Poll a crawl, with progress |
 | `GET` | `/api/admin/docs/sources` | Stored sources, upstream sources, totals |
 | `GET` | `/api/admin/docs/pages?source=` | Stored pages, without their text |
 | `GET` | `/api/admin/docs/page?url=` | One page, with its text |
-| `DELETE` | `/api/admin/docs/sources?source=` | Drop a source's pages |
 
 ### Logging
 

@@ -13,7 +13,6 @@ import time
 import traceback
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel, Field
 
 from app.repositories import doc_pages
 from app.services import doc_corpus
@@ -41,15 +40,7 @@ def run_state() -> dict:
     return _run_state
 
 
-class RefreshRequest(BaseModel):
-    sources: list[str] | None = Field(
-        default=None,
-        description="Index URLs to refresh. Omit for the whole corpus.",
-        max_length=200,
-    )
-
-
-def _run_refresh(sources: list[str] | None) -> None:
+def _run_refresh() -> None:
     _run_state.update(
         running=True,
         last_error=None,
@@ -58,13 +49,10 @@ def _run_refresh(sources: list[str] | None) -> None:
         finished_at=None,
         progress=None,
     )
-    logger.info(
-        "Docs refresh started: %s",
-        f"{len(sources)} source(s)" if sources else "whole corpus",
-    )
+    logger.info("Docs refresh started")
     try:
         _run_state["last_result"] = doc_corpus.refresh(
-            sources, progress=lambda snapshot: _run_state.__setitem__("progress", snapshot)
+            progress=lambda snapshot: _run_state.__setitem__("progress", snapshot)
         )
     except Exception as exc:  # surfaced to the page, not swallowed
         _run_state["last_error"] = str(exc)
@@ -76,10 +64,11 @@ def _run_refresh(sources: list[str] | None) -> None:
 
 
 @router.post("/refresh")
-def start_refresh(request: RefreshRequest, background: BackgroundTasks) -> dict:
+def start_refresh(background: BackgroundTasks) -> dict:
+    """Replace the stored corpus with a fresh crawl of the whole documentation set."""
     if _run_state["running"]:
         raise HTTPException(409, "A documentation refresh is already in progress.")
-    background.add_task(_run_refresh, request.sources)
+    background.add_task(_run_refresh)
     return {"started": True}
 
 
@@ -125,12 +114,3 @@ def get_page(url: str) -> dict:
         raise HTTPException(404, f"No stored page for {url!r}.")
     return page
 
-
-@router.delete("/sources")
-def delete_source(source: str) -> dict:
-    """Drop every page from one source, so a bad crawl can be undone."""
-    deleted = doc_pages.delete_source(source)
-    if not deleted:
-        raise HTTPException(404, f"No stored pages for source {source!r}.")
-    logger.info("Docs source deleted: %s (%d page(s))", source, deleted)
-    return {"source": source, "deleted": deleted}

@@ -160,20 +160,49 @@ def test_pages_can_be_listed_for_one_source(fake_doc_pages):
     assert [p["url"] for p in doc_pages.list_pages("ix-2")] == ["https://www.mongodb.com/docs/b.md"]
 
 
-def test_a_source_can_be_deleted(fake_doc_pages):
+def test_pages_an_earlier_refresh_stored_are_swept_away(fake_doc_pages):
     """
-    Intent: A crawl can capture the wrong thing — a renamed index, or a source that turned
-        out to be irrelevant bulk. Without a way to drop it, the only remedy is editing the
-        collection by hand.
-    Success: Deleting a source removes its pages and reports the count, leaving others.
-    Feature: Documentation corpus — a bad crawl can be undone.
+    Intent: A refresh replaces the corpus rather than adding to it. A page withdrawn
+        upstream, or moved to a new URL, must disappear — otherwise the corpus keeps
+        serving documentation that no longer exists, and a question could be written from
+        it. Replaces a per-source delete, which is no longer how the corpus is managed.
+    Success: Pages not stamped with the current run are deleted; the current run's survive.
+    Feature: Documentation corpus — a refresh replaces what is stored.
+    """
+    doc_pages.upsert_pages([page(url="https://www.mongodb.com/docs/old.md")], "run-1")
+    doc_pages.upsert_pages([page(url="https://www.mongodb.com/docs/new.md")], "run-2")
+    assert doc_pages.delete_not_in_run("run-2") == 1
+    assert [d["url"] for d in fake_doc_pages.docs] == ["https://www.mongodb.com/docs/new.md"]
+
+
+def test_a_page_seen_again_is_kept_by_the_sweep(fake_doc_pages):
+    """
+    Intent: Most pages are unchanged between refreshes. If an unchanged page were not
+        re-stamped with the current run, the sweep would delete the entire corpus every
+        time and re-fetch it from scratch.
+    Success: A page whose content did not change is stamped with the new run and survives.
+    Feature: Documentation corpus — unchanged pages survive a refresh.
+    """
+    doc_pages.upsert_pages([page()], "run-1")
+    result = doc_pages.upsert_pages([page()], "run-2")
+    assert result["unchanged"] == 1
+    assert doc_pages.delete_not_in_run("run-2") == 0
+    assert len(fake_doc_pages.docs) == 1
+
+
+def test_the_corpus_can_be_emptied(fake_doc_pages):
+    """
+    Intent: There has to be a way to discard the whole corpus — a crawl that captured the
+        wrong thing, or a change of scope — without editing the collection by hand.
+    Success: delete_all removes every page and reports the count.
+    Feature: Documentation corpus — the corpus can be emptied.
     """
     doc_pages.upsert_pages([
-        page(url="https://www.mongodb.com/docs/a.md", source="ix-1"),
-        page(url="https://www.mongodb.com/docs/b.md", source="ix-2"),
+        page(url="https://www.mongodb.com/docs/a.md"),
+        page(url="https://www.mongodb.com/docs/b.md"),
     ])
-    assert doc_pages.delete_source("ix-1") == 1
-    assert [d["source"] for d in fake_doc_pages.docs] == ["ix-2"]
+    assert doc_pages.delete_all() == 2
+    assert fake_doc_pages.docs == []
 
 
 def test_the_fields_the_screen_and_crawl_query_are_indexed(fake_doc_pages):

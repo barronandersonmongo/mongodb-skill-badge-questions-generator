@@ -42,11 +42,12 @@ def stored(monkeypatch):
     """Capture what the crawl would write, without a database."""
     written: list[dict] = []
 
-    def upsert(pages):
+    def upsert(pages, run_id=None):
         written.extend(pages)
         return {"inserted": len(pages), "updated": 0, "unchanged": 0}
 
     monkeypatch.setattr(doc_corpus.doc_pages, "upsert_pages", upsert)
+    monkeypatch.setattr(doc_corpus.doc_pages, "delete_not_in_run", lambda run_id: 0)
     return written
 
 
@@ -129,6 +130,11 @@ def test_a_page_without_a_heading_falls_back_to_its_filename(web, settings):
     assert doc_corpus.page_title("no heading here", "https://x/aggregation.md") == "aggregation"
 
 
+def root_with(index_body: dict) -> dict:
+    """Script the root index pointing at one source, plus that source's pages."""
+    return {ROOT: f"[Manual]({INDEX})", **index_body}
+
+
 def test_pages_are_fetched_and_attributed_to_their_source(web, settings, stored):
     """
     Intent: Per-source counts, per-source refreshes and per-source deletion all depend on
@@ -137,8 +143,8 @@ def test_pages_are_fetched_and_attributed_to_their_source(web, settings, stored)
     Success: Fetched pages carry their text and their source index.
     Feature: Documentation corpus — pages are attributed to a source.
     """
-    web({INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A\nbody"})
-    doc_corpus.refresh([INDEX], settings=settings)
+    web(root_with({INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A\nbody"}))
+    doc_corpus.refresh(settings=settings)
     assert stored[0]["text"] == "# A\nbody"
     assert stored[0]["source"] == INDEX
 
@@ -152,10 +158,10 @@ def test_one_unreachable_page_does_not_lose_the_rest(web, settings, stored):
     Feature: Documentation corpus — partial failures are reported, not fatal.
     """
     web(
-        {INDEX: "[A](https://x/a.md)\n[B](https://x/b.md)", "https://x/a.md": "# A"},
+        root_with({INDEX: "[A](https://x/a.md)\n[B](https://x/b.md)", "https://x/a.md": "# A"}),
         failures={"https://x/b.md": RuntimeError("connection reset")},
     )
-    result = doc_corpus.refresh([INDEX], settings=settings)
+    result = doc_corpus.refresh(settings=settings)
     assert [p["url"] for p in stored] == ["https://x/a.md"]
     assert result["failure_count"] == 1
     assert "connection reset" in result["failures"][0]["error"]
@@ -168,11 +174,15 @@ def test_an_unreadable_index_does_not_abandon_the_other_sources(web, settings, s
     Success: The reachable source is crawled and the bad index is reported.
     Feature: Documentation corpus — one bad source does not fail the crawl.
     """
-    web({INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"})
-    result = doc_corpus.refresh(["https://x/missing/llms.txt", INDEX], settings=settings)
+    web({
+        ROOT: f"[Missing](https://x/missing/llms.txt)\n[Manual]({INDEX})",
+        INDEX: "[A](https://x/a.md)",
+        "https://x/a.md": "# A",
+    })
+    result = doc_corpus.refresh(settings=settings)
     assert [p["url"] for p in stored] == ["https://x/a.md"]
     assert any("index unreadable" in f["error"] for f in result["failures"])
-    assert result["sources_done"] == 2
+    assert result["sources_done"] == 3
 
 
 def test_an_enormous_page_is_skipped_rather_than_stored(web, settings, stored):
@@ -184,22 +194,10 @@ def test_an_enormous_page_is_skipped_rather_than_stored(web, settings, stored):
     Feature: Documentation corpus — oversized pages are excluded.
     """
     huge = "x" * (doc_corpus.MAX_PAGE_BYTES + 1)
-    web({INDEX: "[Big](https://x/big.md)", "https://x/big.md": huge})
-    result = doc_corpus.refresh([INDEX], settings=settings)
+    web(root_with({INDEX: "[Big](https://x/big.md)", "https://x/big.md": huge}))
+    result = doc_corpus.refresh(settings=settings)
     assert stored == []
     assert "exceeds the page limit" in result["failures"][0]["error"]
-
-
-def test_refreshing_named_sources_crawls_only_those(web, settings, stored):
-    """
-    Intent: A whole-corpus crawl is ~10,000 pages. Refreshing only the sources a badge
-        draws on is the normal case, and must not silently walk everything.
-    Success: Only the named index and its pages are requested — the root is never read.
-    Feature: Documentation corpus — targeted refresh.
-    """
-    requested = web({INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"})
-    doc_corpus.refresh([INDEX], settings=settings)
-    assert ROOT not in requested
 
 
 def test_refreshing_everything_walks_the_published_index(web, settings, stored):
@@ -227,12 +225,12 @@ def test_progress_is_reported_while_the_crawl_runs(web, settings, stored):
     Success: The progress callback is invoked with rising counts during the run.
     Feature: Documentation corpus — visible progress.
     """
-    web({INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"})
+    web(root_with({INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"}))
     seen: list[dict] = []
-    doc_corpus.refresh([INDEX], settings=settings, progress=seen.append)
+    doc_corpus.refresh(settings=settings, progress=seen.append)
     assert seen, "no progress was reported"
     assert seen[-1]["pages_seen"] == 1
-    assert seen[-1]["sources_done"] == 1
+    assert seen[-1]["sources_done"] == 2
 
 
 def test_the_reported_failure_list_is_capped(web, settings, stored, monkeypatch):
@@ -245,11 +243,12 @@ def test_the_reported_failure_list_is_capped(web, settings, stored, monkeypatch)
     """
     urls = [f"https://x/p{i}.md" for i in range(60)]
     web(
-        {INDEX: "\n".join(f"[P]({u})" for u in urls)},
+        root_with({INDEX: "\n".join(f"[P]({u})" for u in urls)}),
         failures={u: RuntimeError("boom") for u in urls},
     )
-    result = doc_corpus.refresh([INDEX], settings=settings)
-    assert result["failure_count"] == 60
+    result = doc_corpus.refresh(settings=settings)
+    # One extra failure records that nothing was stored, so nothing was swept.
+    assert result["failure_count"] == 61
     assert len(result["failures"]) == 50
 
 
@@ -275,16 +274,17 @@ def test_pages_are_written_in_batches_during_a_long_crawl(web, settings, monkeyp
     """
     monkeypatch.setattr(doc_corpus, "WRITE_BATCH", 2)
     urls = [f"https://x/p{i}.md" for i in range(5)]
-    web({INDEX: "\n".join(f"[P]({u})" for u in urls), **{u: "# P" for u in urls}})
+    web(root_with({INDEX: "\n".join(f"[P]({u})" for u in urls), **{u: "# P" for u in urls}}))
 
     writes: list[int] = []
 
-    def upsert(pages):
+    def upsert(pages, run_id=None):
         writes.append(len(pages))
         return {"inserted": len(pages), "updated": 0, "unchanged": 0}
 
     monkeypatch.setattr(doc_corpus.doc_pages, "upsert_pages", upsert)
-    doc_corpus.refresh([INDEX], settings=settings)
+    monkeypatch.setattr(doc_corpus.doc_pages, "delete_not_in_run", lambda run_id: 0)
+    doc_corpus.refresh(settings=settings)
     assert len(writes) == 3 and sum(writes) == 5
 
 
@@ -343,3 +343,59 @@ def test_an_http_error_is_raised_rather_than_stored_as_a_page(stub_site, setting
     stub_site["status"] = 500
     with pytest.raises(httpx.HTTPStatusError):
         doc_corpus._get(stub_site["base"] + "/a.md", settings)
+
+
+# --- a refresh replaces the corpus ---
+
+
+def test_a_refresh_removes_pages_that_are_no_longer_published(web, settings, monkeypatch):
+    """
+    Intent: Refreshing means "make the corpus what MongoDB publishes now". A page withdrawn
+        upstream has to go, or the corpus accumulates documentation for features that no
+        longer exist and a question could be written from it.
+    Success: The crawl sweeps pages not written by this run, and reports how many.
+    Feature: Documentation corpus — a refresh replaces what is stored.
+    """
+    swept: list[str] = []
+    monkeypatch.setattr(doc_corpus.doc_pages, "upsert_pages",
+                        lambda pages, run_id=None: {"inserted": len(pages), "updated": 0,
+                                                    "unchanged": 0})
+    monkeypatch.setattr(doc_corpus.doc_pages, "delete_not_in_run",
+                        lambda run_id: swept.append(run_id) or 7)
+    web(root_with({INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"}))
+    result = doc_corpus.refresh(settings=settings)
+    assert result["removed"] == 7
+    assert swept == [result["run_id"]]
+
+
+def test_a_crawl_that_stored_nothing_does_not_wipe_the_corpus(web, settings, monkeypatch):
+    """
+    Intent: The dangerous case. If the index moves or the network fails, the crawl stores
+        nothing — and a blind sweep would then delete the entire corpus and report a
+        successful replacement. The previous corpus must survive a failed refresh.
+    Success: With no pages stored, nothing is swept and the run says so.
+    Feature: Documentation corpus — a failed refresh leaves the corpus intact.
+    """
+    swept: list[str] = []
+    monkeypatch.setattr(doc_corpus.doc_pages, "delete_not_in_run",
+                        lambda run_id: swept.append(run_id) or 0)
+    web({ROOT: f"[Manual]({INDEX})", INDEX: "[A](https://x/a.md)"},
+        failures={"https://x/a.md": RuntimeError("connection reset")})
+    result = doc_corpus.refresh(settings=settings)
+    assert swept == []
+    assert result["removed"] == 0
+    assert any("nothing was removed" in f["error"] for f in result["failures"])
+
+
+def test_each_refresh_uses_its_own_run_stamp(web, settings, stored):
+    """
+    Intent: The sweep deletes everything not stamped with the current run. If two refreshes
+        shared a stamp, the second would not be able to tell its own pages from the first's
+        and stale pages would survive forever.
+    Success: Two refreshes report different run ids.
+    Feature: Documentation corpus — each refresh is identifiable.
+    """
+    web(root_with({INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"}))
+    first = doc_corpus.refresh(settings=settings)["run_id"]
+    second = doc_corpus.refresh(settings=settings)["run_id"]
+    assert first != second

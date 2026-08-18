@@ -19,6 +19,7 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Iterable
+from uuid import uuid4
 
 import httpx
 
@@ -58,11 +59,10 @@ def index_links(text: str) -> tuple[list[str], list[str]]:
 
 
 def discover_sources(*, settings: Settings | None = None) -> list[str]:
-    """The documentation indexes available, from the root index.
+    """Every documentation index the root index names.
 
-    Returned rather than crawled immediately so the admin screen can offer them
-    individually: most of the corpus is driver and CLI reference that a skill badge
-    quiz never draws on, and refreshing only what matters is far cheaper.
+    Listed on the screen so it is visible what the corpus is made of, but the crawl
+    always takes all of them: one refresh, the whole corpus.
     """
     settings = settings or get_settings()
     root = _get(settings.docs_index_url, settings)
@@ -137,21 +137,23 @@ WRITE_BATCH = 200
 
 
 def refresh(
-    sources: list[str] | None = None,
     *,
     settings: Settings | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Crawl the documentation and store it. Returns a summary for the admin screen.
+    """Replace the stored corpus with a fresh crawl of the whole documentation set.
 
-    With no `sources`, every index the root names is crawled — the whole corpus,
-    around 10,000 pages. Naming sources refreshes only those.
+    Around 10,000 pages. Pages are stamped with this run and anything left from an
+    earlier one is deleted at the end, so the corpus ends up as exactly what the
+    published index currently names — without a window in which it is empty.
     """
     settings = settings or get_settings()
-    targets = sources or discover_sources(settings=settings)
+    run_id = uuid4().hex
+    targets = discover_sources(settings=settings)
 
     summary: dict[str, Any] = {
         "source": "docs-refresh",
+        "run_id": run_id,
         "sources_requested": len(targets),
         "sources_done": 0,
         "pages_seen": 0,
@@ -186,7 +188,7 @@ def refresh(
                 batch, index_url, settings=settings,
                 on_page=lambda: summary.__setitem__("pages_seen", summary["pages_seen"] + 1),
             )
-            written = doc_pages.upsert_pages(pages)
+            written = doc_pages.upsert_pages(pages, run_id)
             for key in ("inserted", "updated", "unchanged"):
                 summary[key] += written[key]
                 source_stats[key] += written[key]
@@ -207,18 +209,35 @@ def refresh(
         )
         report()
 
+    # Only sweep once something was actually stored. A crawl that fetched nothing —
+    # no network, a moved index — would otherwise delete the entire corpus and
+    # report it as a successful replacement.
+    stored_anything = summary["inserted"] + summary["updated"] + summary["unchanged"]
+    if stored_anything:
+        summary["removed"] = doc_pages.delete_not_in_run(run_id)
+    else:
+        summary["removed"] = 0
+        summary["failures"].append(
+            {
+                "url": settings.docs_index_url,
+                "error": "no pages were stored, so nothing was removed — the existing "
+                "corpus was left untouched",
+            }
+        )
+
     # The whole list would be thousands of entries on a bad network; the count is
     # what matters on screen and the first few are what a person acts on.
     summary["failure_count"] = len(summary["failures"])
     summary["failures"] = summary["failures"][:50]
     logger.info(
         "Docs refresh finished: %d source(s), %d page(s) seen, %d new, %d updated, "
-        "%d unchanged, %d failed",
+        "%d unchanged, %d removed, %d failed",
         summary["sources_done"],
         summary["pages_seen"],
         summary["inserted"],
         summary["updated"],
         summary["unchanged"],
+        summary["removed"],
         summary["failure_count"],
     )
     return summary

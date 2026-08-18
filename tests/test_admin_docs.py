@@ -56,25 +56,11 @@ def test_a_refresh_runs_in_the_background(client, monkeypatch, fake_doc_pages):
     """
     calls: list = []
     monkeypatch.setattr(api_module.doc_corpus, "refresh",
-                        lambda sources, **kw: calls.append(sources) or {})
-    response = client.post(API + "/refresh", json={})
+                        lambda **kw: calls.append(kw) or {})
+    response = client.post(API + "/refresh")
     assert response.status_code == 200
     assert response.json() == {"started": True}
-    assert calls == [None]
-
-
-def test_named_sources_reach_the_crawl(client, monkeypatch, fake_doc_pages):
-    """
-    Intent: Refreshing one source instead of ten thousand pages is the normal case. If the
-        selection were dropped the button would silently crawl everything.
-    Success: The requested source list is passed through unchanged.
-    Feature: Documentation corpus — targeted refresh.
-    """
-    calls: list = []
-    monkeypatch.setattr(api_module.doc_corpus, "refresh",
-                        lambda sources, **kw: calls.append(sources) or {})
-    client.post(API + "/refresh", json={"sources": ["ix-1", "ix-2"]})
-    assert calls == [["ix-1", "ix-2"]]
+    assert len(calls) == 1
 
 
 def test_a_second_refresh_is_refused_while_one_runs(client, fake_doc_pages):
@@ -85,7 +71,7 @@ def test_a_second_refresh_is_refused_while_one_runs(client, fake_doc_pages):
     Feature: Documentation corpus — one refresh at a time.
     """
     api_module._run_state["running"] = True
-    assert client.post(API + "/refresh", json={}).status_code == 409
+    assert client.post(API + "/refresh").status_code == 409
 
 
 def test_a_refresh_does_not_block_the_other_jobs(client, monkeypatch, fake_doc_pages):
@@ -108,13 +94,13 @@ def test_progress_is_reported_while_a_refresh_runs(client, monkeypatch, fake_doc
     Success: The status endpoint exposes the crawl's progress snapshot.
     Feature: Documentation corpus — visible progress.
     """
-    def crawl(sources, progress=None):
+    def crawl(progress=None):
         progress({"sources_done": 1, "sources_requested": 2, "pages_seen": 40,
                   "inserted": 40, "updated": 0})
         return {"inserted": 40}
 
     monkeypatch.setattr(api_module.doc_corpus, "refresh", crawl)
-    client.post(API + "/refresh", json={})
+    client.post(API + "/refresh")
     state = client.get(API + "/refresh/status").json()
     assert state["progress"]["pages_seen"] == 40
 
@@ -127,8 +113,8 @@ def test_the_refresh_is_timed_on_the_server(client, monkeypatch, fake_doc_pages)
     Success: The status reports started_at, finished_at and the server clock.
     Feature: Documentation corpus — elapsed time survives leaving the page.
     """
-    monkeypatch.setattr(api_module.doc_corpus, "refresh", lambda sources, **kw: {"inserted": 0})
-    client.post(API + "/refresh", json={})
+    monkeypatch.setattr(api_module.doc_corpus, "refresh", lambda **kw: {"inserted": 0})
+    client.post(API + "/refresh")
     state = client.get(API + "/refresh/status").json()
     assert state["finished_at"] >= state["started_at"]
     assert abs(state["server_time"] - time.time()) < 5
@@ -141,11 +127,11 @@ def test_a_failed_refresh_is_reported_with_its_traceback(client, monkeypatch, fa
     Success: The status reports the error and a traceback, and is no longer running.
     Feature: Documentation corpus — failures are surfaced.
     """
-    def explode(sources, **kwargs):
+    def explode(**kwargs):
         raise RuntimeError("index unreachable")
 
     monkeypatch.setattr(api_module.doc_corpus, "refresh", explode)
-    client.post(API + "/refresh", json={})
+    client.post(API + "/refresh")
     state = client.get(API + "/refresh/status").json()
     assert state["running"] is False
     assert "index unreachable" in state["last_error"]
@@ -224,32 +210,6 @@ def test_asking_for_an_unstored_page_is_a_404(client, fake_doc_pages):
     assert client.get(API + "/page", params={"url": "https://x/none.md"}).status_code == 404
 
 
-def test_a_source_can_be_deleted(client, fake_doc_pages):
-    """
-    Intent: A crawl can capture the wrong thing — a renamed index, or irrelevant bulk.
-        Without a way to drop it the only remedy is editing the collection by hand.
-    Success: Deleting a source removes its pages and reports the count.
-    Feature: Documentation corpus — a bad crawl can be undone.
-    """
-    seed(source="ix-1")
-    response = client.delete(API + "/sources", params={"source": "ix-1"})
-    assert response.json() == {"source": "ix-1", "deleted": 1}
-    assert doc_pages.totals()["pages"] == 0
-
-
-def test_deleting_an_unknown_source_is_a_404(client, fake_doc_pages):
-    """
-    Intent: A stale screen must not report a successful delete of pages that were already
-        gone.
-    Success: Deleting an unknown source returns 404.
-    Feature: Documentation corpus — unknown source is reported.
-    """
-    assert client.delete(API + "/sources", params={"source": "nope"}).status_code == 404
-
-
-# --- the screen ---
-
-
 def test_the_screen_is_in_the_admin_area(client, fake_doc_pages):
     """
     Intent: Maintaining the corpus is curation work, like the badge catalog — nobody writing
@@ -278,16 +238,19 @@ def test_the_screen_says_how_much_is_stored(client, fake_doc_pages):
     assert 'data-total-newest="true"' in body
 
 
-def test_the_screen_offers_refresh_on_demand(client, fake_doc_pages):
+def test_the_screen_offers_one_refresh_control(client, fake_doc_pages):
     """
-    Intent: The refresh is explicitly ad-hoc — nothing schedules it. Both a whole-corpus
-        crawl and a targeted one need a control, or the feature exists only as an API call.
-    Success: The page offers both refresh buttons.
-    Feature: Documentation corpus — ad-hoc refresh from the screen.
+    Intent: The refresh is ad-hoc — nothing schedules it — and it is a single action: replace
+        the corpus with what is published now. Offering a choice of scope, or per-source
+        delete buttons, made the screen a control panel for decisions nobody needed to make.
+        Replaces a test that required two buttons.
+    Success: The page offers one refresh button and no selection or delete controls.
+    Feature: Documentation corpus — one ad-hoc refresh.
     """
     body = client.get(PAGE).text
-    assert 'id="refresh-all-btn"' in body
-    assert 'id="refresh-selected-btn"' in body
+    assert 'id="refresh-btn"' in body
+    assert 'id="refresh-selected-btn"' not in body
+    assert "js-pick" not in body and "js-drop" not in body
 
 
 def test_a_refresh_in_progress_is_picked_up_on_load(client, fake_doc_pages):
@@ -312,11 +275,12 @@ def test_the_last_refresh_result_is_reported(client, fake_doc_pages):
     """
     api_module._run_state["last_result"] = {
         "source": "docs-refresh", "sources_done": 3, "inserted": 120,
-        "updated": 4, "unchanged": 900, "failure_count": 2,
+        "updated": 4, "unchanged": 900, "removed": 9, "failure_count": 2,
         "failures": [{"url": "https://x/a.md", "error": "timeout"}],
     }
     body = client.get(PAGE).text
     assert "120 new" in body
+    assert "9 removed" in body
     assert 'data-refresh-failures="true"' in body
     assert "timeout" in body
 

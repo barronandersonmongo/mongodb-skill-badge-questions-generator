@@ -11,6 +11,11 @@ badge see different source text; a stored corpus fixes both.
 `content_hash` exists so a refresh can tell "unchanged" from "updated" without
 diffing text, which is what makes a re-run cheap and makes `updated` a meaningful
 number on the admin screen.
+
+A refresh replaces the whole corpus. Rather than emptying the collection first, each
+page is stamped with the run that wrote it and pages left over from earlier runs are
+deleted at the end — the same end state, except a crawl that dies half way through
+leaves the previous corpus in place instead of nothing.
 """
 
 import hashlib
@@ -44,7 +49,7 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def upsert_pages(pages: list[dict[str, Any]]) -> dict[str, int]:
+def upsert_pages(pages: list[dict[str, Any]], run_id: str | None = None) -> dict[str, int]:
     """Store fetched pages. Returns how many were new, changed, or unchanged.
 
     `first_seen_at` is set on insert only, so it records when this corpus first
@@ -75,7 +80,10 @@ def upsert_pages(pages: list[dict[str, Any]]) -> dict[str, int]:
             # Still record that it was checked, so a stale page is distinguishable
             # from one that simply has not changed.
             operations.append(
-                UpdateOne({"url": page["url"]}, {"$set": {"fetched_at": now}})
+                UpdateOne(
+                    {"url": page["url"]},
+                    {"$set": {"fetched_at": now, "refresh_run_id": run_id}},
+                )
             )
             continue
         else:
@@ -86,6 +94,7 @@ def upsert_pages(pages: list[dict[str, Any]]) -> dict[str, int]:
                 {"url": page["url"]},
                 {
                     "$set": {
+                        "refresh_run_id": run_id,
                         "source": page.get("source"),
                         "title": page.get("title"),
                         "text": page["text"],
@@ -167,6 +176,16 @@ def get_page(url: str) -> dict[str, Any] | None:
     return collection().find_one({"url": url}, {"_id": False})
 
 
-def delete_source(source: str) -> int:
-    """Remove every page from one source, so a bad crawl can be undone."""
-    return collection().delete_many({"source": source}).deleted_count
+def delete_not_in_run(run_id: str) -> int:
+    """Remove pages an earlier refresh stored and this one did not see.
+
+    This is what makes a refresh a replacement rather than an accumulation: a page
+    withdrawn upstream, or moved to a new URL, disappears from the corpus instead of
+    lingering as documentation that no longer exists.
+    """
+    return collection().delete_many({"refresh_run_id": {"$ne": run_id}}).deleted_count
+
+
+def delete_all() -> int:
+    """Empty the corpus."""
+    return collection().delete_many({}).deleted_count

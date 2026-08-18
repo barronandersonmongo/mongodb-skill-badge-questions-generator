@@ -15,11 +15,8 @@
     </p>
   </div>
   <div class="text-nowrap">
-    <button class="btn btn-primary" id="refresh-selected-btn" type="button">
-      Refresh selected
-    </button>
-    <button class="btn btn-outline-secondary" id="refresh-all-btn" type="button">
-      Refresh everything
+    <button class="btn btn-primary" id="refresh-btn" type="button">
+      Refresh documentation
     </button>
   </div>
 </div>
@@ -50,7 +47,8 @@
   <strong>Last refresh:</strong>
   {{ last_result.inserted }} new,
   {{ last_result.updated }} updated,
-  {{ last_result.unchanged }} unchanged
+  {{ last_result.unchanged }} unchanged,
+  {{ last_result.removed }} removed
   across {{ last_result.sources_done }} source(s).
   {% if last_result.failure_count %}
   <details class="mt-2">
@@ -89,28 +87,24 @@
 </div>
 
 <div class="card">
-  <div class="card-header py-2 d-flex justify-content-between align-items-center">
+  <div class="card-header py-2">
     <span class="fw-semibold">Sources</span>
-    <span class="small">
-      <a href="#" id="select-none">none</a> ·
-      <a href="#" id="select-stored">stored</a> ·
-      <a href="#" id="select-all">all</a>
+    <span class="small text-body-secondary ms-2">
+      what the corpus is made of — all of these are crawled on every refresh
     </span>
   </div>
   <div class="table-responsive">
     <table class="table table-hover align-middle mb-0" id="sources-table">
       <thead class="table-light">
         <tr>
-          <th style="width:3rem;"></th>
           <th>Index</th>
           <th class="text-end">Pages</th>
           <th class="text-end">Size</th>
           <th>Last fetched</th>
-          <th class="text-end">Actions</th>
         </tr>
       </thead>
       <tbody id="sources-body">
-        <tr><td colspan="6" class="text-center text-body-secondary py-4">Loading sources…</td></tr>
+        <tr><td colspan="4" class="text-center text-body-secondary py-4">Loading sources…</td></tr>
       </tbody>
     </table>
   </div>
@@ -118,8 +112,9 @@
 
 <p class="text-body-secondary small mt-3 mb-0">
   Pages come from MongoDB's published documentation index and are stored as Markdown.
-  <strong>Refresh everything</strong> crawls every index it names; a source already
-  stored is only rewritten when its content changed.
+  <strong>Refresh documentation</strong> crawls every index it names and then drops
+  anything left from a previous crawl, so the corpus matches what is published now. A
+  page is only rewritten when its content changed.
 </p>
 {% endblock %}
 
@@ -189,7 +184,7 @@ async function loadSources() {
     body.textContent = "";
     const row = body.insertRow();
     const cell = row.insertCell();
-    cell.colSpan = 6;
+    cell.colSpan = 4;
     cell.className = "text-center text-danger py-4";
     cell.textContent = "Could not load sources (HTTP " + response.status + ").";
     return;
@@ -204,7 +199,7 @@ async function loadSources() {
   if (state.discovery_error) {
     const row = body.insertRow();
     const cell = row.insertCell();
-    cell.colSpan = 6;
+    cell.colSpan = 4;
     cell.className = "small text-warning-emphasis bg-warning-subtle";
     cell.dataset.discoveryError = "true";
     cell.textContent = "Could not read the published index (" + state.discovery_error +
@@ -214,13 +209,6 @@ async function loadSources() {
     const info = stored.get(source);
     const row = body.insertRow();
     row.dataset.source = source;
-
-    const pick = row.insertCell();
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.className = "form-check-input js-pick";
-    box.value = source;
-    pick.append(box);
 
     const name = row.insertCell();
     const link = document.createElement("a");
@@ -244,34 +232,16 @@ async function loadSources() {
     fetched.textContent = info && info.newest
       ? new Date(info.newest).toISOString().slice(0, 16).replace("T", " ") + " UTC"
       : "never";
-
-    const actions = row.insertCell();
-    actions.className = "text-end text-nowrap";
-    const one = document.createElement("button");
-    one.className = "btn btn-sm btn-outline-primary js-refresh-one";
-    one.textContent = "Refresh";
-    actions.append(one);
-    if (info) {
-      const drop = document.createElement("button");
-      drop.className = "btn btn-sm btn-outline-danger ms-1 js-drop";
-      drop.textContent = "Delete";
-      actions.append(drop);
-    }
   }
 }
 
-async function startRefresh(sources) {
-  const scope = sources === null ? "the whole corpus" : sources.length + " source(s)";
-  if (sources === null && !window.confirm(
-    "Refresh the whole corpus?\n\nThat is around 10,000 pages and takes a while. " +
-    "Refreshing only the sources you need is much faster."
+async function startRefresh() {
+  if (!window.confirm(
+    "Refresh the documentation corpus?\n\nAround 10,000 pages, so it takes a few " +
+    "minutes. Pages no longer published are removed at the end."
   )) return;
-  showAlert("info", "Refreshing " + scope + "…", {timed: true});
-  const response = await fetch(API + "/refresh", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({sources: sources}),
-  });
+  showAlert("info", "Refreshing documentation…", {timed: true});
+  const response = await fetch(API + "/refresh", {method: "POST"});
   if (response.status === 409) {
     showAlert("warning", "A refresh is already in progress.");
     return;
@@ -291,7 +261,7 @@ async function pollStatus() {
     const p = state.progress;
     const detail = p
       ? " — " + p.sources_done + "/" + p.sources_requested + " source(s), " +
-        p.pages_seen + " page(s), " + p.inserted + " new, " + p.updated + " updated"
+        p.pages_seen + " page(s) fetched"
       : "";
     showAlert("info", "Refreshing documentation" + detail, {timed: true});
     setTimeout(pollStatus, 3000);
@@ -309,54 +279,7 @@ async function pollStatus() {
   window.location.reload();
 }
 
-function picked() {
-  return Array.from(document.querySelectorAll(".js-pick:checked")).map((b) => b.value);
-}
-
-document.getElementById("refresh-all-btn").addEventListener("click", () => startRefresh(null));
-document.getElementById("refresh-selected-btn").addEventListener("click", () => {
-  const sources = picked();
-  if (sources.length === 0) {
-    window.alert("Tick the sources to refresh, or use Refresh everything.");
-    return;
-  }
-  startRefresh(sources);
-});
-
-document.getElementById("sources-body").addEventListener("click", async (event) => {
-  const row = event.target.closest("tr");
-  if (!row) return;
-  const source = row.dataset.source;
-  if (event.target.classList.contains("js-refresh-one")) {
-    startRefresh([source]);
-  } else if (event.target.classList.contains("js-drop")) {
-    if (!window.confirm("Delete every stored page from " + shortName(source) + "?")) return;
-    const response = await fetch(API + "/sources?source=" + encodeURIComponent(source),
-      {method: "DELETE"});
-    if (!response.ok) {
-      showAlert("danger", "Could not delete (HTTP " + response.status + ").");
-      return;
-    }
-    window.location.reload();
-  }
-});
-
-document.getElementById("select-all").addEventListener("click", (e) => {
-  e.preventDefault();
-  document.querySelectorAll(".js-pick").forEach((b) => { b.checked = true; });
-});
-document.getElementById("select-none").addEventListener("click", (e) => {
-  e.preventDefault();
-  document.querySelectorAll(".js-pick").forEach((b) => { b.checked = false; });
-});
-document.getElementById("select-stored").addEventListener("click", (e) => {
-  e.preventDefault();
-  document.querySelectorAll("#sources-body tr").forEach((row) => {
-    const box = row.querySelector(".js-pick");
-    const pages = row.cells[2] ? row.cells[2].textContent.trim() : "—";
-    if (box) box.checked = pages !== "—" && pages !== "";
-  });
-});
+document.getElementById("refresh-btn").addEventListener("click", startRefresh);
 
 loadSources();
 if ({{ "true" if running else "false" }}) { pollStatus(); }
