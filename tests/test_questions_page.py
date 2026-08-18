@@ -1,4 +1,4 @@
-"""Tests for the /admin/questions screen — the tool's main screen.
+"""Tests for the questions screen at / — the tool's main screen.
 
 Assertions are on markup (elements, classes, data- attributes), never on a bare
 word: the page ships JavaScript containing the same labels it renders, so a
@@ -19,9 +19,9 @@ from app.main import app
 from app.models.question import GeneratedQuestion, QuestionOption
 from app.models.skill_badge import DiscoveredBadge
 from app.repositories import questions, skill_badges
-from app.routers import admin_questions as api_module
+from app.routers import questions as api_module
 
-PAGE = "/admin/questions"
+PAGE = "/"
 
 
 @pytest.fixture
@@ -89,6 +89,36 @@ def seed_question(stem: str = "Which stage filters documents?", **overrides) -> 
     return result["question_ids"][0]
 
 
+# --- where the screen lives ---
+
+
+def test_the_site_root_serves_the_questions_screen(client, fake_collection, fake_questions):
+    """
+    Intent: Writing and reviewing questions is the work this tool exists for, so it
+        is the service's front door — reached directly, not via a redirect out of
+        some other area.
+    Success: GET / returns the questions screen itself, with no redirect.
+    Feature: Author surface — questions are the root of the service.
+    """
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 200
+    assert 'data-stem="true"' in response.text or 'data-empty="true"' in response.text
+
+
+def test_the_questions_screen_is_not_inside_the_admin_area(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: /admin is for curating the badge catalog; questions are the authoring
+        surface. Serving the questions screen from both places would blur a boundary
+        that exists to give each screen one audience — and would leave two URLs to
+        keep working.
+    Success: The questions screen is not served under /admin.
+    Feature: Author surface — separated from the admin area.
+    """
+    assert client.get("/admin/questions", follow_redirects=False).status_code == 404
+
+
 # --- the shell ---
 
 
@@ -103,17 +133,23 @@ def test_the_page_renders_the_shared_shell(client, fake_collection, fake_questio
     response = client.get(PAGE)
     assert response.status_code == 200
     assert '<nav class="navbar' in response.text
-    assert re.search(r'class="nav-link active"[^>]*\n?\s*href="/admin/questions"', response.text)
+    assert re.search(r'class="nav-link active"[^>]*\n?\s*href="/"', response.text)
 
 
-def test_the_navigation_offers_the_badge_screen(client, fake_collection, fake_questions):
+def test_the_navigation_offers_the_badge_screen_marked_as_admin(
+    client, fake_collection, fake_questions
+):
     """
     Intent: Generation depends on badges, so an author who needs to fix a badge must be
-        able to reach that screen from here rather than typing a URL.
-    Success: The page links to /admin/skill-badges.
-    Feature: Admin area — navigation between screens.
+        able to reach that screen from here rather than typing a URL. Marking it as the
+        admin area is what tells them they are crossing into curation work — nothing
+        else does, since there are no authorizations to stop them.
+    Success: The page links to /admin/skill-badges and labels it as admin.
+    Feature: Author surface — signposted route into the admin area.
     """
-    assert 'href="/admin/skill-badges"' in client.get(PAGE).text
+    body = client.get(PAGE).text
+    assert 'href="/admin/skill-badges"' in body
+    assert 'data-admin-area="true"' in body
 
 
 def test_an_unreachable_database_is_explained_rather_than_crashing(
@@ -290,7 +326,7 @@ def test_the_tabs_keep_the_badge_and_category_filters(client, fake_collection, f
     seed_badge()
     seed_question()
     body = client.get(PAGE, params={"skill_badge": "atlas-search"}).text
-    assert 'href="/admin/questions?status=draft&skill_badge=atlas-search' in body
+    assert 'href="/?status=draft&skill_badge=atlas-search' in body
 
 
 def test_the_filter_menus_offer_the_badges_and_categories_in_use(
@@ -325,7 +361,7 @@ def test_the_export_link_carries_the_current_filters(client, fake_collection, fa
     seed_question()
     body = client.get(PAGE, params={"status": "approved", "skill_badge": "atlas-search"}).text
     assert 'id="export-btn"' in body
-    assert "/api/admin/questions?status=approved&skill_badge=atlas-search" in body
+    assert "/api/questions?status=approved&skill_badge=atlas-search" in body
 
 
 # --- generating ---

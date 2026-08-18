@@ -49,12 +49,12 @@ suite from the repository root with quiet output.
 | `test_models_question.py` | `app/models/question.py` — question schemas and constraints |
 | `test_question_generation.py` | `app/services/question_generation.py` — authoring, extraction, format validation |
 | `test_repositories_questions.py` | `app/repositories/questions.py` — insert, filter, lifecycle |
-| `test_admin_questions_router.py` | `app/routers/admin_questions.py` — question JSON API |
-| `test_admin_questions_page.py` | `app/templates/admin/questions.html` — the main screen |
+| `test_questions_router.py` | `app/routers/questions.py` — question JSON API under `/api/questions` |
+| `test_questions_page.py` | `app/routers/pages.py` + `questions.html` — the main screen at `/` |
 | `test_badge_discovery.py` | `app/services/badge_discovery.py` — the two Claude passes |
 | `test_repositories_skill_badges.py` | `app/repositories/skill_badges.py` — upsert, listing, lifecycle |
 | `test_admin_skill_badges_router.py` | `app/routers/admin_skill_badges.py`, `app/main.py` — JSON API under `/api/admin` |
-| `test_admin_pages.py` | `app/routers/admin_pages.py` + templates — the `/admin` screens |
+| `test_admin_pages.py` | `app/routers/admin_pages.py` + templates — the `/admin` badge screens |
 | `test_discover_cli.py` | `app/services/discover_cli.py` — shell entry point |
 | `test_test_documentation.py` | The suite itself — enforces the convention below |
 | `conftest.py` | Shared fixtures (credential scrubbing, in-memory collection) |

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% set api = "/api/admin/questions" %}
+{% set api = "/api/questions" %}
 
 {% block title %}Questions — Skill Badge Questions{% endblock %}
 
@@ -106,7 +106,7 @@
   {% for tab, label in tabs %}
   <li class="nav-item">
     <a class="nav-link {% if status_filter == tab %}active{% endif %}"
-       href="/admin/questions?{% if tab %}status={{ tab }}&{% endif %}{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
+       href="/?{% if tab %}status={{ tab }}&{% endif %}{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
       {{ label }} <span class="badge text-bg-secondary">{{ counts.get(tab, 0) }}</span>
     </a>
   </li>

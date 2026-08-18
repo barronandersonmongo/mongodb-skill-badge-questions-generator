@@ -1,4 +1,4 @@
-"""Tests for app/routers/admin_questions.py — the JSON API under /api/admin.
+"""Tests for app/routers/questions.py — the JSON API under /api/questions.
 
 Every test carries an Intent / Success / Feature block. Those blocks are the
 recorded requirement and are never edited: if behavior must change, the
@@ -11,9 +11,9 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models.question import GeneratedQuestion, QuestionOption
 from app.repositories import questions
-from app.routers import admin_questions as api_module
+from app.routers import questions as api_module
 
-API = "/api/admin/questions"
+API = "/api/questions"
 
 
 @pytest.fixture
@@ -257,13 +257,18 @@ def test_a_question_can_be_deleted(client, fake_questions):
     assert questions.list_questions() == []
 
 
-def test_the_questions_api_is_mounted(client):
+def test_the_questions_api_is_mounted_outside_the_admin_area(client):
     """
     Intent: A router that is written but never included fails only in production, on a
-        screen that then does nothing when its buttons are pressed.
-    Success: The questions endpoints appear in the application's routes.
-    Feature: Application wiring — questions API is reachable.
+        screen that then does nothing when its buttons are pressed. And the questions
+        API belongs to the authoring surface, not to badge curation — leaving a copy
+        under /api/admin would be a second URL to keep working and would blur the
+        boundary the two areas exist to draw.
+    Success: The questions endpoints are served under /api/questions, and no questions
+        endpoint is served under /api/admin.
+    Feature: Application wiring — questions API is reachable, outside /api/admin.
     """
     paths = client.get("/openapi.json").json()["paths"]
     assert API in paths
     assert API + "/generate" in paths
+    assert not [p for p in paths if p.startswith("/api/admin") and "question" in p]

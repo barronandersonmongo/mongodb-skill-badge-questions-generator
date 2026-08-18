@@ -1,8 +1,12 @@
 """JSON endpoints backing the questions screen.
 
-Mounted under /api/admin so the server-rendered pages can own /admin. Generation
-is a long-running Claude call (web search, then authoring — minutes not seconds),
-so it runs in a background task and the page polls for status.
+Mounted under /api/questions, not /api/admin: writing and reviewing questions is
+the authoring surface this tool exists for, while /admin holds the functions that
+curate the badge catalog behind it. Nothing enforces that boundary — there are no
+authorizations — it separates the two kinds of work.
+
+Generation is a long-running Claude call (web search, then authoring — minutes
+not seconds), so it runs in a background task and the page polls for status.
 
 Run state is separate from the badge run state: generating questions and syncing
 badges are unrelated jobs, and one must not report the other's result.
@@ -17,7 +21,7 @@ from pydantic import BaseModel, Field
 from app.repositories import questions
 from app.services.question_generation import generate_questions
 
-router = APIRouter(prefix="/api/admin/questions", tags=["admin"])
+router = APIRouter(prefix="/api/questions", tags=["questions"])
 
 MAX_QUESTIONS_PER_RUN = 25
 

@@ -42,9 +42,8 @@ cluster (Atlas project "Barry Anderson").
 .venv/bin/uvicorn app.main:app --reload
 ```
 
-Then open **<http://127.0.0.1:8000/admin>** — the admin area. `/` and `/admin`
-both redirect to the questions screen, which is the main screen. API docs are at
-`/docs`.
+Then open **<http://127.0.0.1:8000/>** — the questions screen, which is the main
+screen. The badge catalog is at `/admin`. API docs are at `/docs`.
 
 If MongoDB is unreachable the screen still loads and names the problem rather
 than returning a stack trace.
@@ -72,9 +71,21 @@ credentials from the environment, MongoDB is an in-memory fake
 
 ## Features
 
+### Two areas
+
+| Area | What it is for |
+|---|---|
+| `/` | **Authoring** — write, review, filter and export questions |
+| `/admin` | **Curation** — maintain the badge catalog the questions are scoped by |
+
+The split is a logical boundary between two kinds of work, so each screen has one
+audience. **It is not a permission boundary**: there are no authorizations
+anywhere in this program, and anyone who can reach the service can reach both
+areas. Their JSON follows the same split — `/api/questions` and `/api/admin/...`.
+
 ### Questions
 
-The main screen (`/admin/questions`) is where questions are viewed and written.
+The main screen (`/`) is where questions are viewed and written.
 
 **Generating.** A run is scoped to one or more skill badges: the badge decides
 what is in subject matter. Two Claude passes, as with badge discovery — an
@@ -114,12 +125,12 @@ exactly the filtered set from the same endpoint the screen reads.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/admin/questions` | The main screen; `?status=`, `?skill_badge=`, `?category=` |
-| `POST` | `/api/admin/questions/generate` | Start a generation run |
-| `GET` | `/api/admin/questions/generate/status` | Poll a run |
-| `GET` | `/api/admin/questions` | List / export questions, same filters |
-| `POST` | `/api/admin/questions/{id}/status` | Approve, reject or re-open |
-| `DELETE` | `/api/admin/questions/{id}` | Delete a question |
+| `GET` | `/` | The main screen; `?status=`, `?skill_badge=`, `?category=` |
+| `POST` | `/api/questions/generate` | Start a generation run |
+| `GET` | `/api/questions/generate/status` | Poll a run |
+| `GET` | `/api/questions` | List / export questions, same filters |
+| `POST` | `/api/questions/{id}/status` | Approve, reject or re-open |
+| `DELETE` | `/api/questions/{id}` | Delete a question |
 
 ### Badge synchronisation
 
@@ -159,8 +170,8 @@ remembers the dropped slug as an alias so a later sync does not re-create it.
 
 ### Admin area
 
-Server-rendered screens at `/admin` (Jinja2 + Bootstrap 5 from CDN, no build step).
-The badge screen at `/admin/skill-badges` carries:
+The badge catalog, server-rendered at `/admin/skill-badges` (Jinja2 + Bootstrap 5
+from CDN, no build step):
 
 - Review table with badge artwork, and every name source labelled — **Credly
   name**, **MongoDB name**, **Artwork name**, **Catalog name** — plus the
@@ -200,11 +211,12 @@ app/services/question_generation.py  the two Claude passes for questions
 app/services/discover_cli.py         shell entry point
 app/repositories/skill_badges.py     upsert / list / status, indexes
 app/repositories/questions.py        insert / filter / status, indexes
-app/routers/admin_skill_badges.py    JSON endpoints under /api/admin
-app/routers/admin_questions.py       question JSON endpoints under /api/admin
+app/routers/questions.py             question JSON endpoints under /api/questions
+app/routers/pages.py                 the questions screen, served at /
+app/routers/admin_skill_badges.py    badge JSON endpoints under /api/admin
 app/routers/admin_pages.py           server-rendered pages under /admin
-app/templates/base.html              nav shell shared by admin screens
-app/templates/admin/questions.html   the main screen: review and generate
+app/templates/base.html              nav shell shared by every screen
+app/templates/questions.html         the main screen: review and generate
 app/templates/admin/skill_badges.html  badge review screen
 tests/                               pytest suite + fakes (see tests/README.md)
 ```
