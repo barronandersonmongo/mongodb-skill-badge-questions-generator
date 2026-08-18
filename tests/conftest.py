@@ -30,14 +30,20 @@ def clean_env(monkeypatch):
 def isolate_log_file(tmp_path, monkeypatch):
     """No test may write to the operator's real log file.
 
-    Importing the application configures logging, so without this the suite appends
-    to logs/app.log on every run — polluting the log an operator reads and, over
-    enough runs, rotating real history out of existence.
+    Setting LOG_DIR is not enough on its own: pytest imports app.main during
+    collection, which configures logging against the real directory before any
+    fixture runs, and that handler keeps writing there however the environment
+    changes afterwards. So the handler is rebuilt here, pointed at this test's
+    temporary directory.
     """
     from app import logging_config
 
     monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
-    monkeypatch.setattr(logging_config, "_configured", False, raising=False)
+    logging_config.configure_logging(force=True)
+    yield
+    # Leave the flag clear so the next test rebuilds the handler for its own
+    # directory rather than inheriting this one's.
+    logging_config._configured = False
 
 
 @pytest.fixture(autouse=True)

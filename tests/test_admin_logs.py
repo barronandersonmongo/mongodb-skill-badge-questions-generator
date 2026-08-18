@@ -162,17 +162,68 @@ def test_the_logs_api_is_mounted(client):
     assert API in client.get("/openapi.json").json()["paths"]
 
 
-def test_the_suite_does_not_write_to_the_real_log_file():
+def test_no_log_handler_writes_to_the_real_log_file():
     """
-    Intent: Importing the application configures logging, so without isolation the test
-        suite appends to logs/app.log on every run — polluting the log an operator reads
-        and eventually rotating real entries out of existence. This pins the isolation
-        that prevents it.
-    Success: The configured log directory during a test is not the repository's logs/.
+    Intent: pytest imports app.main during collection, which configures logging against
+        the real directory before any fixture runs — so the suite appended to the
+        operator's logs/app.log, polluting the log they read and eventually rotating real
+        entries out. An earlier version of this test checked the environment-derived path
+        instead of the handler, and passed while the handler still wrote to the real file.
+        This asserts on the handler itself, which is the thing that writes.
+    Success: No file handler on the root logger points at the repository's logs/app.log.
     Feature: Test suite — hermetic logging.
     """
+    import logging
     from pathlib import Path
 
-    from app import logging_config
+    real_log = (Path(__file__).parent.parent / "logs" / "app.log").resolve()
+    attached = [
+        Path(h.baseFilename).resolve()
+        for h in logging.getLogger().handlers
+        if hasattr(h, "baseFilename")
+    ]
+    assert attached, "logging is not configured, so this test would pass vacuously"
+    assert real_log not in attached
 
-    assert logging_config.log_directory().resolve() != Path("logs").resolve()
+
+def test_a_line_logged_during_a_test_lands_in_the_temporary_log(log_dir):
+    """
+    Intent: The check above proves the handler is not pointed at the real file; this
+        proves it is pointed at somewhere useful, so the isolation cannot be satisfied by
+        accidentally disabling logging altogether — which would hide log-related
+        regressions rather than isolate them.
+    Success: A line logged inside a test appears in the temporary log directory.
+    Feature: Test suite — hermetic logging.
+    """
+    import logging
+
+    logging.getLogger("app.isolation.check").warning("written during a test")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    assert "written during a test" in (log_dir / "logs" / "app.log").read_text()
+
+
+def test_importing_the_application_does_not_log_a_start(log_dir):
+    """
+    Intent: A start recorded at import time is recorded every time anything imports the
+        application — every run of this suite included, which is how the operator's log
+        came to be full of test noise. A start belongs to actually running the service.
+    Success: Importing app.main writes nothing; entering the app's lifespan logs the start.
+    Feature: Logging — a start is recorded when the service runs, not when it is imported.
+    """
+    import importlib
+    import logging
+
+    from app import main
+
+    importlib.reload(main)
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    log = log_dir / "logs" / "app.log"
+    assert not log.exists() or "Application starting" not in log.read_text()
+
+    with TestClient(main.app):
+        pass
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    assert "Application starting" in log.read_text()

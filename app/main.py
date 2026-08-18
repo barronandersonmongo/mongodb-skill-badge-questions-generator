@@ -8,17 +8,35 @@ reach the service. It separates the two kinds of work.
 """
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.logging_config import configure_logging
+from app.logging_config import configure_logging, log_file_path
 from app.routers import admin_logs, admin_pages, admin_skill_badges, pages, questions
 
-# Before the routers are touched, so anything they log at import time is captured.
+# Attached before the routers are touched, so anything they log while being
+# imported is captured. Only the handler is set up here — importing this module is
+# not the same as running the service, so nothing is logged about starting yet.
 configure_logging()
-logging.getLogger(__name__).info("Application starting")
 
-app = FastAPI(title="MongoDB Skill Badge Questions Generator")
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Announce a real start.
+
+    Logging this at import instead would record a start every time anything merely
+    imported the application — including each run of the test suite, which would
+    write into the operator's log.
+    """
+    logger.info("Application starting; logging to %s", log_file_path())
+    yield
+    logger.info("Application shutting down")
+
+
+app = FastAPI(title="MongoDB Skill Badge Questions Generator", lifespan=lifespan)
 app.include_router(pages.router)
 app.include_router(questions.router)
 app.include_router(admin_pages.router)
