@@ -32,7 +32,7 @@ visible to cron, systemd, or anything started as a service.
 
 Optional overrides: `ANTHROPIC_MODEL`, `WEB_SEARCH_TOOL_TYPE`, `WEB_FETCH_TOOL_TYPE`,
 `SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`,
-`QUESTIONS_VECTOR_INDEX_NAME`, `DOCS_INDEX_URL`, `LOG_DIR`, `LOG_LEVEL`.
+`QUESTIONS_VECTOR_INDEX_NAME`, `DOC_PAGES_VECTOR_INDEX_NAME`, `DOCS_INDEX_URL`, `LOG_DIR`, `LOG_LEVEL`.
 
 Storage target is the `skill-badge-questions` database on the `PTM-Hackathon`
 cluster (Atlas project "Barry Anderson").
@@ -469,16 +469,23 @@ Being refused is handled rather than merely reported:
 - A page named by two indexes is fetched and counted once, so the total is a real
   denominator.
 
-**Search the whole corpus.** `/admin/docs/search` searches every stored page by keyword,
+**Search the whole corpus.** `/admin/docs/search` searches every stored page by meaning,
 ranked, with an excerpt around the match. Corpus-wide on purpose: which of the 74
 sources holds a topic is not something an author knows — the C# driver's real
 documentation is not under the `drivers` index, it is under its own, 81 pages of it —
 so a per-source search would only work for someone who already knew where to look.
 
-A plain MongoDB text index over `title` and `text`, with the title weighted ten times:
-the corpus is browsed by keyword rather than by meaning, and a text index needs no
-definition maintained outside this repository. A page whose title matches is nearly
-always the wanted one.
+Semantic, not keyword: an author knows the topic and not the wording. "How do I model a
+one-to-many relationship" has to reach the embedded-versus-referenced page, which never
+uses that phrase — a keyword search returns nothing for it. The cost is that a
+term-for-term match is no longer guaranteed to rank first, which is the right trade for
+a corpus read for meaning rather than grepped.
+
+It runs on the `doc_pages_text_vector` Atlas Vector Search index, configured with
+autoEmbed on `text`. Atlas embeds both the stored pages and the query, so this program
+stores no vectors and needs no embedding key — the same arrangement as the badge and
+question indexes. The definition lives in Atlas, not here: `ensure_indexes` creates no
+text index, and the index name is overridable with `DOC_PAGES_VECTOR_INDEX_NAME`.
 
 **Reading what is stored.** The source table is not just an inventory — open a source
 to list its pages, then open a page to read it. Long sources are capped at 500 rows
@@ -626,7 +633,7 @@ app/templates/questions.html         the main screen: review and generate
 app/templates/admin/skill_badges.html  badge review screen
 app/templates/admin/logs.html        log viewer
 app/templates/admin/docs.html        documentation corpus screen
-app/templates/admin/docs_search.html corpus-wide keyword search
+app/templates/admin/docs_search.html corpus-wide semantic search
 app/templates/admin/docs_source.html pages in one source
 app/templates/admin/docs_page.html   Markdown viewer for one page
 tests/                               pytest suite + fakes (see tests/README.md)

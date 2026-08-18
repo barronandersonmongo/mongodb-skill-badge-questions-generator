@@ -13,13 +13,14 @@
 <h1 class="h4 mb-1">Search the documentation</h1>
 <p class="text-body-secondary small">
   Every stored page, not one source — the documentation for a topic is often not under
-  the index you would expect it to be.
+  the index you would expect it to be. Search is semantic: describe what you are looking
+  for, in your own words, rather than guessing the wording the page uses.
 </p>
 
 <form method="get" action="/admin/docs/search" class="d-flex gap-1 mb-3"
       data-search-form="true">
   <input class="form-control" type="search" name="q" value="{{ query }}" autofocus
-         placeholder="e.g. aggregation pipeline stage, $lookup, schema validation">
+         placeholder="e.g. how do I model a one-to-many relationship">
   <button class="btn btn-primary" type="submit">Search</button>
 </form>
 
@@ -28,8 +29,9 @@
   <strong>Search is unavailable.</strong>
   <div class="small font-monospace mt-1">{{ storage_error }}</div>
   <div class="small mt-1">
-    A text index is created when the corpus is refreshed; if this is a corpus stored
-    before search existed, refresh it once.
+    Search runs on the <code>doc_pages_text_vector</code> Atlas Vector Search index. If
+    it is missing, still building, or points at another field, create it on
+    <code>text</code> with autoEmbed and try again.
   </div>
 </div>
 {% endif %}

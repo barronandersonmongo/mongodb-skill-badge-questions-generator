@@ -291,20 +291,24 @@ def content(title: str, body: str, url: str, source: str = "ix-1") -> dict:
     return {"url": url, "source": source, "title": title, "text": body}
 
 
-def test_a_page_is_found_by_words_in_its_text(fake_doc_pages):
+def test_a_page_is_found_by_what_it_is_about(fake_doc_pages):
     """
     Intent: Which of the 74 sources holds a topic is not something an author knows — the
         C# driver's real documentation is not under the drivers index — so searching the
-        whole corpus by keyword is the only practical way to find source material.
-    Success: A page is returned for a term that appears only in its body.
-    Feature: Documentation search — find a page by its content.
+        whole corpus is the only practical way to find source material. Replaces a keyword
+        test: the search is now semantic, because an author knows the topic and not the
+        wording the documentation happens to use, and a keyword search returns nothing for
+        a question phrased in the author's words.
+    Success: The page about a topic is returned first for a query about that topic, and an
+        unrelated page does not outrank it.
+    Feature: Documentation search — find a page by what it is about.
     """
     doc_pages.upsert_pages([
-        content("Pipelines", "The $lookup stage joins another collection.", "https://x/a.md"),
+        content("Pipelines", "The lookup stage joins another collection.", "https://x/a.md"),
         content("Indexes", "A compound index covers several fields.", "https://x/b.md"),
     ])
-    found = doc_pages.search_pages("lookup")
-    assert [p["url"] for p in found] == ["https://x/a.md"]
+    found = doc_pages.search_pages("joining collections with lookup")
+    assert found[0]["url"] == "https://x/a.md"
 
 
 def test_a_title_match_outranks_a_passing_mention(fake_doc_pages):
@@ -389,18 +393,44 @@ def test_the_search_result_count_is_bounded(fake_doc_pages):
     assert len(doc_pages.search_pages("aggregation", limit=3)) == 3
 
 
-def test_the_corpus_is_text_indexed_on_title_and_content(fake_doc_pages):
+def test_the_program_does_not_create_the_search_index_itself(fake_doc_pages):
     """
-    Intent: Without a text index the search is a full scan of 72 MB on every keystroke-worth
-        of query. The title is weighted because a title match is nearly always the wanted
-        page.
-    Success: A text index exists over title and text, with the title weighted higher.
-    Feature: Documentation search — indexed and weighted.
+    Intent: Replaces a test that required a MongoDB text index over title and text. The
+        search is now an Atlas Vector Search query, and an Atlas Search index cannot be
+        created with create_index — a program that kept building the text index would
+        maintain a 72 MB index nothing queries, and imply the search works before the
+        Atlas index exists.
+    Success: ensure_indexes creates the url, source and fetched_at indexes and no text index.
+    Feature: Documentation search — the search index is Atlas-managed.
     """
     doc_pages.ensure_indexes()
-    text_index = next(i for i in fake_doc_pages.indexes if i["name"] == "title_text_search")
-    assert dict(text_index["keys"]) == {"title": "text", "text": "text"}
-    assert text_index["weights"]["title"] > text_index["weights"]["text"]
+    names = {index["name"] for index in fake_doc_pages.indexes}
+    assert names == {"url_unique", "source", "fetched_at"}
+    assert not any("text" in str(index["keys"]) for index in fake_doc_pages.indexes)
+
+
+def test_the_search_asks_the_configured_vector_index(fake_doc_pages, monkeypatch):
+    """
+    Intent: The index definition lives in Atlas, so the program and the cluster agree only
+        by name and path. Querying the wrong one fails at runtime, on a screen, with an
+        error naming an index nobody configured.
+    Success: The search issues a $vectorSearch against the configured index name and path,
+        passing the query text for the cluster to embed.
+    Feature: Documentation search — queries the configured Atlas index.
+    """
+    seen = {}
+    original = fake_doc_pages.aggregate
+
+    def record(pipeline):
+        seen["stage"] = pipeline[0].get("$vectorSearch")
+        return original(pipeline)
+
+    monkeypatch.setattr(fake_doc_pages, "aggregate", record)
+    doc_pages.upsert_pages([content("Pipelines", "The lookup stage joins.", "https://x/a.md")])
+    doc_pages.search_pages("lookup")
+    assert seen["stage"]["index"] == "doc_pages_text_vector"
+    assert seen["stage"]["path"] == "text"
+    assert seen["stage"]["query"] == "lookup"
 
 
 def test_stubs_stored_before_the_floor_existed_can_be_pruned(fake_doc_pages):

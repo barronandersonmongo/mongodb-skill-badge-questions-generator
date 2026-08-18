@@ -9,6 +9,7 @@ mongomock is not used: as of mongomock 4.3.0 / pymongo 4.17.0 its
 bulk_write path breaks on pymongo's newer add_update() signature.
 """
 
+import re
 from typing import Any
 
 
@@ -146,7 +147,19 @@ class FakeCollection:
             text = doc.get(stage["path"])
             if not text:
                 continue
-            scored.append((_word_overlap(query, text), doc))
+            # A stored documentation page is Markdown beginning with its title heading,
+            # so the embedding of its text sees the title too. Fixtures here set the
+            # title as a separate field, so it is scored alongside the body rather than
+            # being invisible to the stand-in.
+            text = f"{doc.get('title') or ''} {text}"
+            similarity = _word_overlap(query, text)
+            if similarity <= 0:
+                # A document sharing nothing with the query is not a neighbour. Atlas
+                # returns the nearest `limit` documents whatever their score, but its
+                # scores are never zero — approximating that here would make every
+                # search in a small fake corpus return the whole corpus.
+                continue
+            scored.append((similarity, doc))
         scored.sort(key=lambda pair: pair[0], reverse=True)
 
         projection = next(
@@ -364,9 +377,18 @@ def _project_search_result(doc: dict, projection: dict | None, score: float) -> 
     return item
 
 
+def _tokens(text: str) -> set[str]:
+    """Words, without punctuation: "$lookup" and "lookup" are the same term.
+
+    An embedding model does not see the punctuation as a difference, so a stand-in
+    that did would fail searches the real index answers.
+    """
+    return {word for word in re.split(r"[^a-z0-9$]+", text.lower()) if word.strip("$")}
+
+
 def _word_overlap(left: str, right: str) -> float:
     """Jaccard overlap, standing in for cosine similarity over embeddings."""
-    a, b = set(left.lower().split()), set(right.lower().split())
+    a, b = {t.strip("$") for t in _tokens(left)}, {t.strip("$") for t in _tokens(right)}
     union = a | b
     return len(a & b) / len(union) if union else 0.0
 

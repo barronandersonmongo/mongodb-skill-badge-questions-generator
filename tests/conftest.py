@@ -79,7 +79,12 @@ def fake_questions(monkeypatch) -> FakeCollection:
 
 @pytest.fixture
 def fake_doc_pages(monkeypatch) -> FakeCollection:
-    """Point the documentation-corpus repository at an in-memory collection."""
+    """Point the documentation-corpus repository at an in-memory collection.
+
+    A connection string is set as well: the search reads index settings, which are
+    resolved through the same Settings object that requires the URI.
+    """
+    monkeypatch.setenv("MONGODB_URI", "mongodb://test")
     collection = FakeCollection()
     monkeypatch.setattr(doc_pages, "collection", lambda: collection)
     return collection

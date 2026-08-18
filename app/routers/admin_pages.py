@@ -83,7 +83,7 @@ def docs_page(request: Request):
 
 @router.get("/docs/search")
 def docs_search_page(request: Request, q: str | None = None):
-    """Keyword search across every stored page.
+    """Semantic search across every stored page.
 
     Corpus-wide on purpose: which of the 74 sources holds a topic is not something an
     author knows, so a per-source search would only work for someone who already knew

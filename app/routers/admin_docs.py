@@ -114,7 +114,7 @@ def search(
     q: str = Query(min_length=2, max_length=200),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[dict]:
-    """Keyword search across the whole corpus, best match first, with excerpts."""
+    """Semantic search across the whole corpus, best match first, with excerpts."""
     return doc_pages.search_pages(q, limit=limit)
 
 

@@ -22,7 +22,7 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
-from pymongo import ASCENDING, TEXT, UpdateOne
+from pymongo import ASCENDING, UpdateOne
 from pymongo.collection import Collection
 
 from app.config import get_settings
@@ -42,15 +42,9 @@ def ensure_indexes() -> None:
     coll.create_index([("url", ASCENDING)], unique=True, name="url_unique")
     coll.create_index([("source", ASCENDING)], name="source")
     coll.create_index([("fetched_at", ASCENDING)], name="fetched_at")
-    # A plain MongoDB text index, not Atlas Search: the corpus is browsed by keyword
-    # ("aggregation pipeline", "$lookup"), not by meaning, and a text index needs no
-    # index definition maintained outside this repository. Weighted towards the title
-    # because a page whose title matches is nearly always the one being looked for.
-    coll.create_index(
-        [("title", TEXT), ("text", TEXT)],
-        name="title_text_search",
-        weights={"title": 10, "text": 1},
-    )
+    # No text index: the corpus is searched by meaning through an Atlas Vector Search
+    # index (see `search_pages`), whose definition lives in Atlas rather than here —
+    # Atlas Search indexes are not created through create_index.
 
 
 def content_hash(text: str) -> str:
@@ -225,7 +219,17 @@ def excerpt(text: str, terms: list[str]) -> str:
 
 
 def search_pages(query: str, *, limit: int = 50) -> list[dict[str, Any]]:
-    """Pages matching a keyword search, best match first, each with an excerpt.
+    """Pages semantically closest to a query, best match first, each with an excerpt.
+
+    Semantic rather than keyword: an author looking for source material knows the
+    topic, not the wording. "How do I model a one-to-many relationship" has to reach
+    the embedded-versus-referenced page, which never uses that phrase, and a keyword
+    search returns nothing for it. The cost is that a term-for-term match is no longer
+    guaranteed to rank first — but the corpus is being read for meaning, not grepped.
+
+    The Atlas index is configured with autoEmbed on `text`, so the query sent is the
+    text itself: the cluster embeds both sides with the same model, and this program
+    stores no vectors and needs no embedding key.
 
     Searches the whole corpus rather than one source. Which of the 74 sources holds a
     topic is not something an author knows — the C# driver's real documentation is not
@@ -236,6 +240,7 @@ def search_pages(query: str, *, limit: int = 50) -> list[dict[str, Any]]:
     if not query:
         return []
 
+    settings = get_settings()
     # An explicit inclusion projection. Reusing LIST_PROJECTION (an exclusion) and
     # adding "text": True would silently return only the included fields — no title, no
     # url — because MongoDB treats a projection naming any field as inclusion-only.
@@ -247,13 +252,23 @@ def search_pages(query: str, *, limit: int = 50) -> list[dict[str, Any]]:
         "bytes": True,
         "fetched_at": True,
         "text": True,
-        "score": {"$meta": "textScore"},
+        "score": {"$meta": "vectorSearchScore"},
     }
     found = list(
-        collection()
-        .find({"$text": {"$search": query}}, projection)
-        .sort([("score", {"$meta": "textScore"})])
-        .limit(limit)
+        collection().aggregate(
+            [
+                {
+                    "$vectorSearch": {
+                        "index": settings.doc_pages_vector_index_name,
+                        "path": settings.doc_pages_vector_path,
+                        "query": query,
+                        "numCandidates": settings.doc_search_num_candidates,
+                        "limit": limit,
+                    }
+                },
+                {"$project": projection},
+            ]
+        )
     )
 
     terms = [t.strip('"') for t in query.split() if t.strip('"')]

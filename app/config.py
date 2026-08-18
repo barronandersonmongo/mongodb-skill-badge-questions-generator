@@ -58,6 +58,17 @@ class Settings:
     question_rerank_delete_threshold: float = 0.85
     # How many neighbours each question is shortlisted against.
     question_duplicate_neighbours: int = 5
+    # Documentation search. The index is configured with autoEmbed on `text`, so Atlas
+    # embeds both the stored pages and the query — this program stores no vectors and
+    # needs no embedding API key. Searching by meaning rather than by keyword is what
+    # lets an author ask for a topic ("how do I model a one-to-many relationship")
+    # without knowing the words the documentation happens to use.
+    doc_pages_vector_index_name: str = "doc_pages_text_vector"
+    doc_pages_vector_path: str = "text"
+    # A page is not compared against the whole corpus: Atlas narrows to this many
+    # approximate neighbours before scoring them exactly. Roughly 10x the result cap,
+    # which is the usual recommendation for recall at this corpus size.
+    doc_search_num_candidates: int = 500
     # MongoDB publishes an agent-oriented index of its documentation, and serves
     # every page as Markdown. That is the only enumerable route to the whole corpus:
     # search-knowledge returns the best chunks for a query and cannot be asked "give
@@ -140,5 +151,7 @@ def get_settings() -> Settings:
         vector_index_name=os.environ.get("VECTOR_INDEX_NAME") or Settings.vector_index_name,
         questions_vector_index_name=os.environ.get("QUESTIONS_VECTOR_INDEX_NAME")
         or Settings.questions_vector_index_name,
+        doc_pages_vector_index_name=os.environ.get("DOC_PAGES_VECTOR_INDEX_NAME")
+        or Settings.doc_pages_vector_index_name,
         docs_index_url=os.environ.get("DOCS_INDEX_URL") or Settings.docs_index_url,
     )
