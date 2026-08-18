@@ -59,8 +59,9 @@ def test_a_refresh_runs_in_the_background(client, monkeypatch, fake_doc_pages):
                         lambda **kw: calls.append(kw) or {})
     response = client.post(API + "/refresh")
     assert response.status_code == 200
-    assert response.json() == {"started": True}
+    assert response.json() == {"started": True, "mode": "replace"}
     assert len(calls) == 1
+    assert calls[0]["mode"] == "replace"
 
 
 def test_a_second_refresh_is_refused_while_one_runs(client, fake_doc_pages):
@@ -94,7 +95,7 @@ def test_progress_is_reported_while_a_refresh_runs(client, monkeypatch, fake_doc
     Success: The status endpoint exposes the crawl's progress snapshot.
     Feature: Documentation corpus — visible progress.
     """
-    def crawl(progress=None):
+    def crawl(mode="replace", progress=None):
         progress({"sources_done": 1, "sources_requested": 2, "pages_seen": 40,
                   "inserted": 40, "updated": 0})
         return {"inserted": 40}
@@ -697,3 +698,84 @@ def test_a_missing_text_index_is_explained_rather_than_crashing(client, monkeypa
     assert response.status_code == 200
     assert 'data-search-error="true"' in response.text
     assert "text index required" in response.text
+
+
+# --- recovering a partial load ---
+
+
+def test_fill_mode_is_requested_as_its_own_mode(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: The mode decides whether the run may delete pages. If the request dropped it,
+        pressing Fill gaps would start a full replace — the slow, block-provoking thing the
+        button exists to avoid.
+    Success: mode=fill reaches the crawl as fill.
+    Feature: Documentation corpus — a resume is requested explicitly.
+    """
+    calls: list = []
+    monkeypatch.setattr(api_module.doc_corpus, "refresh",
+                        lambda **kw: calls.append(kw) or {})
+    response = client.post(API + "/refresh", params={"mode": "fill"})
+    assert response.json() == {"started": True, "mode": "fill"}
+    assert calls[0]["mode"] == "fill"
+
+
+def test_an_unrecognised_mode_is_refused(client, fake_doc_pages):
+    """
+    Intent: A typo must not fall through to the mode that deletes pages. Rejecting it at the
+        boundary means no background task starts at all.
+    Success: An unknown mode is a validation error.
+    Feature: Documentation corpus — the mode is validated.
+    """
+    assert client.post(API + "/refresh", params={"mode": "wipe"}).status_code == 422
+
+
+def test_the_screen_offers_the_recovery_alongside_the_full_refresh(client, fake_doc_pages):
+    """
+    Intent: A crawl refused part way through leaves the corpus incomplete, and the only
+        remedy available was a twelve-minute full re-crawl that invites another refusal. The
+        recovery has to be a control on the screen, next to the thing that failed.
+    Success: The screen offers both a fill button and the full refresh.
+    Feature: Documentation corpus — recovery is one click.
+    """
+    body = client.get(PAGE).text
+    assert 'id="fill-btn"' in body
+    assert 'id="refresh-btn"' in body
+    assert "mode=" in body
+
+
+def test_a_blocked_run_is_explained_on_the_screen(client, fake_doc_pages):
+    """
+    Intent: A crawl that stopped because it was refused looks, in the numbers alone, like a
+        crawl that found very little. The reader needs to be told it was turned away, and
+        what to do about it.
+    Success: The blocked reason is rendered.
+    Feature: Documentation corpus — a refused crawl says so.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "docs-refresh", "mode": "replace", "sources_done": 3,
+        "inserted": 400, "updated": 0, "unchanged": 0, "removed": 0,
+        "skipped_stubs": 0, "failure_count": 25, "failures": [],
+        "blocked": True,
+        "block_reason": "25 consecutive requests were refused, so the crawl stopped.",
+    }
+    body = client.get(PAGE).text
+    assert 'data-blocked="true"' in body
+    assert "consecutive requests were refused" in body
+
+
+def test_a_fill_run_reports_what_it_left_alone(client, fake_doc_pages):
+    """
+    Intent: A resume that fetched 200 pages out of 7,000 planned looks like a failure unless
+        the screen says the other 6,800 were already present and deliberately skipped.
+    Success: The fill summary reports the already-present count.
+    Feature: Documentation corpus — a resume explains its small numbers.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "docs-refresh", "mode": "fill", "sources_done": 74,
+        "inserted": 200, "updated": 0, "unchanged": 0, "removed": 0,
+        "skipped_stubs": 0, "failure_count": 0, "failures": [],
+        "already_present": 6800, "blocked": False,
+    }
+    body = client.get(PAGE).text
+    assert 'data-fill-summary="true"' in body
+    assert "6800 page(s) already present" in body

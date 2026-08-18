@@ -75,6 +75,15 @@ class Settings:
     # Deliberately conservative: nav stubs continue up to roughly 900 bytes, but so do
     # a few genuinely short pages, and dropping real content is the worse mistake.
     docs_min_page_bytes: int = 500
+    # The docs are served through CloudFront, which returns 403 when it decides a client
+    # is asking for too much. Retrying with a growing pause clears a transient block;
+    # hammering through it does not, and risks a longer one.
+    docs_retry_attempts: int = 3
+    docs_retry_backoff_seconds: float = 2.0
+    # If this many pages fail in a row, the crawl is being refused rather than hitting
+    # bad links. Stopping then keeps what was fetched, leaves the corpus intact, and
+    # produces one clear message instead of seven thousand identical failures.
+    docs_block_threshold: int = 25
 
     @property
     def uses_gateway(self) -> bool:

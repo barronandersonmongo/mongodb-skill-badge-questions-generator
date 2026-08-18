@@ -417,8 +417,25 @@ server's `search-knowledge` answers a query with its best few chunks and cannot 
 asked for everything, which makes it the right tool at authoring time and the wrong
 one for building a cache.
 
-One button: **Refresh documentation** replaces the corpus with what MongoDB publishes
-now — around **10,000 pages** (~80 MB), a few minutes.
+**Refresh documentation** replaces the corpus with what MongoDB publishes now — about
+**7,000 pages** (~72 MB), roughly twelve minutes.
+
+**Fill gaps** fetches only pages the corpus does not already have, and removes nothing.
+This is the recovery path: the docs are served through CloudFront, which starts answering
+**403** when a crawl asks for too much too fast, and re-crawling seven thousand pages to
+recover the few hundred that were refused wastes twelve minutes and invites another
+block.
+
+Being refused is handled rather than merely reported:
+
+- A 403, 429 or 5xx is retried with a growing pause, and a `Retry-After` header wins over
+  our own backoff — it is the server saying how long it wants to be left alone.
+- After `docs_block_threshold` (25) consecutive refusals the crawl **stops**. Continuing
+  would produce thousands of identical failures and prolong the block. What was fetched is
+  kept, and the screen says to use **Fill gaps** later.
+- A refused crawl never sweeps. Pages it never reached are not treated as withdrawn —
+  otherwise a crawl blocked a third of the way through would delete two thirds of the
+  corpus and report a successful replacement.
 
 - Pages are stamped with the run that wrote them, and anything left from an earlier
   run is deleted at the end. Same end state as emptying the collection first, except a
@@ -486,7 +503,8 @@ index location.
 | `POST` | `/api/admin/docs/prune-stubs` | Delete navigation stubs already stored |
 | `GET` | `/admin/docs/source?source=&q=` | Pages in one source, filterable |
 | `GET` | `/admin/docs/page?url=` | One page, rendered as Markdown |
-| `POST` | `/api/admin/docs/refresh` | Replace the corpus with a fresh crawl |
+| `POST` | `/api/admin/docs/refresh?mode=replace` | Replace the corpus with a fresh crawl |
+| `POST` | `/api/admin/docs/refresh?mode=fill` | Fetch only missing pages; remove nothing |
 | `GET` | `/api/admin/docs/refresh/status` | Poll a crawl, with progress |
 | `GET` | `/api/admin/docs/sources` | Stored sources, upstream sources, totals |
 | `GET` | `/api/admin/docs/pages?source=` | Stored pages, without their text |

@@ -447,3 +447,37 @@ def test_a_long_page_matched_only_by_title_is_excerpted_not_dumped(fake_doc_page
     excerpt = doc_pages.search_pages("aggregation")[0]["excerpt"]
     assert len(excerpt) < 400
     assert excerpt.endswith("…")
+
+
+def test_a_search_result_carries_the_fields_the_screen_renders(fake_doc_pages):
+    """
+    Intent: A projection naming any field for inclusion returns only those fields. An
+        earlier version built the search projection by adding "text": True to the
+        exclusion used for listings, so MongoDB returned text and score and nothing else
+        — the screen rendered a 500 on a title that was not there. The tests passed
+        because the fake ignored projection semantics.
+    Success: A result carries url, title, source and bytes as well as score and excerpt.
+    Feature: Documentation search — results carry what the screen displays.
+    """
+    doc_pages.upsert_pages([
+        content("Pipelines", "The $lookup stage joins another collection.", "https://x/a.md")
+    ])
+    result = doc_pages.search_pages("lookup")[0]
+    for field in ("url", "title", "source", "bytes", "score", "excerpt"):
+        assert field in result, f"search result is missing {field}"
+    assert result["title"] == "Pipelines"
+
+
+def test_the_urls_already_stored_can_be_read_in_one_query(fake_doc_pages):
+    """
+    Intent: A resume tests roughly seven thousand planned URLs against what is already
+        stored. Asking the database per URL would be seven thousand round trips; asking once
+        for the set is one.
+    Success: stored_urls returns every stored URL as a set.
+    Feature: Documentation corpus — a resume knows what it already has.
+    """
+    doc_pages.upsert_pages([
+        content("A", "body " * 200, "https://x/a.md"),
+        content("B", "body " * 200, "https://x/b.md"),
+    ])
+    assert doc_pages.stored_urls() == {"https://x/a.md", "https://x/b.md"}

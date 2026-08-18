@@ -236,7 +236,19 @@ def search_pages(query: str, *, limit: int = 50) -> list[dict[str, Any]]:
     if not query:
         return []
 
-    projection = {**LIST_PROJECTION, "text": True, "score": {"$meta": "textScore"}}
+    # An explicit inclusion projection. Reusing LIST_PROJECTION (an exclusion) and
+    # adding "text": True would silently return only the included fields — no title, no
+    # url — because MongoDB treats a projection naming any field as inclusion-only.
+    projection = {
+        "_id": False,
+        "url": True,
+        "source": True,
+        "title": True,
+        "bytes": True,
+        "fetched_at": True,
+        "text": True,
+        "score": {"$meta": "textScore"},
+    }
     found = list(
         collection()
         .find({"$text": {"$search": query}}, projection)
@@ -260,6 +272,16 @@ def delete_stubs(smaller_than: int) -> int:
     the listings stop being cluttered by pages nothing can be written from.
     """
     return collection().delete_many({"bytes": {"$lt": smaller_than}}).deleted_count
+
+
+def stored_urls() -> set[str]:
+    """Every URL already in the corpus.
+
+    Read as one projection rather than checked per page: a resume has ~7,000 URLs to
+    test, and asking the database once for the set it already has is a single round trip
+    against seven thousand.
+    """
+    return {doc["url"] for doc in collection().find({}, {"_id": False, "url": True})}
 
 
 def count_pages(source: str | None = None) -> int:

@@ -40,7 +40,7 @@ def run_state() -> dict:
     return _run_state
 
 
-def _run_refresh() -> None:
+def _run_refresh(mode: str) -> None:
     _run_state.update(
         running=True,
         last_error=None,
@@ -49,10 +49,11 @@ def _run_refresh() -> None:
         finished_at=None,
         progress=None,
     )
-    logger.info("Docs refresh started")
+    logger.info("Docs refresh started (%s)", mode)
     try:
         _run_state["last_result"] = doc_corpus.refresh(
-            progress=lambda snapshot: _run_state.__setitem__("progress", snapshot)
+            mode=mode,
+            progress=lambda snapshot: _run_state.__setitem__("progress", snapshot),
         )
     except Exception as exc:  # surfaced to the page, not swallowed
         _run_state["last_error"] = str(exc)
@@ -64,12 +65,20 @@ def _run_refresh() -> None:
 
 
 @router.post("/refresh")
-def start_refresh(background: BackgroundTasks) -> dict:
-    """Replace the stored corpus with a fresh crawl of the whole documentation set."""
+def start_refresh(
+    background: BackgroundTasks,
+    mode: str = Query(default="replace", pattern="^(replace|fill)$"),
+) -> dict:
+    """Crawl the documentation.
+
+    `replace` rebuilds the corpus; `fill` fetches only what is missing and removes
+    nothing, which is how a crawl that was refused part way through is recovered without
+    re-fetching everything it already had.
+    """
     if _run_state["running"]:
         raise HTTPException(409, "A documentation refresh is already in progress.")
-    background.add_task(_run_refresh)
-    return {"started": True}
+    background.add_task(_run_refresh, mode)
+    return {"started": True, "mode": mode}
 
 
 @router.get("/refresh/status")

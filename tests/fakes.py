@@ -226,11 +226,35 @@ class FakeCollection:
         return True
 
     def _project(self, doc: dict, projection: dict | None) -> dict:
+        """Apply MongoDB's projection semantics, which are all-or-nothing.
+
+        A projection naming any field for inclusion returns *only* those fields; one
+        naming only exclusions returns everything else. Mixing the two (beyond _id) is
+        an error in MongoDB. Modelling this matters: an earlier version of this fake
+        returned the whole document whichever form was used, which hid a real bug where
+        a search projection returned neither title nor url.
+        """
+        if not projection:
+            return dict(doc)
+
+        included = [
+            field
+            for field, spec in projection.items()
+            if field != "_id" and spec is True
+        ]
+        meta = [field for field, spec in projection.items() if isinstance(spec, dict)]
+
+        if included:
+            out = {field: doc.get(field) for field in included if field in doc}
+            if projection.get("_id", True) and "_id" in doc:
+                out["_id"] = doc["_id"]
+            return out
+
         out = dict(doc)
-        for field, keep in (projection or {}).items():
-            if isinstance(keep, dict):
-                continue  # a meta field, filled in by the caller
-            if not keep:
+        for field, spec in projection.items():
+            if field in meta:
+                continue
+            if not spec:
                 out.pop(field, None)
         return out
 

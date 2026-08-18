@@ -308,14 +308,19 @@ def stub_site():
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
-    state: dict = {"path": None, "body": b"# Stub page\ncontent", "status": 200}
+    state: dict = {"path": None, "body": b"# Stub page\ncontent", "status": 200,
+                   "headers": {}, "before_each": None}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
+            if state["before_each"]:
+                state["before_each"]()
             state["path"] = self.path
             self.send_response(state["status"])
             self.send_header("Content-Type", "text/markdown")
             self.send_header("Content-Length", str(len(state["body"])))
+            for name, value in state["headers"].items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(state["body"])
 
@@ -344,7 +349,7 @@ def test_a_page_is_fetched_over_http(stub_site, settings):
     assert stub_site["path"] == "/a.md"
 
 
-def test_an_http_error_is_raised_rather_than_stored_as_a_page(stub_site, settings):
+def test_an_http_error_is_raised_rather_than_stored_as_a_page(stub_site):
     """
     Intent: An error page returned as content would be stored as documentation, and a
         question could then be written from a 500 page. The status must be checked.
@@ -352,8 +357,10 @@ def test_an_http_error_is_raised_rather_than_stored_as_a_page(stub_site, setting
     Feature: Documentation corpus — error responses are not stored as documentation.
     """
     stub_site["status"] = 500
+    # One attempt: retrying here would only make the suite sleep through the backoff.
+    once = Settings(mongodb_uri="mongodb://test", docs_retry_attempts=1)
     with pytest.raises(httpx.HTTPStatusError):
-        doc_corpus._get(stub_site["base"] + "/a.md", settings)
+        doc_corpus._get(stub_site["base"] + "/a.md", once)
 
 
 # --- a refresh replaces the corpus ---
@@ -700,3 +707,222 @@ def test_the_stub_floor_is_configurable(web, stored):
     dropped = Settings(mongodb_uri="mongodb://test", docs_min_page_bytes=5000)
     result = doc_corpus.refresh(settings=dropped)
     assert stored == [] and result["skipped_stubs"] == 1
+
+
+# --- being refused, and recovering from it ---
+
+
+def test_a_refusal_is_retried_before_giving_up(stub_site, monkeypatch):
+    """
+    Intent: The docs are served through CloudFront, which answers 403 when it decides a
+        client is asking too fast — the page is fine, the crawl was turned away. Treating
+        that as a dead link would discard perfectly good documentation.
+    Success: A 403 that clears on a later attempt returns the page.
+    Feature: Documentation corpus — a refusal is retried.
+    """
+    monkeypatch.setattr(doc_corpus.time, "sleep", lambda seconds: None)
+    attempts = {"n": 0}
+    original_status = stub_site["status"]
+
+    def flaky():
+        attempts["n"] += 1
+        stub_site["status"] = original_status if attempts["n"] > 2 else 403
+
+    stub_site["before_each"] = flaky
+    settings = Settings(mongodb_uri="mongodb://test", docs_retry_attempts=4)
+    assert "Stub page" in doc_corpus._get(stub_site["base"] + "/a.md", settings)
+    assert attempts["n"] == 3
+
+
+def test_the_servers_own_retry_after_is_honoured(stub_site, monkeypatch):
+    """
+    Intent: Retry-After is the server saying how long it wants to be left alone. Ignoring it
+        in favour of our own backoff is how a short block becomes a long one.
+    Success: The wait matches the header rather than the configured backoff.
+    Feature: Documentation corpus — the server's backoff wins.
+    """
+    waits: list[float] = []
+    monkeypatch.setattr(doc_corpus.time, "sleep", lambda seconds: waits.append(seconds))
+    stub_site["status"] = 429
+    stub_site["headers"] = {"Retry-After": "7"}
+    settings = Settings(mongodb_uri="mongodb://test", docs_retry_attempts=2,
+                        docs_retry_backoff_seconds=1.0)
+    with pytest.raises(httpx.HTTPStatusError):
+        doc_corpus._get(stub_site["base"] + "/a.md", settings)
+    assert waits == [7.0]
+
+
+def test_repeated_refusals_stop_the_crawl_instead_of_prolonging_the_block(web, stored):
+    """
+    Intent: Once a crawl is being turned away, continuing produces thousands of identical
+        failures and keeps the block alive. Stopping keeps what was fetched and leaves one
+        clear message.
+    Success: The run is marked blocked, says why, and stops before attempting every page.
+    Feature: Documentation corpus — a refused crawl stops.
+    """
+    urls = [f"https://x/p{i}.md" for i in range(40)]
+    web(
+        root_with({INDEX: "\n".join(f"[P]({u})" for u in urls)}),
+        failures={u: RuntimeError("Client error '403 Forbidden' for url") for u in urls},
+    )
+    settings = Settings(mongodb_uri="mongodb://test", docs_block_threshold=5,
+                        docs_min_page_bytes=0)
+    result = doc_corpus.refresh(settings=settings)
+    assert result["blocked"] is True
+    assert "refused" in result["block_reason"]
+    assert result["pages_seen"] < len(urls)
+
+
+def test_a_refused_crawl_does_not_treat_unreached_pages_as_withdrawn(web, stored, monkeypatch):
+    """
+    Intent: The dangerous interaction. A replace crawl sweeps pages it did not write — so a
+        crawl refused a third of the way through would delete two thirds of the corpus, and
+        report it as a successful replacement.
+    Success: A blocked run sweeps nothing and says why.
+    Feature: Documentation corpus — a refused crawl cannot destroy the corpus.
+    """
+    swept: list[str] = []
+    monkeypatch.setattr(doc_corpus.doc_pages, "delete_not_in_run",
+                        lambda run_id: swept.append(run_id) or 0)
+    urls = [f"https://x/p{i}.md" for i in range(20)]
+    web(
+        root_with({INDEX: "\n".join(f"[P]({u})" for u in urls)}),
+        failures={u: RuntimeError("Client error '403 Forbidden' for url") for u in urls},
+    )
+    settings = Settings(mongodb_uri="mongodb://test", docs_block_threshold=3,
+                        docs_min_page_bytes=0)
+    result = doc_corpus.refresh(settings=settings)
+    assert swept == []
+    assert "never reached" in result["sweep_skipped"]
+
+
+def test_fill_mode_fetches_only_the_pages_that_are_missing(web, stored, monkeypatch):
+    """
+    Intent: This is the recovery path. After a crawl is refused part way through, re-fetching
+        all seven thousand pages to recover the few hundred that were missed wastes an hour
+        and invites another block.
+    Success: Only the missing page is fetched; the stored one is counted as already present.
+    Feature: Documentation corpus — a partial load can be resumed.
+    """
+    monkeypatch.setattr(doc_corpus.doc_pages, "stored_urls", lambda: {"https://x/have.md"})
+    web(root_with({
+        INDEX: "[Have](https://x/have.md)\n[Missing](https://x/missing.md)",
+        "https://x/have.md": "# Have", "https://x/missing.md": "# Missing",
+    }))
+    settings = Settings(mongodb_uri="mongodb://test", docs_min_page_bytes=0)
+    result = doc_corpus.refresh(mode="fill", settings=settings)
+    assert [p["url"] for p in stored] == ["https://x/missing.md"]
+    assert result["already_present"] == 1
+    assert result["pages_total"] == 1
+
+
+def test_fill_mode_never_removes_anything(web, stored, monkeypatch):
+    """
+    Intent: A resume deliberately skips most of the corpus, so it knows nothing about those
+        pages. Sweeping on that basis would delete almost everything it just declined to
+        re-fetch.
+    Success: Fill mode sweeps nothing and says so.
+    Feature: Documentation corpus — a resume only adds.
+    """
+    swept: list[str] = []
+    monkeypatch.setattr(doc_corpus.doc_pages, "delete_not_in_run",
+                        lambda run_id: swept.append(run_id) or 0)
+    monkeypatch.setattr(doc_corpus.doc_pages, "stored_urls", lambda: set())
+    web(root_with({INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"}))
+    settings = Settings(mongodb_uri="mongodb://test", docs_min_page_bytes=0)
+    result = doc_corpus.refresh(mode="fill", settings=settings)
+    assert swept == []
+    assert "only adds missing pages" in result["sweep_skipped"]
+
+
+def test_fill_mode_reports_a_corpus_that_is_already_complete(web, stored, monkeypatch):
+    """
+    Intent: Pressing the recovery button on a complete corpus should say "nothing was
+        missing", not look like a crawl that failed to fetch anything.
+    Success: With nothing missing, no page is fetched and everything is reported present.
+    Feature: Documentation corpus — a complete corpus needs no work.
+    """
+    monkeypatch.setattr(doc_corpus.doc_pages, "stored_urls", lambda: {"https://x/a.md"})
+    web(root_with({INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"}))
+    settings = Settings(mongodb_uri="mongodb://test", docs_min_page_bytes=0)
+    result = doc_corpus.refresh(mode="fill", settings=settings)
+    assert stored == []
+    assert result["pages_total"] == 0 and result["already_present"] == 1
+
+
+def test_an_unknown_mode_is_refused(settings):
+    """
+    Intent: The mode decides whether the run may delete pages. A typo silently falling back
+        to replace could destroy a corpus that the caller meant only to top up.
+    Success: An unrecognised mode raises rather than defaulting.
+    Feature: Documentation corpus — the mode is explicit.
+    """
+    with pytest.raises(ValueError, match="Unknown refresh mode"):
+        doc_corpus.refresh(mode="sweep-everything", settings=settings)
+
+
+def test_an_unparseable_retry_after_falls_back_to_our_own_backoff(stub_site, monkeypatch):
+    """
+    Intent: Retry-After may arrive as an HTTP date, or as something malformed. Treated as
+        zero it would mean no pause at all — retrying instantly against a server that just
+        asked to be left alone, which is how a short block becomes a long one.
+    Success: A header that is not a number produces the configured backoff, not zero.
+    Feature: Documentation corpus — a malformed backoff header still pauses.
+    """
+    waits: list[float] = []
+    monkeypatch.setattr(doc_corpus.time, "sleep", lambda seconds: waits.append(seconds))
+    stub_site["status"] = 503
+    stub_site["headers"] = {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
+    settings = Settings(mongodb_uri="mongodb://test", docs_retry_attempts=2,
+                        docs_retry_backoff_seconds=1.5)
+    with pytest.raises(httpx.HTTPStatusError):
+        doc_corpus._get(stub_site["base"] + "/a.md", settings)
+    assert waits == [1.5]
+
+
+def test_a_block_stops_the_remaining_sources_not_just_the_current_one(web, stored):
+    """
+    Intent: The refusal is from the site, not from one product's documentation. Moving on to
+        the next of 74 sources would keep hammering a server that has already said no, and
+        turn one clear message into thousands.
+    Success: With two sources and a block in the first, the second is never fetched.
+    Feature: Documentation corpus — a block stops the whole crawl.
+    """
+    other = "https://www.mongodb.com/docs/other/llms.txt"
+    refused = [f"https://x/a{i}.md" for i in range(6)]
+    requested = web(
+        {
+            ROOT: f"[One]({INDEX})\n[Two]({other})",
+            INDEX: "\n".join(f"[P]({u})" for u in refused),
+            other: "[Later](https://x/later.md)",
+            "https://x/later.md": "# Later",
+        },
+        failures={u: RuntimeError("Client error '403 Forbidden' for url") for u in refused},
+    )
+    settings = Settings(mongodb_uri="mongodb://test", docs_block_threshold=3,
+                        docs_min_page_bytes=0)
+    result = doc_corpus.refresh(settings=settings)
+    assert result["blocked"] is True
+    assert "https://x/later.md" not in requested
+
+
+def test_a_block_stops_the_remaining_batches_of_the_current_source(web, stored, monkeypatch):
+    """
+    Intent: A single source can hold hundreds of pages, written in batches. Continuing to the
+        next batch after a refusal would attempt hundreds more requests against a server
+        that has already refused.
+    Success: With a small write batch, later batches of the same source are never fetched.
+    Feature: Documentation corpus — a block stops mid-source.
+    """
+    monkeypatch.setattr(doc_corpus, "WRITE_BATCH", 2)
+    refused = [f"https://x/p{i}.md" for i in range(8)]
+    requested = web(
+        root_with({INDEX: "\n".join(f"[P]({u})" for u in refused)}),
+        failures={u: RuntimeError("Client error '403 Forbidden' for url") for u in refused},
+    )
+    settings = Settings(mongodb_uri="mongodb://test", docs_block_threshold=2,
+                        docs_min_page_bytes=0, docs_fetch_concurrency=1)
+    result = doc_corpus.refresh(settings=settings)
+    assert result["blocked"] is True
+    attempted = [u for u in requested if u.startswith("https://x/p")]
+    assert len(attempted) < len(refused)
