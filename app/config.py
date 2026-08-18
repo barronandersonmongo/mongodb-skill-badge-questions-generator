@@ -44,19 +44,17 @@ class Settings:
     # Atlas index (voyage-4-large): real duplicates score around 0.80 and rank
     # below some non-duplicates, so this floor only trims cost — the model decides.
     duplicate_score_threshold: float = 0.75
-    # Which pairs the duplicate sweep bothers to rerank. Measured against the live
-    # index on 2026-08-18 (voyage-4-large, autoEmbed on embedding_text): five
-    # genuinely distinct questions from one badge scored 0.765-0.783 against each
-    # other, while a deliberately reworded copy of one scored 0.865. Set below that
-    # band on purpose — vector search only shortlists here, and the reranker makes
-    # the decision, so a generous shortlist costs one cheap rerank call rather than
-    # a missed duplicate.
-    question_duplicate_score_threshold: float = 0.70
-    # What the reranker must score for a pair to be treated as the same question and
-    # one of them deleted. Not yet measured against real duplicates — no Voyage key
-    # was available when this was written — so it is deliberately high. Measure with
-    # a dry run before trusting it to delete anything.
-    question_rerank_delete_threshold: float = 0.95
+    # The duplicate sweep shortlists with vector search and decides with the native
+    # $rerank stage, in one aggregation. Nothing here needs an API key: the cluster
+    # runs the reranker, as it does the embedding.
+    rerank_model: str = "rerank-2.5"
+    # What $rerank must score for two questions to be treated as the same one.
+    # Measured on 2026-08-18 against rerank-2.5 on the live collection: five
+    # genuinely distinct questions scored 0.379-0.512 against each other, a
+    # deliberately reworded copy scored 0.945, and identical text scored 0.941 (the
+    # reranker does not return 1.0 for identity). This sits in the wide gap between
+    # those bands.
+    question_rerank_delete_threshold: float = 0.85
     # How many neighbours each question is shortlisted against.
     question_duplicate_neighbours: int = 5
 

@@ -49,7 +49,6 @@ suite from the repository root with quiet output.
 | `test_models_question.py` | `app/models/question.py` — question schemas and constraints |
 | `test_question_generation.py` | `app/services/question_generation.py` — authoring, extraction, format validation, attribution |
 | `test_question_duplicates.py` | `app/services/question_duplicates.py` — the ad-hoc duplicate sweep |
-| `test_reranker.py` | `app/services/reranker.py` — Voyage rerank client (stubbed HTTP) |
 | `test_repositories_questions.py` | `app/repositories/questions.py` — insert, filter, lifecycle |
 | `test_questions_router.py` | `app/routers/questions.py` — question JSON API under `/api/questions` |
 | `test_questions_page.py` | `app/routers/pages.py` + `questions.html` — the main screen at `/` |

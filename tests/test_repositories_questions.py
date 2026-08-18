@@ -390,3 +390,56 @@ def test_the_search_returns_no_more_than_the_requested_limit(fake_questions):
     """
     questions.insert_questions([make("First stage question?"), make("Second stage question?")])
     assert len(questions.similar_by_embedding_text("stage question", "ix", limit=1)) == 1
+
+
+def test_the_reranked_search_shortlists_then_reranks_in_one_aggregation(fake_questions):
+    """
+    Intent: The whole point of the native stage is that both steps happen on the cluster in
+        one query — no API key, no second round trip. A pipeline missing $rerank would
+        silently return vector scores, which are on a different scale, so the sweep would
+        compare them against a rerank threshold and delete the wrong things.
+    Success: The pipeline is $vectorSearch then $rerank on the embedded field, with the same
+        query text, and projects the rerank score from $meta.
+    Feature: Question duplicate sweep — native shortlist-then-rerank pipeline.
+    """
+    captured = {}
+
+    def aggregate(pipeline):
+        captured["pipeline"] = pipeline
+        return []
+
+    fake_questions.aggregate = aggregate
+    questions.reranked_by_embedding_text("joining collections", "ix", model="rerank-2.5")
+
+    stages = [next(iter(stage)) for stage in captured["pipeline"]]
+    assert stages == ["$vectorSearch", "$rerank", "$project"]
+    rerank = captured["pipeline"][1]["$rerank"]
+    assert rerank["path"] == "embedding_text"
+    assert rerank["query"] == {"text": "joining collections"}
+    assert rerank["model"] == "rerank-2.5"
+    assert captured["pipeline"][2]["$project"]["score"] == {"$meta": "score"}
+
+
+def test_the_reranked_search_asks_the_reranker_for_every_shortlisted_document(fake_questions):
+    """
+    Intent: numDocsToRerank bounds how many candidates the reranker scores. If it were
+        smaller than the shortlist, the tail would keep its vector score — mixing two
+        incompatible scales in one result set, where a high vector score could pass a rerank
+        threshold and delete a question that is merely on-topic.
+    Success: numDocsToRerank matches the shortlist size.
+    Feature: Question duplicate sweep — every shortlisted candidate is reranked.
+    """
+    captured = {}
+
+    def aggregate(pipeline):
+        captured["pipeline"] = pipeline
+        return []
+
+    fake_questions.aggregate = aggregate
+    questions.reranked_by_embedding_text(
+        "text", "ix", model="rerank-2.5", limit=3, exclude_question_id="q1"
+    )
+    assert (
+        captured["pipeline"][1]["$rerank"]["numDocsToRerank"]
+        == captured["pipeline"][0]["$vectorSearch"]["limit"]
+    )

@@ -162,6 +162,68 @@ def similar_by_embedding_text(
     return results[:limit]
 
 
+SEARCH_PROJECTION = {
+    "_id": False,
+    "question_id": True,
+    "stem": True,
+    "explanation": True,
+    "options": True,
+    "skill_badges": True,
+    "categories": True,
+    "difficulty": True,
+    "status": True,
+    "source_urls": True,
+    "embedding_text": True,
+}
+
+
+def reranked_by_embedding_text(
+    text: str,
+    index_name: str,
+    *,
+    model: str,
+    limit: int = 5,
+    exclude_question_id: str | None = None,
+    num_candidates: int = 100,
+) -> list[dict[str, Any]]:
+    """Nearest questions, re-scored by the reranker, best first.
+
+    Two stages in one aggregation: $vectorSearch shortlists cheaply, then $rerank
+    re-scores each candidate against the query with a cross-encoder that reads both
+    texts together. The cluster runs both models, so this needs no API key and makes
+    no second round trip.
+
+    The returned `score` is the rerank score, not the vector score — they are not on
+    the same scale, so a caller must not compare one to a threshold meant for the
+    other. Use `similar_by_embedding_text` when the vector score is what is wanted.
+    """
+    wanted = limit + (1 if exclude_question_id else 0)
+    pipeline: list[dict[str, Any]] = [
+        {
+            "$vectorSearch": {
+                "index": index_name,
+                "path": EMBEDDING_FIELD,
+                "query": text,
+                "numCandidates": num_candidates,
+                "limit": wanted,
+            }
+        },
+        {
+            "$rerank": {
+                "path": EMBEDDING_FIELD,
+                "query": {"text": text},
+                "model": model,
+                "numDocsToRerank": wanted,
+            }
+        },
+        {"$project": {**SEARCH_PROJECTION, "score": {"$meta": "score"}}},
+    ]
+    results = list(collection().aggregate(pipeline))
+    if exclude_question_id:
+        results = [r for r in results if r.get("question_id") != exclude_question_id]
+    return results[:limit]
+
+
 def backfill_embedding_text() -> dict[str, Any]:
     """Compose the embedding field for stored questions that lack it, or drifted.
 

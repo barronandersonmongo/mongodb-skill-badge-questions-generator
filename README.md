@@ -32,8 +32,7 @@ visible to cron, systemd, or anything started as a service.
 
 Optional overrides: `ANTHROPIC_MODEL`, `WEB_SEARCH_TOOL_TYPE`, `WEB_FETCH_TOOL_TYPE`,
 `SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`,
-`QUESTIONS_VECTOR_INDEX_NAME`, `LOG_DIR`, `LOG_LEVEL`, `VOYAGE_API_KEY`,
-`VOYAGE_RERANK_MODEL`, `VOYAGE_BASE_URL`.
+`QUESTIONS_VECTOR_INDEX_NAME`, `LOG_DIR`, `LOG_LEVEL`.
 
 Storage target is the `skill-badge-questions` database on the `PTM-Hackathon`
 cluster (Atlas project "Barry Anderson").
@@ -162,37 +161,42 @@ The index in use is **`questions_embedding_text_vector`** (autoEmbed,
 things: duplicate screening at generation time, and the search box on the main
 screen.
 
-**Duplicate detection — an ad-hoc sweep, no LLM.** **Find duplicates** on the main
-screen compares the questions already stored. Generation runs do not screen: an LLM
-judging every candidate pair was accurate but slow and expensive, and the cost fell
-on authoring, the one step a person waits for. A duplicate costs nothing until
-someone builds a quiz, so it is found on request instead.
+**Duplicate detection — an ad-hoc sweep, no LLM, no API key.** **Find duplicates** on
+the main screen compares the questions already stored. Generation runs do not
+screen: an LLM judging every candidate pair was accurate but slow and expensive, and
+the cost fell on authoring, the one step a person waits for. A duplicate costs
+nothing until someone builds a quiz, so it is found on request instead.
 
-Two stages, neither a language model:
+One aggregation per question does both stages on the cluster:
 
-1. **Shortlist** — vector search over `embedding_text` proposes each question's
-   nearest neighbours. Recall matters here and precision does not, so the floor
-   (`question_duplicate_score_threshold`, 0.70) sits *below* the 0.765-0.783 band
-   measured for genuinely distinct questions. A generous shortlist costs one cheap
-   rerank call; a tight one costs a missed duplicate.
-2. **Decide** — Voyage `rerank-2.5` scores each shortlisted pair. A cross-encoder
-   reads both texts together, which is what lets it separate "same question
-   reworded" from "same topic" — something two independently embedded vectors
-   cannot do.
+```
+$vectorSearch  index: questions_embedding_text_vector, path: embedding_text
+$rerank        path: embedding_text, query: {text: …}, model: rerank-2.5
+$project       score: {$meta: "score"}
+```
 
-Pairs at or above `question_rerank_delete_threshold` (0.95) have one question
-deleted; the rest are reported with their scores. The survivor is chosen by review
-value: approved beats draft, then more badges, then older.
+`$vectorSearch` shortlists cheaply; `$rerank` re-scores each candidate with a
+cross-encoder that reads both texts together — which is what separates "the same
+question reworded" from "the same topic", something two independently embedded
+vectors cannot do. Native reranking needs MongoDB **8.3+**; this cluster runs 8.3.8.
 
-**Calibrate before trusting it to delete.** The delete threshold was set without any
-real duplicates to measure against, so it is deliberately high. **Dry run** reports
-exactly what a sweep would delete without deleting it. Do that first.
+**The threshold is measured.** Against `rerank-2.5` on the live collection:
 
-On MongoDB **8.3+** this becomes the native `$rerank` aggregation stage — no API key
-and no second round trip. This cluster runs 8.0, so `app/services/reranker.py` calls
-the same model over HTTP; it is the only place that knows how a score is obtained,
-so the swap is a change there and nowhere else. Set `VOYAGE_API_KEY` (optionally
-`VOYAGE_RERANK_MODEL`, `VOYAGE_BASE_URL`).
+| pair | rerank score |
+|---|---|
+| genuinely distinct questions | 0.379 – 0.512 |
+| deliberately reworded copy | 0.945 |
+| identical text | 0.941 |
+
+`question_rerank_delete_threshold` is **0.85**, inside that gap. Note the reranker
+does not return 1.0 for identical text, so a threshold near 1.0 would never fire.
+Pairs at or above it lose one question — approved beats draft, then more badges, then
+older — and the rest are reported with their scores. **Dry run** reports what a sweep
+would delete without deleting it; re-check that way as the collection grows to span
+more badges.
+
+Cost is bounded by `question_duplicate_neighbours` (5), since comparing every pair
+grows as the square of the collection.
 
 **Search by meaning.** The box on the main screen ranks questions by similarity to
 what you type, so "joining data from another collection" finds the `$lookup`
@@ -317,8 +321,7 @@ app/models/skill_badge.py            Pydantic schemas (Claude output + stored do
 app/models/question.py               question schemas (Claude output + stored doc)
 app/services/badge_discovery.py      the two Claude passes
 app/services/question_generation.py  the Claude passes for questions
-app/services/question_duplicates.py  the ad-hoc duplicate sweep
-app/services/reranker.py             Voyage rerank client (native $rerank on 8.3+)
+app/services/question_duplicates.py  the ad-hoc duplicate sweep ($vectorSearch + $rerank)
 app/services/discover_cli.py         shell entry point
 app/repositories/skill_badges.py     upsert / list / status, indexes
 app/repositories/questions.py        insert / filter / status, indexes
