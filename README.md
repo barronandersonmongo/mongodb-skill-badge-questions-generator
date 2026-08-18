@@ -273,10 +273,43 @@ The main screen (`/`) is where questions are viewed and written.
 **Generating.** A run is scoped to one or more skill badges: the badge decides
 what is in subject matter. Two Claude passes, as with badge discovery — an
 authoring pass that reads the selected badges (title, coverage, topic areas and
-curated reference links), any material the author pasted in, and MongoDB's
-documentation via server-side web search and fetch; then an extraction pass that
-turns the draft into validated records. The draft is kept on the run summary so a
-weak batch can be diagnosed.
+curated reference links), any material the author pasted in, and the documentation
+pages retrieved for those badges out of the stored corpus; then an extraction pass
+that turns the draft into validated records. The draft is kept on the run summary
+so a weak batch can be diagnosed.
+
+**Source material comes from the corpus, not the web.** A run that researched the
+web spent most of its wall clock waiting on fetches, and no two runs on the same
+badge read the same text — so a batch that came out badly could not be told from a
+different day's search results. Authoring now reads `doc_pages` instead, and a run
+is repeatable.
+
+Retrieval is **one semantic search per topic area**, not one per badge. A single
+badge-wide query returns its top pages clustered on whichever topic embeds closest
+to the badge description, and five questions written off one page is exactly the
+outcome this tool exists to avoid; searching each of the badge's categories spreads
+the material across the syllabus the badge claims to cover. The category is queried
+with the badge name attached, because "indexes" matches most of the corpus while
+"Atlas Search indexes" matches what the badge means by it.
+
+Pages are then taken in **rounds** — the best page for every query, then the second
+best for every query — until the character budget runs out. Filling the budget in
+query order would spend it all on the first topic area and leave the last with
+nothing, which is the imbalance the per-topic search was for. Long pages are cut
+short rather than dropped, and the model is told when a page has been cut, so it
+does not conclude a feature has no more to it than it can see.
+
+Each page is labelled with its URL, and the prompt asks for the source of each
+question. The run summary lists what it read, so a reviewer can open the page
+instead of re-researching the question.
+
+**The web is the fallback, not the default.** If the corpus is empty for these
+badges, or its Atlas index is missing or still building, the run falls back to
+server-side web search and fetch and says so on screen. Left available *alongside*
+retrieved pages the web tools get used anyway, so a run with corpus material is
+given no tools at all — grounding only holds if the web is not also on offer. A
+badge whose docs have not been crawled yet is a reason to research the slow way,
+not a reason to refuse to write questions.
 
 Runs happen in the background with the page polling for status and showing an
 elapsed timer, because an authoring turn takes minutes.
@@ -406,10 +439,10 @@ exactly the filtered set from the same endpoint the screen reads.
 
 ### Documentation corpus
 
-`/admin/docs` keeps a stored copy of MongoDB's documentation, so question authoring
-can read source material from the database instead of fetching the web mid-run —
-which is where most of a run's wall-clock time goes, and why two runs on the same
-badge see different source text.
+`/admin/docs` keeps a stored copy of MongoDB's documentation. Question authoring
+reads its source material from here rather than fetching the web mid-run — which is
+where most of a run's wall-clock time used to go, and why two runs on the same badge
+saw different source text. See **Generating** above for how a run selects from it.
 
 Pages come from MongoDB's published agent index (`llms.txt`), which names each page
 and serves it as Markdown. That is the only enumerable route to the corpus: the MCP
@@ -616,6 +649,7 @@ app/models/skill_badge.py            Pydantic schemas (Claude output + stored do
 app/models/question.py               question schemas (Claude output + stored doc)
 app/services/badge_discovery.py      the two Claude passes
 app/services/question_generation.py  the Claude passes for questions
+app/services/doc_retrieval.py        selects a badge's source material from the corpus
 app/services/question_duplicates.py  the ad-hoc duplicate sweep ($vectorSearch + $rerank)
 app/services/discover_cli.py         shell entry point
 app/repositories/skill_badges.py     upsert / list / status, indexes
@@ -641,9 +675,9 @@ tests/                               pytest suite + fakes (see tests/README.md)
 
 ## Known limitations
 
-- The documentation corpus is stored but **not yet read by authoring** — generation
-  still uses web search. Wiring it in is the next step, and is the reason the corpus
-  exists.
+- Retrieval selects whole pages, not passages. A page relevant in one paragraph
+  spends its whole share of the context budget, so the material given to an
+  authoring turn is broader and blunter than chunk-level retrieval would be.
 
 - Run state is in-process; it needs to move into MongoDB before running multiple
   uvicorn workers. Badge runs and question runs hold separate state, so one of

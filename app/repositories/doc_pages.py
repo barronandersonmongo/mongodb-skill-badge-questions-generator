@@ -218,28 +218,16 @@ def excerpt(text: str, terms: list[str]) -> str:
     return prefix + " ".join(window.split()) + suffix
 
 
-def search_pages(query: str, *, limit: int = 50) -> list[dict[str, Any]]:
-    """Pages semantically closest to a query, best match first, each with an excerpt.
-
-    Semantic rather than keyword: an author looking for source material knows the
-    topic, not the wording. "How do I model a one-to-many relationship" has to reach
-    the embedded-versus-referenced page, which never uses that phrase, and a keyword
-    search returns nothing for it. The cost is that a term-for-term match is no longer
-    guaranteed to rank first — but the corpus is being read for meaning, not grepped.
+def _vector_search(query: str, limit: int) -> list[dict[str, Any]]:
+    """Pages semantically closest to a query, best match first, text included.
 
     The Atlas index is configured with autoEmbed on `text`, so the query sent is the
     text itself: the cluster embeds both sides with the same model, and this program
     stores no vectors and needs no embedding key.
 
-    Searches the whole corpus rather than one source. Which of the 74 sources holds a
-    topic is not something an author knows — the C# driver's real documentation is not
-    under the drivers index, it is under its own — so requiring them to guess makes the
-    corpus unusable for writing questions.
+    Shared by the search screen and by question authoring, which want the same
+    ranking and differ only in whether they keep the page text or an excerpt of it.
     """
-    query = (query or "").strip()
-    if not query:
-        return []
-
     settings = get_settings()
     # An explicit inclusion projection. Reusing LIST_PROJECTION (an exclusion) and
     # adding "text": True would silently return only the included fields — no title, no
@@ -254,7 +242,7 @@ def search_pages(query: str, *, limit: int = 50) -> list[dict[str, Any]]:
         "text": True,
         "score": {"$meta": "vectorSearchScore"},
     }
-    found = list(
+    return list(
         collection().aggregate(
             [
                 {
@@ -271,12 +259,44 @@ def search_pages(query: str, *, limit: int = 50) -> list[dict[str, Any]]:
         )
     )
 
+
+def search_pages(query: str, *, limit: int = 50) -> list[dict[str, Any]]:
+    """Pages semantically closest to a query, best match first, each with an excerpt.
+
+    Semantic rather than keyword: an author looking for source material knows the
+    topic, not the wording. "How do I model a one-to-many relationship" has to reach
+    the embedded-versus-referenced page, which never uses that phrase, and a keyword
+    search returns nothing for it. The cost is that a term-for-term match is no longer
+    guaranteed to rank first — but the corpus is being read for meaning, not grepped.
+
+    Searches the whole corpus rather than one source. Which of the 74 sources holds a
+    topic is not something an author knows — the C# driver's real documentation is not
+    under the drivers index, it is under its own — so requiring them to guess makes the
+    corpus unusable for writing questions.
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+
     terms = [t.strip('"') for t in query.split() if t.strip('"')]
     results = []
-    for page in found:
+    for page in _vector_search(query, limit):
         text = page.pop("text", "") or ""
         results.append({**page, "excerpt": excerpt(text, terms)})
     return results
+
+
+def search_page_texts(query: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    """The same ranking as `search_pages`, but carrying each page's full text.
+
+    Question authoring reads pages rather than skimming them: an excerpt is enough to
+    recognise a page on a screen and nowhere near enough to write a question from. The
+    caller decides how much of the text it can afford, so nothing is truncated here.
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+    return _vector_search(query, limit)
 
 
 def delete_stubs(smaller_than: int) -> int:

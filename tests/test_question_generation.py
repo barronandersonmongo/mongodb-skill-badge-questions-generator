@@ -937,3 +937,131 @@ def test_generation_does_not_screen_for_duplicates(
     assert result["inserted"] == 1
     assert "duplicates_dropped" not in result
     assert "duplicate_check_error" not in result
+
+
+# --- authoring from the stored documentation corpus ---
+
+
+def test_the_stored_documentation_is_given_to_the_author(fake_client, settings):
+    """
+    Intent: The corpus exists so a run reads its source material out of the database
+        instead of fetching it mid-run: a run that searches the web spends most of its
+        wall clock waiting, and two runs on the same badge see different source text.
+        Material that is retrieved but not put in the prompt is material not used.
+    Success: The retrieved page's text and its source URL both reach the authoring
+        prompt.
+    Feature: Question generation — authoring from the stored documentation corpus.
+    """
+    client = fake_client(stream_messages=[FakeMessage("draft")])
+    pages = [{"url": "https://x/a.md", "title": "Indexes", "text": "Define an index."}]
+    question_generation.author_questions(
+        [BADGE], 1, corpus_pages=pages, settings=settings
+    )
+    prompt = client.messages.stream_calls[0]["messages"][0]["content"]
+    assert "Define an index." in prompt
+    assert "https://x/a.md" in prompt
+
+
+def test_the_web_is_not_searched_when_the_corpus_supplied_material(fake_client, settings):
+    """
+    Intent: Left available alongside retrieved pages, the web tools get used anyway,
+        which puts back the minutes of waiting and the run-to-run variation that
+        reading from the corpus removes. Grounding in the corpus only holds if the
+        web is not also on offer.
+    Success: An authoring turn given corpus pages is passed no tools.
+    Feature: Question generation — the corpus replaces web research.
+    """
+    client = fake_client(stream_messages=[FakeMessage("draft")])
+    pages = [{"url": "https://x/a.md", "title": "Indexes", "text": "Define an index."}]
+    question_generation.author_questions(
+        [BADGE], 1, corpus_pages=pages, settings=settings
+    )
+    assert client.messages.stream_calls[0]["tools"] == []
+
+
+def test_an_empty_corpus_falls_back_to_researching_the_web(fake_client, settings):
+    """
+    Intent: A badge whose documentation has not been crawled yet is a reason to
+        research the slow way, not a reason to refuse to write questions. The
+        fallback has to be the old behaviour, intact.
+    Success: With no corpus pages, the authoring turn gets the web search and fetch
+        tools and is told to search.
+    Feature: Question generation — falling back to web research.
+    """
+    client = fake_client(stream_messages=[FakeMessage("draft")])
+    question_generation.author_questions([BADGE], 1, corpus_pages=[], settings=settings)
+    call = client.messages.stream_calls[0]
+    assert [t["type"] for t in call["tools"]] == [
+        settings.web_search_tool,
+        settings.web_fetch_tool,
+    ]
+    assert "Search and fetch as needed" in call["messages"][0]["content"]
+
+
+def test_a_run_reads_the_corpus_before_authoring(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, settings
+):
+    """
+    Intent: Retrieval that is not wired into the run is retrieval that never happens —
+        the screen would report a normal run while every question was still written
+        from a web search.
+    Success: An end-to-end run puts a stored documentation page into the authoring
+        prompt.
+    Feature: Question generation — end-to-end run reads the corpus.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([{
+        "url": "https://x/a.md",
+        "source": "ix-1",
+        "title": "Atlas Search indexes",
+        "text": "Define an Atlas Search index.",
+    }])
+    client = fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
+    question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    assert "Define an Atlas Search index." in client.messages.stream_calls[0]["messages"][0]["content"]
+
+
+def test_a_run_reports_which_pages_it_wrote_from(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, settings
+):
+    """
+    Intent: A question is only worth as much as it is checkable. Without knowing which
+        pages a run read, a reviewer cannot tell a question grounded in current
+        documentation from one written out of the model's memory.
+    Success: The run summary lists the source pages, and records that the web was not
+        researched.
+    Feature: Question generation — the source material of a run is reported.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([{
+        "url": "https://x/a.md",
+        "source": "ix-1",
+        "title": "Atlas Search indexes",
+        "text": "Define an Atlas Search index.",
+    }])
+    fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
+    result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    assert result["source_pages"] == [{"url": "https://x/a.md", "title": "Atlas Search indexes"}]
+    assert result["researched_the_web"] is False
+
+
+def test_a_run_with_no_stored_documentation_says_it_researched_the_web(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, settings
+):
+    """
+    Intent: A run that fell back to the web is slower and not repeatable, and the
+        remedy — refresh the corpus — is only actionable if the fallback is visible
+        rather than silent.
+    Success: With an empty corpus the run reports no source pages and records that it
+        researched the web.
+    Feature: Question generation — the fallback to web research is reported.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
+    result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    assert result["source_pages"] == []
+    assert result["researched_the_web"] is True

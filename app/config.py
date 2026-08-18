@@ -69,6 +69,18 @@ class Settings:
     # approximate neighbours before scoring them exactly. Roughly 10x the result cap,
     # which is the usual recommendation for recall at this corpus size.
     doc_search_num_candidates: int = 500
+    # Question authoring reads its source material out of this corpus rather than
+    # searching the web: a run that fetches the web spends most of its wall clock
+    # waiting, and two runs on the same badge see different source text. One search
+    # per topic area rather than one per badge, because the top pages for a single
+    # badge-wide query cluster on one topic — and five questions off one page is the
+    # failure mode this tool exists to avoid.
+    doc_context_pages_per_topic: int = 3
+    # Pages are long and a badge has several topic areas, so both the per-page share
+    # and the whole context are bounded. A page cut short is still usable material;
+    # an authoring turn that will not fit is not.
+    doc_context_page_chars: int = 24_000
+    doc_context_char_budget: int = 360_000
     # MongoDB publishes an agent-oriented index of its documentation, and serves
     # every page as Markdown. That is the only enumerable route to the whole corpus:
     # search-knowledge returns the best chunks for a query and cannot be asked "give

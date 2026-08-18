@@ -3,8 +3,10 @@
 Two passes, mirroring badge discovery:
 
 1. Authoring — Claude reads the selected badges, any material the author pasted
-   in, and the badges' reference links (server-side web search and fetch), then
-   drafts questions as prose. Streaming, because a research turn runs for minutes.
+   in, and the documentation pages retrieved for those badges out of the stored
+   corpus, then drafts questions as prose. Streaming, because the turn runs for
+   minutes. When the corpus returns nothing — not crawled yet, or its Atlas index
+   missing — the turn falls back to server-side web search and fetch instead.
 2. Extraction — the draft is turned into validated structured output.
 
 The badges scope the questions; they are not the whole source. What a badge
@@ -13,6 +15,11 @@ links — enough to keep a question inside the badge's syllabus. Deeper material
 (internal training content, live cluster behaviour) is passed in by the author as
 `source_material` for now: this process has no Glean or MongoDB MCP access of its
 own, so that content is pasted rather than fetched.
+
+Reading from the corpus rather than the web is what makes a run repeatable. Two
+runs on the same badge now see the same source text, so a question that comes out
+badly is a prompt problem rather than a different day's search results; and the
+minutes a run used to spend waiting on fetches are gone.
 """
 
 import logging
@@ -128,15 +135,30 @@ def build_prompt(
     *,
     source_material: str | None = None,
     extra_instructions: str | None = None,
+    corpus_pages: list[dict[str, Any]] | None = None,
 ) -> str:
     """Assemble the authoring request. Kept separate so it can be asserted on."""
+    from app.services import doc_retrieval
+
     briefs = "\n".join(_badge_brief(b) for b in badges)
     prompt = (
         f"Write {count} multiple-choice question(s) for the following skill "
         f"badge(s).\n\n{briefs}\n\n"
-        "Use the reference links above, and MongoDB's official documentation, as "
-        "your sources. Search and fetch as needed."
     )
+    if corpus_pages:
+        prompt += (
+            "Below is MongoDB's own documentation for these badges, retrieved from "
+            "this tool's stored copy of the docs. Write from it. Cite the Source URL "
+            "of the page each question came from. If the material does not support a "
+            "question you want to ask, ask a different question rather than writing "
+            "from memory.\n\n"
+            + doc_retrieval.format_pages(corpus_pages)
+        )
+    else:
+        prompt += (
+            "Use the reference links above, and MongoDB's official documentation, as "
+            "your sources. Search and fetch as needed."
+        )
     if source_material:
         prompt += (
             "\n\nThe author supplied this material to write from. Prefer it over "
@@ -154,9 +176,15 @@ def author_questions(
     *,
     source_material: str | None = None,
     extra_instructions: str | None = None,
+    corpus_pages: list[dict[str, Any]] | None = None,
     settings: Settings | None = None,
 ) -> str:
-    """Run the authoring pass. Returns Claude's draft questions as prose."""
+    """Run the authoring pass. Returns Claude's draft questions as prose.
+
+    The web tools are offered only when the corpus supplied nothing. Left available
+    alongside retrieved pages they get used anyway, which puts back the minutes of
+    waiting and the run-to-run variation that reading from the corpus removes.
+    """
     from app.services.badge_discovery import _client, _translate_auth_error
 
     settings = settings or get_settings()
@@ -170,9 +198,18 @@ def author_questions(
                 count,
                 source_material=source_material,
                 extra_instructions=extra_instructions,
+                corpus_pages=corpus_pages,
             ),
         }
     ]
+    tools = (
+        []
+        if corpus_pages
+        else [
+            {"type": settings.web_search_tool, "name": "web_search"},
+            {"type": settings.web_fetch_tool, "name": "web_fetch"},
+        ]
+    )
     draft: list[str] = []
 
     # Server-side web search can end a turn with stop_reason "pause_turn";
@@ -184,10 +221,7 @@ def author_questions(
                 max_tokens=32000,
                 system=AUTHOR_SYSTEM,
                 output_config={"effort": settings.effort},
-                tools=[
-                    {"type": settings.web_search_tool, "name": "web_search"},
-                    {"type": settings.web_fetch_tool, "name": "web_fetch"},
-                ],
+                tools=tools,
                 messages=messages,
             ) as stream:
                 message = stream.get_final_message()
@@ -433,6 +467,7 @@ def generate_questions(
     """Author questions for the named badges and store the well-formed ones."""
     from app.repositories import questions as questions_repo
     from app.repositories import skill_badges
+    from app.services import doc_retrieval
 
     if not slugs:
         raise ValueError("Select at least one skill badge to generate questions for.")
@@ -444,11 +479,26 @@ def generate_questions(
         raise ValueError(f"No skill badge with slug(s): {', '.join(sorted(missing))}.")
     badges = [known[s] for s in slugs]
 
+    corpus_pages = doc_retrieval.pages_for_badges(badges, settings=settings)
+    if corpus_pages:
+        logger.info(
+            "Authoring from %d stored documentation page(s) for %s",
+            len(corpus_pages),
+            ", ".join(slugs),
+        )
+    else:
+        logger.warning(
+            "No stored documentation matched %s; authoring will research the web. "
+            "Refresh the documentation corpus to make runs faster and repeatable.",
+            ", ".join(slugs),
+        )
+
     draft = author_questions(
         badges,
         count,
         source_material=source_material,
         extra_instructions=extra_instructions,
+        corpus_pages=corpus_pages,
         settings=settings,
     )
     generated = extract_questions(draft, settings=settings)
@@ -466,6 +516,12 @@ def generate_questions(
     summary["rejected"] = rejected
     summary["skill_badges"] = slugs
     summary["draft"] = draft
+    # What the run read, so a question's source is answerable after the fact and an
+    # empty corpus is visible as the reason a run was slow.
+    summary["source_pages"] = [
+        {"url": p["url"], "title": p["title"]} for p in corpus_pages
+    ]
+    summary["researched_the_web"] = not corpus_pages
     summary["questions"] = [q.model_dump() for q in kept]
     summary.update(attribution)
     return summary

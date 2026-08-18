@@ -805,3 +805,47 @@ def test_sweep_errors_are_surfaced(client, fake_collection, fake_questions):
     body = client.get(PAGE).text
     assert 'data-sweep-errors="true"' in body
     assert "VOYAGE_API_KEY" in body
+
+
+# --- where a run's questions came from ---
+
+
+def test_the_pages_a_run_wrote_from_are_listed(client, fake_collection, fake_questions):
+    """
+    Intent: A question is only worth as much as it is checkable. Naming the documentation
+        pages a run read lets a reviewer open the source instead of re-researching the
+        question to find out whether it is right.
+    Success: The run alert reports how many pages were used and links each one.
+    Feature: Question generation — the source material of a run is shown on screen.
+    """
+    api_module._run_state["last_result"] = {
+        "inserted": 1,
+        "requested": 1,
+        "rejected": [],
+        "source_pages": [{"url": "https://x/a.md", "title": "Atlas Search indexes"}],
+        "researched_the_web": False,
+    }
+    body = client.get(PAGE).text
+    assert 'data-source-pages="true"' in body
+    assert "1 stored documentation page(s)" in body
+    assert "https://x/a.md" in body
+
+
+def test_a_run_that_fell_back_to_the_web_says_so(client, fake_collection, fake_questions):
+    """
+    Intent: A run that researched the web is slower and not repeatable, and the remedy —
+        refresh the corpus — is only actionable if the author is told the fallback
+        happened rather than left assuming the stored documentation was used.
+    Success: The run alert says the web was researched and points at the corpus screen.
+    Feature: Question generation — the fallback to web research is visible on screen.
+    """
+    api_module._run_state["last_result"] = {
+        "inserted": 1,
+        "requested": 1,
+        "rejected": [],
+        "source_pages": [],
+        "researched_the_web": True,
+    }
+    body = client.get(PAGE).text
+    assert 'data-researched-the-web="true"' in body
+    assert "/admin/docs" in body

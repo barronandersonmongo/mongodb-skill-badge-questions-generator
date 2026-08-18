@@ -91,6 +91,25 @@
     {% endif %}
   </div>
   {% endif %}
+  {% if last_result.source_pages %}
+  <div class="mt-1" data-source-pages="true">
+    Written from {{ last_result.source_pages | length }} stored documentation page(s).
+    <details class="mt-1">
+      <summary class="small">Show sources</summary>
+      <ul class="small mb-0 mt-2">
+        {% for page in last_result.source_pages %}
+        <li><a href="{{ page.url }}" target="_blank" rel="noopener">{{ page.title or page.url }}</a></li>
+        {% endfor %}
+      </ul>
+    </details>
+  </div>
+  {% elif last_result.researched_the_web %}
+  <div class="mt-1 small" data-researched-the-web="true">
+    Nothing in the stored documentation matched these badges, so this run researched
+    the web instead — slower, and two runs will not see the same source text.
+    <a href="/admin/docs">Refresh the documentation corpus</a> to fix that.
+  </div>
+  {% endif %}
   {% if last_result.attribution_error %}
   <div class="mt-1 small" data-attribution-error="true">
     Cross-badge review did not run, so these questions are filed only under the
