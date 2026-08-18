@@ -227,3 +227,82 @@ def test_importing_the_application_does_not_log_a_start(log_dir):
     for handler in logging.getLogger().handlers:
         handler.flush()
     assert "Application starting" in log.read_text()
+
+
+# --- errors stand out in the viewer ---
+
+
+def test_error_lines_are_shown_in_red(client, log_dir):
+    """
+    Intent: A log is scanned, not read. Without colour, one ERROR line among hundreds of
+        INFO lines is invisible, which defeats the reason for opening the viewer during a
+        crawl.
+    Success: The viewer maps ERROR and CRITICAL to a danger colour, and marks each line
+        with the level it was rendered at.
+    Feature: Log viewer — errors are visually identifiable.
+    """
+    body = client.get(PAGE).text
+    assert "text-danger" in body
+    assert "ERROR" in body and "CRITICAL" in body
+    assert "dataset.level" in body
+
+
+def test_the_level_is_read_from_the_start_of_the_line(client, log_dir):
+    """
+    Intent: The word "error" appears inside plenty of ordinary messages. Colouring on any
+        occurrence would paint half the log red; the level is a field at a known position
+        in the formatter's output, and that is what must be matched.
+    Success: The viewer matches the level as a leading field rather than anywhere in the
+        text.
+    Feature: Log viewer — levels are parsed, not guessed.
+    """
+    body = client.get(PAGE).text
+    assert "LEVEL_PATTERN" in body
+    assert "^" in body and "DEBUG|INFO|WARNING|ERROR|CRITICAL" in body
+
+
+def test_a_traceback_keeps_the_colour_of_the_entry_it_belongs_to(client, log_dir):
+    """
+    Intent: A traceback spans many lines and only the first carries a level. Reverting to
+        plain text after that first line would break a stack trace in half visually, which
+        is exactly the thing a reader is trying to follow.
+    Success: A line with no level of its own inherits the previous entry's level.
+    Feature: Log viewer — multi-line entries stay together.
+    """
+    body = client.get(PAGE).text
+    assert "continuation" in body
+    assert "if (found) level = found[1];" in body
+
+
+def test_the_viewer_counts_the_errors_it_is_showing(client, log_dir):
+    """
+    Intent: "Are there errors in here at all?" should be answerable without scrolling the
+        whole tail, particularly right after a long crawl.
+    Success: The viewer reports an error count alongside the line count.
+    Feature: Log viewer — errors are counted.
+    """
+    body = client.get(PAGE).text
+    assert "errorCount" in body
+    assert "error(s)" in body
+
+
+def test_real_error_lines_are_served_to_the_viewer(client, log_dir):
+    """
+    Intent: The colouring is only worth anything if the failures actually reach the file.
+        This checks the end-to-end path — a logged error is written, tailed, and returned
+        with its level intact for the viewer to colour.
+    Success: A logged ERROR line comes back from the endpoint with its level in the text.
+    Feature: Log viewer — logged errors are retrievable.
+    """
+    import logging
+
+    from app import logging_config
+
+    logging_config.configure_logging(force=True)
+    logging.getLogger("app.services.doc_corpus").error(
+        "Docs page failed: https://example.test/a.md — 404 Not Found"
+    )
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    lines = client.get(API).json()["lines"]
+    assert any("ERROR" in line and "404 Not Found" in line for line in lines)

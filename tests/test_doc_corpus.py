@@ -550,3 +550,72 @@ def test_every_source_is_planned_even_when_one_index_is_unreadable(web, settings
     assert result["pages_total"] == 1
     assert result["pages_seen"] == 1
     assert any("index unreadable" in f["error"] for f in result["failures"])
+
+
+# --- failures reach the log, at a level that can be searched for ---
+
+
+def test_a_failed_page_is_logged_as_an_error_with_its_reason(web, settings, stored, caplog):
+    """
+    Intent: The run summary counted failures but named none, so the log said "65 failed"
+        and left no way to learn which pages or why — the one question a reader has. The
+        reason has to be in the log, at ERROR, so it is findable by level rather than
+        buried among thousands of INFO lines.
+    Success: A page that fails to fetch is logged at ERROR with its URL and the reason.
+    Feature: Documentation corpus — page failures are logged individually.
+    """
+    web(
+        root_with({INDEX: "[A](https://x/a.md)"}),
+        failures={"https://x/a.md": RuntimeError("404 Not Found")},
+    )
+    with caplog.at_level("ERROR", logger="app.services.doc_corpus"):
+        doc_corpus.refresh(settings=settings)
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert any("https://x/a.md" in r.getMessage() and "404" in r.getMessage() for r in errors)
+
+
+def test_an_unreadable_index_is_logged_as_an_error(web, settings, stored, caplog):
+    """
+    Intent: An index that cannot be read costs every page beneath it, so it is the most
+        consequential failure in a crawl. Counting it without naming it hides which
+        product's documentation is missing.
+    Success: The failing index URL and reason are logged at ERROR.
+    Feature: Documentation corpus — index failures are logged individually.
+    """
+    bad = "https://www.mongodb.com/docs/bad/llms.txt"
+    web({ROOT: f"[Bad]({bad})\n[Manual]({INDEX})", INDEX: "[A](https://x/a.md)",
+         "https://x/a.md": "# A"},
+        failures={bad: RuntimeError("500 error")})
+    with caplog.at_level("ERROR", logger="app.services.doc_corpus"):
+        doc_corpus.refresh(settings=settings)
+    assert any(bad in r.getMessage() for r in caplog.records if r.levelname == "ERROR")
+
+
+def test_a_run_with_failures_is_summarised_at_error_level(web, settings, stored, caplog):
+    """
+    Intent: A reader scanning for problems filters the log by level. A finishing line at
+        INFO with a non-zero failure count buried in it does not surface that way, so a
+        partly-failed crawl looks like a clean one.
+    Success: The finishing line is logged at ERROR when anything failed.
+    Feature: Documentation corpus — a failed run is findable by level.
+    """
+    web(root_with({INDEX: "[A](https://x/a.md)"}),
+        failures={"https://x/a.md": RuntimeError("boom")})
+    with caplog.at_level("INFO", logger="app.services.doc_corpus"):
+        doc_corpus.refresh(settings=settings)
+    finishing = [r for r in caplog.records if "refresh finished" in r.getMessage()]
+    assert finishing and finishing[-1].levelname == "ERROR"
+
+
+def test_a_clean_run_is_summarised_at_info_level(web, settings, stored, caplog):
+    """
+    Intent: If every finishing line were an error, filtering by level would stop
+        distinguishing anything — a successful crawl must not look like a failure.
+    Success: With no failures, the finishing line is logged at INFO.
+    Feature: Documentation corpus — a clean run is not reported as an error.
+    """
+    web(root_with({INDEX: "[A](https://x/a.md)", "https://x/a.md": "# A"}))
+    with caplog.at_level("INFO", logger="app.services.doc_corpus"):
+        doc_corpus.refresh(settings=settings)
+    finishing = [r for r in caplog.records if "refresh finished" in r.getMessage()]
+    assert finishing and finishing[-1].levelname == "INFO"

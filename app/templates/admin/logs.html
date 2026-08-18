@@ -53,6 +53,43 @@ const lineCount = document.querySelector("[data-line-count]");
 const rotatedBox = document.getElementById("rotated");
 let followTimer = null;
 
+// The formatter writes "<date> <time> <LEVEL> <logger> <message>", so the level is
+// recognisable at the start of a line. A continuation line — a traceback, a wrapped
+// message — has no level of its own and belongs to the entry above it, so it inherits
+// that entry's colour rather than reverting to plain text half way through a stack.
+const LEVEL_PATTERN = /^\S+ \S+ +(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b/;
+const LEVEL_CLASS = {
+  CRITICAL: "text-danger fw-semibold",
+  ERROR: "text-danger",
+  WARNING: "text-warning-emphasis",
+  DEBUG: "text-body-secondary",
+};
+
+let errorCount = 0;
+
+function render(lines) {
+  errorCount = 0;
+  body.textContent = "";
+  if (lines.length === 0) {
+    body.textContent = "The log is empty — nothing has been written yet.";
+    return;
+  }
+  let level = null;
+  for (const line of lines) {
+    const found = LEVEL_PATTERN.exec(line);
+    if (found) level = found[1];
+    if (found && (level === "ERROR" || level === "CRITICAL")) errorCount += 1;
+    const span = document.createElement("span");
+    const className = LEVEL_CLASS[level];
+    if (className) span.className = className;
+    // textContent, never innerHTML: log lines are arbitrary text, including any
+    // markup that happened to be logged.
+    span.textContent = line + "\n";
+    span.dataset.level = level || "continuation";
+    body.append(span);
+  }
+}
+
 function showAlert(kind, message) {
   alertBox.className = "alert alert-" + kind;
   alertBox.textContent = message;
@@ -83,12 +120,9 @@ async function load() {
   // at something, which following would otherwise yank them away from.
   const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 40;
 
-  // textContent, never innerHTML: log lines are arbitrary text, including any
-  // markup that happened to be logged.
-  body.textContent = state.lines.length
-    ? state.lines.join("\n")
-    : "The log is empty — nothing has been written yet.";
-  lineCount.textContent = state.lines.length + " line(s)";
+  render(state.lines);
+  lineCount.textContent = state.lines.length + " line(s)"
+    + (errorCount ? " · " + errorCount + " error(s)" : "");
 
   rotatedBox.textContent = "";
   if (state.rotated.length) {

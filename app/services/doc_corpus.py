@@ -118,6 +118,11 @@ def fetch_pages(
             if on_page:
                 on_page()
             if error:
+                # Logged at ERROR the moment it happens: a run summary that only counts
+                # failures tells a reader that something broke but not what, and the
+                # whole point of tailing the log during a crawl is to see which pages
+                # are failing while it is still running.
+                logger.error("Docs page failed: %s — %s", url, error)
                 failures.append({"url": url, "error": error})
                 continue
             pages.append(
@@ -161,9 +166,13 @@ def plan_pages(
         except Exception as exc:
             return index_url, [], f"index unreadable: {exc}"
 
+    def record(index_url: str, error: str) -> None:
+        logger.error("Docs index failed: %s — %s", index_url, error)
+
     with ThreadPoolExecutor(max_workers=settings.docs_fetch_concurrency) as pool:
         for done, (index_url, urls, error) in enumerate(pool.map(read, sources), 1):
             if error:
+                record(index_url, error)
                 failures.append({"url": index_url, "error": error})
             for url in urls:
                 # The same page is named by more than one index; fetching it twice
@@ -291,11 +300,17 @@ def refresh(
             report()
 
         summary["per_source"].append(stats)
-        logger.info(
-            "Docs refresh: %s — %d page(s), %d new, %d updated, %d unchanged, %d failed",
+        source_line = (
+            "Docs refresh: %s — %d page(s), %d new, %d updated, %d unchanged, %d failed"
+        )
+        source_figures = (
             index_url, stats["pages"], stats["inserted"], stats["updated"],
             stats["unchanged"], stats["failed"],
         )
+        if stats["failed"]:
+            logger.error(source_line, *source_figures)
+        else:
+            logger.info(source_line, *source_figures)
         report()
 
     # Only sweep once something was actually stored. A crawl that fetched nothing —
@@ -324,11 +339,19 @@ def refresh(
     summary["elapsed_seconds"] = round(time.monotonic() - started, 1)
     report()
 
-    logger.info(
+    finished = (
         "Docs refresh finished in %.1fs: %d source(s), %d of %d page(s) fetched, "
-        "%d new, %d updated, %d unchanged, %d removed, %d failed",
+        "%d new, %d updated, %d unchanged, %d removed, %d failed"
+    )
+    figures = (
         summary["elapsed_seconds"], summary["sources_total"], summary["pages_seen"],
         summary["pages_total"], summary["inserted"], summary["updated"],
         summary["unchanged"], summary["removed"], summary["failure_count"],
     )
+    # A run with failures is reported at ERROR so it is findable by level, rather than
+    # sitting among thousands of INFO lines with one number quietly non-zero.
+    if summary["failure_count"]:
+        logger.error(finished, *figures)
+    else:
+        logger.info(finished, *figures)
     return summary
