@@ -35,6 +35,12 @@
         <a class="nav-link {% if active_page == 'questions' %}active{% endif %}"
            href="/">Questions</a>
       </li>
+      {# Authoring work, not curation: it acts on the questions themselves rather than
+         on the material they are written from, so it sits with them. #}
+      <li class="nav-item">
+        <a class="nav-link {% if active_page == 'duplicates' %}active{% endif %}"
+           href="/duplicates">Duplicates</a>
+      </li>
     </ul>
 
     <div class="nav-section">

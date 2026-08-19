@@ -238,3 +238,37 @@ def _render(
             "last_traceback": run_state()["last_traceback"],
         },
     )
+
+
+@router.get("/duplicates")
+def duplicates_page(request: Request):
+    """The duplicate sweep and its report.
+
+    Its own screen rather than a block on the questions list. The report is a long
+    list about pairs of questions, every entry of which links to a question — and
+    while it sat on the questions screen those links led back to the page the report
+    was on. It is also not the work that screen is for: a sweep is something done
+    occasionally to the whole collection, not part of writing or reviewing.
+
+    The report itself lives in run state, so it survives a reload of this page but
+    not a restart. Nothing is stored: re-running it is minutes of round trips, which
+    is why every link out of it opens in a new tab.
+    """
+    state = run_state()
+    result = state["last_result"]
+    return templates.TemplateResponse(
+        request,
+        "duplicates.html",
+        {
+            "active_page": "duplicates",
+            # Only a sweep's result belongs here. A finished generation run leaves its
+            # own result in the same slot, and it is reported on its own screen.
+            "last_result": result
+            if (result or {}).get("source") == "question-duplicate-sweep"
+            else None,
+            "last_error": state["last_error"],
+            "last_traceback": state["last_traceback"],
+            "running": state["running"],
+            "storage_error": None,
+        },
+    )

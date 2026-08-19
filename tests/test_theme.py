@@ -26,7 +26,7 @@ TEMPLATES = Path(__file__).parent.parent / "app" / "templates"
 # Every screen a user can navigate to, and the route that renders it. Sub-pages
 # that need seeded data are covered in their own modules; these are the four the
 # nav offers, which is where drift between screens is visible.
-SCREENS = ("/", "/admin/skill-badges", "/admin/docs", "/admin/logs")
+SCREENS = ("/", "/duplicates", "/admin/skill-badges", "/admin/docs", "/admin/logs")
 
 
 def extract_toolbar(body: str) -> str:

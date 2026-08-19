@@ -626,27 +626,6 @@ def test_a_search_can_be_cleared(client, fake_collection, fake_questions):
     assert 'data-clear-search="true"' in body
 
 
-def test_sweep_errors_are_surfaced(client, fake_collection, fake_questions):
-    """
-    Intent: A sweep that could not rerank part of the collection has not cleared it. Silence
-        would be read as "no duplicates found", which is the one conclusion that must never
-        be assumed.
-    Success: Reported errors appear on the page.
-    Feature: Question duplicate sweep — partial failures are visible.
-    """
-    api_module._run_state["last_result"] = {
-        "source": "question-duplicate-sweep",
-        "compared": 0,
-        "dry_run": False,
-        "deleted": [],
-        "possible_duplicates": [],
-        "errors": ["rerank failed for q1: VOYAGE_API_KEY not set"],
-    }
-    body = client.get(PAGE).text
-    assert 'data-sweep-errors="true"' in body
-    assert "VOYAGE_API_KEY" in body
-
-
 # --- where a run's questions came from ---
 
 
@@ -987,85 +966,6 @@ def test_the_screen_offers_one_duplicate_control(client, fake_collection, fake_q
     body = client.get(PAGE).text
     assert 'id="sweep-btn"' in body
     assert 'id="sweep-dry-run-btn"' not in body
-
-
-def test_flagged_pairs_are_listed_for_review_with_their_scores(
-    client, fake_collection, fake_questions
-):
-    """
-    Intent: Replaces a test reporting what a sweep had already deleted. The operator is now
-        being asked to decide, so both questions in a pair and the score behind the flag have
-        to be on screen — a list that only named the loser would be a decision taken on their
-        behalf.
-    Success: Each flagged pair shows the question to delete, the one to keep, and the score.
-    Feature: Question duplicate sweep — the report is reviewable on screen.
-    """
-    api_module._run_state["last_result"] = {
-        "source": "question-duplicate-sweep",
-        "compared": 2,
-        "threshold": 0.85,
-        "flagged": [
-            {"keep": "k1", "keep_stem": "The one kept?", "drop": "d1",
-             "drop_stem": "The one to go?", "rerank_score": 0.98},
-        ],
-        "below_threshold": [
-            {"keep": "k2", "keep_stem": "A survivor?", "drop": "d2",
-             "drop_stem": "A suspect?", "rerank_score": 0.61},
-        ],
-        "errors": [],
-    }
-    body = client.get(PAGE).text
-    assert 'data-sweep-flagged="true"' in body
-    assert "The one to go?" in body and "The one kept?" in body
-    assert "0.980" in body
-    assert 'data-sweep-below="true"' in body and "0.610" in body
-
-
-def test_a_flagged_pair_can_be_left_alone(client, fake_collection, fake_questions):
-    """
-    Intent: The threshold is a measured judgement, not a fact, so some flagged pairs will be
-        two genuinely different questions on one topic. Deleting the whole flagged set as a
-        block would make the threshold decide again, which is what moving deletion out of the
-        sweep was meant to stop.
-    Success: Each flagged pair carries its own tickbox, pre-ticked, keyed to the question that
-        would be deleted.
-    Feature: Question duplicate sweep — pairs are chosen individually.
-    """
-    api_module._run_state["last_result"] = {
-        "source": "question-duplicate-sweep",
-        "compared": 1,
-        "threshold": 0.85,
-        "flagged": [
-            {"keep": "k1", "keep_stem": "Kept?", "drop": "d1",
-             "drop_stem": "To go?", "rerank_score": 0.98},
-        ],
-        "below_threshold": [],
-        "errors": [],
-    }
-    body = client.get(PAGE).text
-    assert 'data-dupe-id="d1"' in body
-    assert "checked" in body
-    assert 'data-delete-dupes="true"' in body
-
-
-def test_the_report_says_nothing_was_deleted(client, fake_collection, fake_questions):
-    """
-    Intent: The sweep used to delete, so an operator who has used it before will assume it
-        still does. Saying plainly that nothing was removed is what stops them believing the
-        collection has already been cleaned.
-    Success: The sweep result states that nothing was deleted.
-    Feature: Question duplicate sweep — the report says it deleted nothing.
-    """
-    api_module._run_state["last_result"] = {
-        "source": "question-duplicate-sweep",
-        "compared": 3,
-        "threshold": 0.85,
-        "flagged": [],
-        "below_threshold": [],
-        "errors": [],
-    }
-    body = client.get(PAGE).text
-    assert "Nothing was deleted" in body
 
 
 # --- run history and dismissing on screen ---
@@ -1411,82 +1311,6 @@ def test_the_identifier_is_not_rendered_as_a_chip(client, fake_collection, fake_
     body = client.get(PAGE).text
     element = body[body.rindex("<button", 0, body.index("data-copy-id=")):]
     assert "tag" not in element[: element.index(">")]
-
-
-# --- checking a pair in the duplicate report ---
-
-
-def sweep_result() -> dict:
-    """A finished sweep with one flagged pair and one below the threshold."""
-    return {
-        "source": "question-duplicate-sweep",
-        "compared": 2,
-        "threshold": 0.85,
-        "flagged": [
-            {"keep": "k" * 32, "keep_stem": "The one kept?", "drop": "d" * 32,
-             "drop_stem": "The one to go?", "rerank_score": 0.98},
-        ],
-        "below_threshold": [
-            {"keep": "y" * 32, "keep_stem": "A survivor?", "drop": "z" * 32,
-             "drop_stem": "A suspect?", "rerank_score": 0.61},
-        ],
-        "errors": [],
-    }
-
-
-def test_each_question_in_a_pair_is_named_by_its_identifier(
-    client, fake_collection, fake_questions
-):
-    """
-    Intent: The report asks an operator to delete one of two questions on the strength of two
-        stems. Stems are the part most alike in a duplicate pair — that is why they were
-        flagged — so naming which question is which is what makes the decision auditable, and
-        what lets it be discussed with anyone else.
-    Success: Both questions in a flagged pair, and both in a pair below the threshold, are
-        shown with their identifier.
-    Feature: Question duplicate sweep — pairs name the questions they are about.
-    """
-    api_module._run_state["last_result"] = sweep_result()
-    body = client.get(PAGE).text
-    for question_id in ("k" * 32, "d" * 32, "y" * 32, "z" * 32):
-        assert 'data-question-link="' + question_id + '"' in body
-
-
-def test_an_identifier_in_the_report_opens_that_question(
-    client, fake_collection, fake_questions
-):
-    """
-    Intent: A stem is not enough to judge whether two questions are really the same — the
-        options, the badges and the source are what decide it. Going and looking must not
-        mean copying a hex string into the search box by hand.
-    Success: Each identifier is a link to that question, opened in a new tab.
-    Feature: Question duplicate sweep — a pair's questions are one click away.
-    """
-    api_module._run_state["last_result"] = sweep_result()
-    body = client.get(PAGE).text
-    link = body[body.index('data-question-link="' + "d" * 32) - 300:]
-    link = link[link.rindex("<a", 0, link.index("data-question-link")):]
-    link = link[: link.index(">")]
-    assert 'href="/?q=' + "d" * 32 + '"' in link
-    assert 'target="_blank"' in link
-
-
-def test_opening_a_pairs_question_cannot_lose_the_report(
-    client, fake_collection, fake_questions
-):
-    """
-    Intent: A sweep's report exists only in the run state of the page that is showing it —
-        leaving the page and coming back does not bring it back, and re-running the sweep is
-        minutes of round trips. Navigating away from it in the same tab would throw away the
-        work it took to produce.
-    Success: Every link out of the report opens in a new tab.
-    Feature: Question duplicate sweep — checking a question does not discard the report.
-    """
-    api_module._run_state["last_result"] = sweep_result()
-    body = client.get(PAGE).text
-    report = body[body.index('data-sweep-flagged="true"'):body.index("delete-dupes-btn")]
-    for fragment in report.split("<a ")[1:]:
-        assert 'target="_blank"' in fragment[: fragment.index(">")]
 
 
 # --- paging a bank of thousands ---

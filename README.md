@@ -198,8 +198,9 @@ question.
 The screens are not a flat list of peers. Writing questions is the job; the badge catalog,
 the corpus and the logs are curation you visit when something about the material is wrong.
 So `base.html` renders one app shell — a persistent sidebar that does not scroll with the
-work, and a sticky header per screen — with **Questions** alone at the top and the three
-curation screens below a rule under an **Admin** heading. Nothing enforces that boundary,
+work, and a sticky header per screen — with **Questions** and **Duplicates**
+at the top — both act on the questions themselves — and the three curation screens below a
+rule under an **Admin** heading. Nothing enforces that boundary,
 because there are no authorizations and both areas are reachable by anyone who can reach
 the service; the layout is the only thing that tells an author which side of it they are
 on, which is why it is drawn in the layout rather than repeated as a label on each link.
@@ -663,6 +664,14 @@ Calibrated against `rerank-2.5` on the live collection:
 
 `question_rerank_delete_threshold` is **0.85**, inside that gap. Note the reranker does not
 return 1.0 for identical text, so a threshold near 1.0 would never fire.
+
+The sweep and its report have their own screen at `/duplicates`. They used to sit on the
+questions list, where every entry in the report linked to a question — which meant linking
+back to the page the report was on — and where a long list about pairs of questions
+outweighed the list of questions it sat above. A sweep is also not that screen's work: it
+is done occasionally to the whole collection, not in the course of writing or reviewing.
+The two jobs still share one run slot, so each screen names the other's run rather than
+reporting it as its own.
 
 The sweep runs in the background on the same run state a generation run uses, reporting
 after each question — the work is one round trip per stored question, and how many there

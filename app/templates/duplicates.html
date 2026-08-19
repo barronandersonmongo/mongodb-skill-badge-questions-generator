@@ -1,0 +1,373 @@
+{% extends "base.html" %}
+{% set api = "/api/questions" %}
+
+{% block title %}Duplicates — Skill Badge Questions{% endblock %}
+
+{% block content %}
+{% import "_ui.html" as ui %}
+
+{# A question named by its identifier, linking to it. A stem alone cannot be checked —
+   the options, the badges and the source are what decide whether two questions are
+   really the same — and the search box takes an identifier, so that is the address.
+   Opened in a new tab: this report exists only in the run state of the page showing
+   it, so navigating away in the same tab throws away minutes of round trips. #}
+{% macro question_link(question_id) %}
+<a class="dupe-id font-monospace" href="/?q={{ question_id }}" target="_blank"
+   rel="noopener" title="{{ question_id }} — open this question in a new tab"
+   data-question-link="{{ question_id }}">{{ question_id[:8] }}</a>
+{% endmacro %}
+
+{% call ui.page_header(
+    "Duplicates",
+    "Compares every stored question with its nearest neighbours and reports the pairs "
+    "worth looking at. Nothing is deleted by comparing — you choose from the report.") %}
+  <button class="btn btn-primary" id="sweep-btn" type="button">Find duplicates</button>
+{% endcall %}
+
+<div id="run-alert" class="alert d-none" role="status"></div>
+
+<div class="card mb-3 d-none" id="progress-panel" data-progress-panel="true">
+  <div class="card-body py-3">
+    <div class="d-flex justify-content-between align-items-baseline mb-1">
+      <span class="fw-semibold" data-phase="true">Starting…</span>
+      <span class="font-monospace small" data-headline="true"></span>
+    </div>
+    <div class="small mb-2" data-status-line="true"></div>
+    <div class="progress mb-2" role="progressbar" style="height: 1.25rem;">
+      <div class="progress-bar progress-bar-striped progress-bar-animated"
+           id="progress-bar" data-progress-bar="true" style="width: 0%;">0%</div>
+    </div>
+    {# A sweep's figures. A generation run's — sections walked, cost, questions per
+       page — describe work a sweep does not do. #}
+    <div class="row row-cols-2 row-cols-md-4 g-2 small" data-sweep-stats="true">
+      <div><div class="text-body-secondary">Compared</div><div data-stat="sweep-compared">—</div></div>
+      <div><div class="text-body-secondary">Pairs found</div><div data-stat="sweep-pairs">—</div></div>
+      <div><div class="text-body-secondary">Rate</div><div data-stat="sweep-rate">—</div></div>
+      <div><div class="text-body-secondary">Remaining</div><div data-stat="sweep-eta">—</div></div>
+      <div><div class="text-body-secondary">Elapsed</div><div class="font-monospace" data-stat="elapsed">—</div></div>
+    </div>
+  </div>
+</div>
+
+{% if storage_error %}
+<div class="alert alert-danger">
+  <strong>Cannot reach MongoDB.</strong>
+  <div class="small font-monospace mt-1">{{ storage_error }}</div>
+</div>
+{% endif %}
+
+{% if last_error %}
+<div class="alert alert-danger">
+  <strong>The last sweep failed.</strong>
+  <div class="small mt-1">{{ last_error }}</div>
+  {% if last_traceback %}
+  <details class="mt-2">
+    <summary class="small">Show stack trace</summary>
+    <pre class="small font-monospace mb-0 mt-2 p-2 bg-body rounded border overflow-auto"
+         style="max-height: 20rem;">{{ last_traceback }}</pre>
+  </details>
+  {% endif %}
+</div>
+{% elif last_result %}
+<div class="alert alert-success" data-last-result="true">
+  <strong>Last duplicate sweep.</strong>
+  <div class="mt-1">
+    {{ last_result.compared }} pair(s) compared. Nothing was deleted — choose below.
+  </div>
+  {% if last_result.flagged %}
+  <div class="mt-2" data-sweep-flagged="true">
+    <div class="small mb-2">
+      {{ last_result.flagged | length }} pair(s) scored
+      {{ "%.2f"|format(last_result.threshold) }} or above. The ticked question is the one
+      that would go; its pair is kept because it is filed under more badges, or is older.
+      Untick anything you judge to be a genuinely different question.
+    </div>
+    <ul class="list-unstyled small mb-2">
+      {% for pair in last_result.flagged %}
+      <li class="mb-2">
+        <label class="d-flex gap-2">
+          <input type="checkbox" class="form-check-input mt-1 flex-shrink-0 js-dupe"
+                 data-dupe-id="{{ pair.drop }}" checked>
+          <span>
+            <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
+            <span class="d-block">
+              Delete: {{ question_link(pair.drop) }}
+              <span class="fst-italic">{{ pair.drop_stem }}</span>
+            </span>
+            <span class="d-block text-body-secondary">
+              Keep: {{ question_link(pair.keep) }}
+              <span class="fst-italic">{{ pair.keep_stem }}</span>
+            </span>
+          </span>
+        </label>
+      </li>
+      {% endfor %}
+    </ul>
+    <button class="btn btn-sm btn-danger" id="delete-dupes-btn" type="button"
+            data-delete-dupes="true">
+      Delete ticked questions
+    </button>
+  </div>
+  {% endif %}
+  {% if last_result.below_threshold %}
+  <details class="mt-2" data-sweep-below="true">
+    <summary class="small">
+      {{ last_result.below_threshold | length }} pair(s) below the threshold — not flagged
+    </summary>
+    <ul class="small mb-0 mt-2">
+      {% for pair in last_result.below_threshold %}
+      <li>
+        {{ question_link(pair.drop) }} <span class="fst-italic">{{ pair.drop_stem }}</span>
+        vs {{ question_link(pair.keep) }} <span class="fst-italic">{{ pair.keep_stem }}</span>
+        <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+  {% if last_result.errors %}
+  <div class="mt-2 small" data-sweep-errors="true">
+    <strong>Not everything could be compared:</strong>
+    <ul class="mb-0">{% for e in last_result.errors %}<li class="font-monospace">{{ e }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+</div>
+{% else %}
+{# Not an error and not an empty result — the sweep has simply not been run. Saying so
+   is better than an empty screen that reads as "no duplicates". #}
+{% call ui.empty_state() %}
+  No sweep has been run yet. <strong>Find duplicates</strong> compares every stored
+  question with its nearest neighbours — a round trip each, so it takes a few minutes on
+  a large collection.
+{% endcall %}
+{% endif %}
+
+{# The same dialog the questions screen uses, and the same typed confirmation: deleting
+   a batch must be no easier to trigger by accident than deleting one. #}
+<div class="modal fade" id="delete-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5">Delete these questions?</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-body-secondary mb-2">
+          Deleting is final — nothing can re-create these questions.
+        </p>
+        <blockquote class="border-start border-3 ps-3 mb-3" data-delete-stem="true"></blockquote>
+        <label for="delete-confirm" class="form-label small">
+          Type <strong>delete</strong> to confirm.
+        </label>
+        <input class="form-control" id="delete-confirm" type="text" autocomplete="off"
+               data-delete-confirm="true" placeholder="delete">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirm-delete" disabled
+                data-confirm-delete="true">Delete permanently</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = "{{ api }}";
+const alertBox = document.getElementById("run-alert");
+const panel = document.getElementById("progress-panel");
+const bar = document.getElementById("progress-bar");
+let elapsedTimer = null;
+let startedAt = null;
+let clockSkewMs = 0;
+
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const pad = (n) => String(n).padStart(2, "0");
+  return pad(Math.floor(total / 3600)) + ":" + pad(Math.floor((total % 3600) / 60)) +
+    ":" + pad(total % 60);
+}
+
+function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return total + "s";
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return minutes + "m " + String(total % 60).padStart(2, "0") + "s";
+  return Math.floor(minutes / 60) + "h " + String(minutes % 60).padStart(2, "0") + "m";
+}
+
+// The run started on the server, and the server is what is asked when it began: a
+// reload, or a trip to another screen and back, must not restart the count at zero.
+function adoptServerClock(state) {
+  if (state.server_time) clockSkewMs = Date.now() - state.server_time * 1000;
+  startedAt = state.started_at ? state.started_at * 1000 : null;
+}
+
+function elapsedSinceStart(until = null) {
+  if (startedAt === null) return null;
+  return (until !== null ? until : Date.now() - clockSkewMs) - startedAt;
+}
+
+function setStat(name, value) {
+  const cell = panel.querySelector('[data-stat="' + name + '"]');
+  if (cell) cell.textContent = value;
+}
+
+function setPanelState(kind, message) {
+  panel.classList.remove("d-none", "border-info", "border-success", "border-danger");
+  if (kind) panel.classList.add("border-" + kind, "border-2");
+  const line = panel.querySelector("[data-status-line]");
+  if (line) line.textContent = message || "";
+}
+
+function showAlert(kind, message) {
+  alertBox.className = "alert alert-" + kind;
+  alertBox.textContent = message;
+}
+
+function startPanelClock() {
+  const tick = () => {
+    const running = elapsedSinceStart();
+    setStat("elapsed", running === null ? "—" : formatElapsed(running));
+  };
+  tick();
+  if (elapsedTimer === null) elapsedTimer = setInterval(tick, 1000);
+}
+
+function stopElapsed() {
+  if (elapsedTimer !== null) { clearInterval(elapsedTimer); elapsedTimer = null; }
+}
+
+// One round trip per stored question, and how many there are is known before the first
+// one — so this is a real bar rather than an indeterminate one.
+function showProgress(p) {
+  if (!p || p.phase !== "comparing") return;
+  panel.classList.remove("d-none");
+  panel.querySelector("[data-phase]").textContent =
+    "Comparing every stored question with its nearest neighbours…";
+  bar.style.width = p.percent + "%";
+  bar.textContent = p.percent.toFixed(1) + "%";
+  panel.querySelector("[data-headline]").textContent =
+    p.compared + " / " + p.total + " questions";
+  setStat("sweep-compared", p.compared + " of " + p.total);
+  setStat("sweep-pairs", String(p.pairs || 0)
+    + (p.errors ? " · " + p.errors + " could not be compared" : ""));
+  setStat("sweep-rate", p.questions_per_minute
+    ? p.questions_per_minute.toFixed(0) + "/min" : "—");
+  setStat("sweep-eta", formatDuration(p.eta_seconds));
+  if (elapsedTimer === null) setStat("elapsed", formatDuration(p.elapsed_seconds));
+}
+
+async function pollStatus() {
+  const response = await fetch(API + "/generate/status");
+  const state = await response.json();
+  adoptServerClock(state);
+  showProgress(state.progress);
+
+  // A generation run and a sweep share one run slot. A run started on the questions
+  // screen is not this screen's work and is not reported as one.
+  if (state.running && state.kind !== "duplicate-sweep") {
+    showAlert("info", "A generation run is in progress. A sweep cannot start until it finishes.");
+    panel.classList.add("d-none");
+    setTimeout(pollStatus, 2000);
+    return;
+  }
+  if (state.running) {
+    alertBox.classList.add("d-none");
+    setPanelState("info", "Nothing is deleted by comparing — you choose from the report.");
+    startPanelClock();
+    setTimeout(pollStatus, 2000);
+    return;
+  }
+  stopElapsed();
+  bar.classList.remove("progress-bar-animated");
+  if (state.last_error) {
+    setPanelState("danger", "Sweep failed: " + state.last_error);
+    showAlert("danger", "Sweep failed: " + state.last_error);
+    return;
+  }
+  const duration = state.finished_at
+    ? elapsedSinceStart(state.finished_at * 1000)
+    : elapsedSinceStart();
+  const took = duration === null ? "" : " Took " + formatElapsed(duration) + ".";
+  alertBox.classList.add("d-none");
+  setPanelState("success", "Sweep finished." + took + " Reloading…");
+  window.location.reload();
+}
+
+// The sweep only reports, so there is nothing to confirm before running it.
+document.getElementById("sweep-btn").addEventListener("click", async () => {
+  showAlert("info", "Comparing stored questions — nothing will be deleted…");
+  const response = await fetch(API + "/duplicates/sweep", {method: "POST"});
+  if (response.status === 409) {
+    showAlert("warning", "A run is already in progress.");
+    return;
+  }
+  if (!response.ok) {
+    showAlert("danger", "Could not start the sweep (HTTP " + response.status + ").");
+    return;
+  }
+  pollStatus();
+});
+
+// Deleting from the report ends at the same typed confirmation the questions screen
+// uses. A batch must be no easier to trigger by accident than a single question.
+const deleteModalEl = document.getElementById("delete-modal");
+const deleteModal = new bootstrap.Modal(deleteModalEl);
+const deleteConfirmInput = document.getElementById("delete-confirm");
+const confirmDeleteButton = document.getElementById("confirm-delete");
+let pendingDeleteIds = null;
+
+function resetDeleteDialog() {
+  deleteConfirmInput.value = "";
+  confirmDeleteButton.disabled = true;
+  confirmDeleteButton.textContent = "Delete permanently";
+}
+
+deleteConfirmInput.addEventListener("input", () => {
+  confirmDeleteButton.disabled = deleteConfirmInput.value.trim().toLowerCase() !== "delete";
+});
+
+const deleteDupesButton = document.getElementById("delete-dupes-btn");
+if (deleteDupesButton) {
+  deleteDupesButton.addEventListener("click", () => {
+    const ticked = Array.from(document.querySelectorAll(".js-dupe"))
+      .filter((box) => box.checked)
+      .map((box) => box.dataset.dupeId);
+    if (ticked.length === 0) {
+      showAlert("warning", "Nothing is ticked, so there is nothing to delete.");
+      return;
+    }
+    pendingDeleteIds = ticked;
+    // textContent, never innerHTML: a stem is model-written text.
+    deleteModalEl.querySelector("[data-delete-stem]").textContent =
+      ticked.length + " question(s) will be deleted.";
+    resetDeleteDialog();
+    deleteModal.show();
+  });
+}
+
+confirmDeleteButton.addEventListener("click", async () => {
+  if (!pendingDeleteIds) return;
+  confirmDeleteButton.disabled = true;
+  confirmDeleteButton.textContent = "Deleting…";
+  const response = await fetch(API + "/duplicates/delete", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({question_ids: pendingDeleteIds}),
+  });
+  if (!response.ok) {
+    deleteModal.hide();
+    showAlert("danger", "Could not delete (HTTP " + response.status + ").");
+    return;
+  }
+  window.location.reload();
+});
+
+// A sweep may already be going when this page loads — started here before a reload, or
+// on the questions screen.
+if ({{ "true" if running else "false" }}) { pollStatus(); }
+</script>
+{% endblock %}

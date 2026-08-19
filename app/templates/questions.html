@@ -49,11 +49,12 @@ per_page={{ pagination.per_page }}&
      href="{{ api }}?{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
     Export JSON
   </a>
-  {# Placed apart from the four above, and coloured for what it leads to: the
-     other actions only read or add, while this one proposes deletions. #}
-  <button class="btn btn-outline-danger" id="sweep-btn" type="button">
+  {# Placed apart from the four above, and coloured for what it leads to: the other
+     actions only read or add, while this one leads to a screen that proposes
+     deletions. #}
+  <a class="btn btn-outline-danger" id="sweep-btn" href="/duplicates">
     Find duplicates
-  </button>
+  </a>
 {% endcall %}
 
 <div id="run-alert" class="alert d-none" role="status"></div>
@@ -80,14 +81,6 @@ per_page={{ pagination.per_page }}&
       <div><div class="text-body-secondary">Projected</div><div data-stat="projected">—</div></div>
       <div><div class="text-body-secondary">Questions/min</div><div data-stat="qpm">—</div></div>
       <div><div class="text-body-secondary">Per question</div><div data-stat="per-question">—</div></div>
-    </div>
-    {# A sweep's figures. The walk's — sections, cost, questions per page — describe
-       work a sweep does not do, so it gets its own row rather than a row of dashes. #}
-    <div class="row row-cols-2 row-cols-md-4 g-2 small mb-2 d-none" data-sweep-stats="true">
-      <div><div class="text-body-secondary">Compared</div><div data-stat="sweep-compared">—</div></div>
-      <div><div class="text-body-secondary">Pairs found</div><div data-stat="sweep-pairs">—</div></div>
-      <div><div class="text-body-secondary">Rate</div><div data-stat="sweep-rate">—</div></div>
-      <div><div class="text-body-secondary">Remaining</div><div data-stat="sweep-eta">—</div></div>
     </div>
     <div class="d-flex justify-content-between align-items-center gap-2">
       <div class="small text-body-secondary text-truncate" data-stat="current-page">—</div>
@@ -127,13 +120,15 @@ per_page={{ pagination.per_page }}&
   </details>
   {% endif %}
 </div>
-{% elif last_result %}
+{% elif last_result and last_result.source != "question-duplicate-sweep" %}
+{# A finished sweep's report is not shown here. It is a long list about pairs of
+   questions rather than about this screen's work, and every link on it leads to a
+   question — which, when the report sat on this page, meant leading back to the page
+   it was on. It lives on /duplicates. #}
 <div class="alert alert-success alert-dismissible" data-last-result="true">
   <button type="button" class="btn-close" id="dismiss-result-btn" data-dismiss-result="true"
           aria-label="Dismiss"></button>
-  {% if last_result.source == "question-duplicate-sweep" %}
-  <strong>Last duplicate sweep.</strong>
-  {% elif last_result.source == "badge-page-walk" %}
+  {% if last_result.source == "badge-page-walk" %}
   <strong>Last run:</strong>
   {{ last_result.inserted }} question(s) stored from
   {{ last_result.pages_done }} documentation page(s)
@@ -233,68 +228,6 @@ per_page={{ pagination.per_page }}&
     Cross-badge review did not run, so these questions are filed only under the
     badge(s) they were written for: {{ last_result.attribution_error }}
   </div>
-  {% endif %}
-  {% if last_result.source == "question-duplicate-sweep" %}
-  <div class="mt-1">
-    {{ last_result.compared }} pair(s) compared. Nothing was deleted — choose below.
-  </div>
-  {% if last_result.flagged %}
-  <div class="mt-2" data-sweep-flagged="true">
-    <div class="small mb-2">
-      {{ last_result.flagged | length }} pair(s) scored
-      {{ "%.2f"|format(last_result.threshold) }} or above. The ticked question is the one
-      that would go; its pair is kept because it is filed under more badges, or is older.
-      Untick anything you judge to be a genuinely different question.
-    </div>
-    <ul class="list-unstyled small mb-2">
-      {% for pair in last_result.flagged %}
-      <li class="mb-2">
-        <label class="d-flex gap-2">
-          <input type="checkbox" class="form-check-input mt-1 flex-shrink-0 js-dupe"
-                 data-dupe-id="{{ pair.drop }}" checked>
-          <span>
-            <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
-            <span class="d-block">
-              Delete: {{ question_link(pair.drop) }}
-              <span class="fst-italic">{{ pair.drop_stem }}</span>
-            </span>
-            <span class="d-block text-body-secondary">
-              Keep: {{ question_link(pair.keep) }}
-              <span class="fst-italic">{{ pair.keep_stem }}</span>
-            </span>
-          </span>
-        </label>
-      </li>
-      {% endfor %}
-    </ul>
-    <button class="btn btn-sm btn-danger" id="delete-dupes-btn" type="button"
-            data-delete-dupes="true">
-      Delete ticked questions
-    </button>
-  </div>
-  {% endif %}
-  {% if last_result.below_threshold %}
-  <details class="mt-2" data-sweep-below="true">
-    <summary class="small">
-      {{ last_result.below_threshold | length }} pair(s) below the threshold — not flagged
-    </summary>
-    <ul class="small mb-0 mt-2">
-      {% for pair in last_result.below_threshold %}
-      <li>
-        {{ question_link(pair.drop) }} <span class="fst-italic">{{ pair.drop_stem }}</span>
-        vs {{ question_link(pair.keep) }} <span class="fst-italic">{{ pair.keep_stem }}</span>
-        <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
-      </li>
-      {% endfor %}
-    </ul>
-  </details>
-  {% endif %}
-  {% if last_result.errors %}
-  <div class="mt-2 small" data-sweep-errors="true">
-    <strong>Not everything could be compared:</strong>
-    <ul class="mb-0">{% for e in last_result.errors %}<li class="font-monospace">{{ e }}</li>{% endfor %}</ul>
-  </div>
-  {% endif %}
   {% endif %}
   {% if last_result.rejected %}
   <details class="mt-2">
@@ -761,10 +694,8 @@ const panel = document.getElementById("progress-panel");
 const bar = document.getElementById("progress-bar");
 const stopButton = document.getElementById("stop-run-btn");
 const statsPanel = panel.querySelector("[data-progress-stats]");
-const sweepStatsPanel = panel.querySelector("[data-sweep-stats]");
 
 const PHASES = {
-  comparing: "Comparing every stored question with its nearest neighbours…",
   resolving: "Working out which documentation this badge is about…",
   writing: "Reading sections and writing questions…",
   stopped: "Stopped",
@@ -831,25 +762,6 @@ function showProgress(p) {
   if (!p) return;
   panel.classList.remove("d-none");
   panel.querySelector("[data-phase]").textContent = PHASES[p.phase] || p.phase || "Working…";
-
-  // A sweep is one round trip per stored question and reports how many it has done of
-  // how many there are, which is a real bar rather than an indeterminate one.
-  if (p.phase === "comparing") {
-    bar.classList.remove("bg-secondary");
-    bar.style.width = p.percent + "%";
-    bar.textContent = p.percent.toFixed(1) + "%";
-    panel.querySelector("[data-headline]").textContent =
-      p.compared + " / " + p.total + " questions";
-    setStat("sweep-compared", p.compared + " of " + p.total);
-    setStat("sweep-pairs", String(p.pairs || 0)
-      + (p.errors ? " · " + p.errors + " could not be compared" : ""));
-    setStat("sweep-rate", p.questions_per_minute
-      ? p.questions_per_minute.toFixed(0) + "/min" : "—");
-    setStat("sweep-eta", formatDuration(p.eta_seconds));
-    if (elapsedTimer === null) setStat("elapsed", formatDuration(p.elapsed_seconds));
-    setStat("current-page", "Nothing is deleted by comparing — you choose from the report.");
-    return;
-  }
 
   // A percentage is only shown once the page set is known — while resolving, the walk
   // genuinely does not know how much work there is, and inventing a number would be
@@ -938,41 +850,46 @@ async function pollStatus() {
   const state = await response.json();
   adoptServerClock(state);
   showProgress(state.progress);
-  // Two different jobs share this state: a generation run, which writes questions and
-  // costs money, and a duplicate sweep, which only compares what is already stored.
-  // They are reported in their own words. Saying "writing questions" for a sweep read
-  // as a generation run having started with nothing selected — the one thing the
-  // screen must never be ambiguous about, since one of the two spends money.
+  // A generation run and a duplicate sweep share one run slot, so a sweep started on
+  // the other screen shows up here. It is not this screen's work and is not reported
+  // as such: it is named, with a way to go and watch it, and nothing else.
   const sweeping = state.kind === "duplicate-sweep";
+  if (state.running && sweeping) {
+    stopButton.classList.add("d-none");
+    statsPanel.classList.add("d-none");
+    showAlert("info", "A duplicate sweep is running. Watch it on the duplicates screen.");
+    const link = document.createElement("a");
+    link.href = "/duplicates";
+    link.className = "ms-2";
+    link.textContent = "Open duplicates";
+    alertBox.append(link);
+    panel.classList.add("d-none");
+    setTimeout(pollStatus, 2000);
+    return;
+  }
   if (state.running) {
-    // Only a generation run can be stopped between pages; a sweep has no such seam.
-    stopButton.classList.toggle("d-none", sweeping);
-    // The stats are a generation run's — pages walked, questions written, cost — and
-    // none of them applies to a sweep, so they are not shown reading "—" for it.
-    statsPanel.classList.toggle("d-none", sweeping);
-    sweepStatsPanel.classList.toggle("d-none", !sweeping);
+    stopButton.classList.remove("d-none");
+    statsPanel.classList.remove("d-none");
     alertBox.classList.add("d-none");
-    setPanelState("info", sweeping
-      ? "Comparing stored questions — nothing will be deleted."
-      : "Writing questions — you can leave this page open and come back.");
+    setPanelState("info", "Writing questions — you can leave this page open and come back.");
     startPanelClock();
-    // A sweep creates nothing, so there is nothing to watch for; polling the count
-    // would only reload the page underneath the operator.
-    if (!sweeping) await showNewQuestions();
+    await showNewQuestions();
     panel.classList.remove("d-none");
     setTimeout(pollStatus, 2000);
     return;
   }
+  // A sweep that finished elsewhere leaves its result behind; this screen has nothing
+  // to say about it and reloading for it would be a page turn nobody asked for.
+  if (sweeping) { stopElapsed(); return; }
   stopButton.classList.add("d-none");
-  statsPanel.classList.toggle("d-none", sweeping);
-  sweepStatsPanel.classList.toggle("d-none", !sweeping);
+  statsPanel.classList.remove("d-none");
   stopElapsed();
   bar.classList.remove("progress-bar-animated");
   // The finished run carries the final figures, which the last progress snapshot may
   // predate.
   if (state.last_result) showProgress(state.last_result);
   if (state.last_error) {
-    const what = (sweeping ? "Sweep failed: " : "Run failed: ") + state.last_error;
+    const what = "Run failed: " + state.last_error;
     setPanelState("danger", what);
     showAlert("danger", what);
     if (state.last_traceback) {
@@ -996,8 +913,7 @@ async function pollStatus() {
   const took = duration === null ? "" : " Took " + formatElapsed(duration) + ".";
   if (duration !== null) setStat("elapsed", formatElapsed(duration));
   alertBox.classList.add("d-none");
-  setPanelState("success", (sweeping ? "Sweep finished." : "Run finished.") + took +
-    " Reloading…");
+  setPanelState("success", "Run finished." + took + " Reloading…");
   window.location.reload();
 }
 
@@ -1213,23 +1129,6 @@ document.getElementById("start-run").addEventListener("click", async () => {
   pollStatus();
 });
 
-// The sweep only reports, so there is nothing to confirm before running it — the
-// confirmation belongs to the deletion, which now happens afterwards on a list the
-// operator has read.
-document.getElementById("sweep-btn").addEventListener("click", async () => {
-  showAlert("info", "Comparing stored questions — nothing will be deleted…", {timed: true});
-  const response = await fetch(API + "/duplicates/sweep", {method: "POST"});
-  if (response.status === 409) {
-    showAlert("warning", "A run is already in progress.");
-    return;
-  }
-  if (!response.ok) {
-    showAlert("danger", "Could not start the sweep (HTTP " + response.status + ").");
-    return;
-  }
-  pollStatus();
-});
-
 // Deleting is the only irreversible act on this screen and the only editorial one,
 // so it is guarded twice over: the question is shown again in the dialog, and the
 // word has to be typed. A single misplaced click cannot lose a question.
@@ -1238,10 +1137,6 @@ const deleteModal = new bootstrap.Modal(deleteModalEl);
 const deleteConfirmInput = document.getElementById("delete-confirm");
 const confirmDeleteButton = document.getElementById("confirm-delete");
 let pendingDeleteId = null;
-// Set instead of pendingDeleteId when the duplicate report is what is being acted on.
-// Both paths end at the same typed confirmation, so deleting a batch is no easier to
-// trigger by accident than deleting one.
-let pendingDeleteIds = null;
 
 function resetDeleteDialog() {
   deleteConfirmInput.value = "";
@@ -1256,7 +1151,6 @@ deleteConfirmInput.addEventListener("input", () => {
 
 deleteModalEl.addEventListener("hidden.bs.modal", () => {
   pendingDeleteId = null;
-  pendingDeleteIds = null;
   resetDeleteDialog();
 });
 
@@ -1265,8 +1159,7 @@ deleteModalEl.addEventListener("shown.bs.modal", () => deleteConfirmInput.focus(
 document.querySelectorAll(".js-delete").forEach((button) => {
   button.addEventListener("click", () => {
     pendingDeleteId = button.closest("[data-question-id]").dataset.questionId;
-    pendingDeleteIds = null;
-    // textContent, never innerHTML: a stem is model-written text.
+      // textContent, never innerHTML: a stem is model-written text.
     deleteModalEl.querySelector("[data-delete-stem]").textContent =
       button.dataset.stem || "";
     resetDeleteDialog();
@@ -1275,16 +1168,12 @@ document.querySelectorAll(".js-delete").forEach((button) => {
 });
 
 confirmDeleteButton.addEventListener("click", async () => {
-  if (!pendingDeleteId && !pendingDeleteIds) return;
+  if (!pendingDeleteId) return;
   confirmDeleteButton.disabled = true;
   confirmDeleteButton.textContent = "Deleting…";
-  const response = pendingDeleteIds
-    ? await fetch(API + "/duplicates/delete", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({question_ids: pendingDeleteIds}),
-      })
-    : await fetch(API + "/" + encodeURIComponent(pendingDeleteId), {method: "DELETE"});
+  const response = await fetch(
+    API + "/" + encodeURIComponent(pendingDeleteId), {method: "DELETE"}
+  );
   if (!response.ok) {
     deleteModal.hide();
     showAlert("danger", "Could not delete (HTTP " + response.status + ").");
@@ -1292,26 +1181,6 @@ confirmDeleteButton.addEventListener("click", async () => {
   }
   window.location.reload();
 });
-
-const deleteDupesButton = document.getElementById("delete-dupes-btn");
-if (deleteDupesButton) {
-  deleteDupesButton.addEventListener("click", () => {
-    const ticked = Array.from(document.querySelectorAll(".js-dupe"))
-      .filter((box) => box.checked)
-      .map((box) => box.dataset.dupeId);
-    if (ticked.length === 0) {
-      showAlert("warning", "Nothing is ticked, so there is nothing to delete.");
-      return;
-    }
-    pendingDeleteId = null;
-    pendingDeleteIds = ticked;
-    deleteModalEl.querySelector("[data-delete-stem]").textContent =
-      ticked.length + " question(s) flagged as duplicates. The question kept from each "
-      + "pair stays.";
-    resetDeleteDialog();
-    deleteModal.show();
-  });
-}
 
 // A run may already be going when the page loads (started elsewhere, or a reload).
 if ({{ "true" if running else "false" }}) { pollStatus(); }
