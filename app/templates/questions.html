@@ -396,9 +396,15 @@
           </div>
           {% if question.source_urls %}
           <div class="mt-2">
+            {# The visible text is the canonical URL, because that is what identifies
+               the page. The link goes through our renderer: MongoDB serves these as raw
+               Markdown, which a browser shows as unformatted text. #}
             {% for url in question.source_urls %}
-            <a href="{{ url }}" target="_blank" rel="noopener"
-               class="d-block small text-truncate" style="max-width: 32rem;">{{ url }}</a>
+            <a href="/admin/docs/render?url={{ url | urlencode }}"
+               target="_blank" rel="noopener"
+               title="Open {{ url }}, rendered"
+               class="d-block small text-truncate font-monospace"
+               data-source-url="{{ url }}" style="max-width: 32rem;">{{ url }}</a>
             {% endfor %}
           </div>
           {% endif %}

@@ -8,18 +8,47 @@
   <strong>Cannot reach MongoDB.</strong>
   <div class="small font-monospace mt-1">{{ storage_error }}</div>
 </div>
+{% elif fetch_error %}
+<div class="alert alert-danger" data-fetch-error="true">
+  <strong>Could not fetch that page from MongoDB.</strong>
+  <div class="small font-monospace mt-1">{{ fetch_error }}</div>
+  <div class="small mt-2">
+    The docs are served through CloudFront, which refuses a caller that has asked for
+    too much too quickly — it usually clears on its own.
+    <a href="{{ requested_url }}" target="_blank" rel="noopener">Open the raw page</a>{% if has_stored_copy %},
+    or <a href="/admin/docs/page?url={{ requested_url | urlencode }}">read our stored
+    copy</a>{% endif %}.
+  </div>
+</div>
 {% else %}
 <nav aria-label="breadcrumb">
   <ol class="breadcrumb small" data-breadcrumb="true">
     <li class="breadcrumb-item"><a href="/admin/docs">Documentation corpus</a></li>
+    {% if live %}
+    <li class="breadcrumb-item active" aria-current="page">Live page</li>
+    {% else %}
     <li class="breadcrumb-item">
       <a href="/admin/docs/source?source={{ page.source | urlencode }}">
         {{ page.source.replace("https://www.mongodb.com/", "") }}
       </a>
     </li>
+    {% endif %}
     <li class="breadcrumb-item active" aria-current="page">{{ page.title }}</li>
   </ol>
 </nav>
+
+{% if live %}
+<div class="alert alert-info py-2 small" data-live-notice="true">
+  Fetched from MongoDB just now, not read from our corpus — so this is what MongoDB
+  publishes today, which may differ from the snapshot a question was written from.
+  {% if has_stored_copy %}
+  <a href="/admin/docs/page?url={{ page.url | urlencode }}">Read our stored copy</a>
+  to see the text the question actually came from.
+  {% else %}
+  This page is not in our corpus, so no question was written from it.
+  {% endif %}
+</div>
+{% endif %}
 
 <div class="d-flex justify-content-between align-items-start mb-3">
   <div>
@@ -30,7 +59,9 @@
     </p>
     <p class="text-body-secondary small mb-0">
       {{ (page.bytes / 1024) | round(1) }} KB
-      {% if page.fetched_at %}· fetched {{ page.fetched_at.strftime("%Y-%m-%d %H:%M UTC") }}{% endif %}
+      {% if page.fetched_at %}·
+        {{ "fetched just now" if live else "fetched" }}
+        {{ page.fetched_at.strftime("%Y-%m-%d %H:%M UTC") }}{% endif %}
     </p>
   </div>
   <div class="btn-group btn-group-sm" role="group">

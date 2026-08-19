@@ -131,6 +131,11 @@ class Settings:
     # search-knowledge returns the best chunks for a query and cannot be asked "give
     # me everything".
     docs_index_url: str = "https://www.mongodb.com/docs/llms.txt"
+    # The only host this program will fetch a page from on a visitor's behalf. The
+    # rendered-source view takes a URL and fetches it server-side, which is an SSRF
+    # hole unless the host is fixed — an attacker-supplied URL would otherwise reach
+    # anything the server can reach, including cloud metadata endpoints.
+    docs_domain: str = "www.mongodb.com"
     # ~10,000 pages, so the crawl is concurrent — but politely so, against a site
     # this program does not own.
     docs_fetch_concurrency: int = 8

@@ -19,7 +19,9 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -118,6 +120,52 @@ def source_pages(index_url: str, *, settings: Settings | None = None) -> list[st
     settings = settings or get_settings()
     pages, _ = index_links(_get(index_url, settings))
     return pages
+
+
+def is_docs_url(url: str, settings: Settings | None = None) -> bool:
+    """Whether this URL is a MongoDB documentation page this program may fetch.
+
+    The rendered-source view fetches a URL server-side on a visitor's request, so the
+    host has to be pinned. Left open it is a server-side request forgery hole: a crafted
+    URL would reach anything the server can reach — an internal service, a cloud
+    metadata endpoint — and return the response to whoever asked.
+
+    Checked on the parsed host rather than with a prefix match, because
+    `https://www.mongodb.com.evil.example/` starts with the right string and is not the
+    right host.
+    """
+    settings = settings or get_settings()
+    try:
+        parsed = urlparse(url or "")
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and parsed.hostname == settings.docs_domain
+
+
+def fetch_live_page(url: str, *, settings: Settings | None = None) -> dict[str, Any]:
+    """Fetch one documentation page from MongoDB now, for rendering.
+
+    Separate from the crawl: no stub filtering, no storing, no run bookkeeping. This is
+    the canonical page as it stands this minute, which is the point — the stored copy is
+    a snapshot and can have drifted since a question was written from it.
+
+    Raises ValueError for a URL outside the documentation host, so a caller cannot
+    forget the check.
+    """
+    settings = settings or get_settings()
+    if not is_docs_url(url, settings):
+        raise ValueError(
+            f"Refusing to fetch {url!r}: only https pages on "
+            f"{settings.docs_domain} can be rendered."
+        )
+    text = _get(url, settings)
+    return {
+        "url": url,
+        "title": page_title(text, url),
+        "text": text,
+        "bytes": len(text.encode("utf-8")),
+        "fetched_at": datetime.now(timezone.utc),
+    }
 
 
 def page_title(text: str, url: str) -> str:

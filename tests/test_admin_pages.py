@@ -744,3 +744,104 @@ def test_each_badge_row_can_be_linked_to_directly(client, fake_collection):
     )
     body = client.get("/admin/skill-badges").text
     assert 'id="badge-atlas-search"' in body
+
+
+# --- rendering the canonical page ---
+
+
+def test_the_canonical_page_is_fetched_and_rendered(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: MongoDB serves these pages as raw Markdown, which a browser shows as unformatted
+        text — so following a question's citation lands on something hard to read. Rendering it
+        with the viewer the stored copy uses makes a citation actually checkable.
+    Success: The route fetches the page and renders its content.
+    Feature: Documentation rendering — the canonical page is readable.
+    """
+    from app.services import doc_corpus
+
+    monkeypatch.setattr(
+        doc_corpus, "_get", lambda url, s: "# Replication\n\nHow replica sets work."
+    )
+    body = client.get(
+        "/admin/docs/render",
+        params={"url": "https://www.mongodb.com/docs/manual/replication.md"},
+    ).text
+    assert "Replication" in body
+    assert "How replica sets work." in body
+
+
+def test_the_live_view_says_it_is_not_the_stored_copy(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: The stored copy is the snapshot a question was written from and the live page is
+        what MongoDB publishes today; after a docs refresh they can differ. A reader checking a
+        question needs to know which one they are looking at, or a divergence looks like a
+        wrong question.
+    Success: The live view says so, and offers the stored copy when we have one.
+    Feature: Documentation rendering — live and stored are distinguished.
+    """
+    from app.repositories import doc_pages
+    from app.services import doc_corpus
+
+    url = "https://www.mongodb.com/docs/manual/replication.md"
+    doc_pages.upsert_pages([{"url": url, "source": "ix", "title": "Replication", "text": "old"}])
+    monkeypatch.setattr(doc_corpus, "_get", lambda u, s: "# Replication\n\nnew text")
+    body = client.get("/admin/docs/render", params={"url": url}).text
+    assert 'data-live-notice="true"' in body
+    assert "/admin/docs/page?url=" in body
+
+
+def test_a_page_we_never_stored_is_still_renderable(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: A citation can name a page the corpus no longer holds — the docs were refreshed, or
+        the question came from the research fallback. Refusing to render it would break the
+        citation for exactly the questions hardest to check.
+    Success: A page absent from the corpus renders, and says no question came from it.
+    Feature: Documentation rendering — works without a stored copy.
+    """
+    from app.services import doc_corpus
+
+    monkeypatch.setattr(doc_corpus, "_get", lambda u, s: "# Sharding\n\nChunks move.")
+    body = client.get(
+        "/admin/docs/render",
+        params={"url": "https://www.mongodb.com/docs/manual/sharding.md"},
+    ).text
+    assert "Chunks move." in body
+    assert "not in our corpus" in body
+
+
+def test_rendering_a_url_off_the_documentation_host_is_refused(client, fake_doc_pages):
+    """
+    Intent: This route fetches whatever URL it is given, server-side. Left open it would reach
+        anything the server can reach and hand the response back — an internal service, a cloud
+        metadata endpoint. The refusal has to be at the route, not only in the fetcher.
+    Success: A URL off the documentation host is a 400.
+    Feature: Documentation rendering — the route refuses foreign hosts.
+    """
+    response = client.get(
+        "/admin/docs/render", params={"url": "http://169.254.169.254/latest/meta-data/"}
+    )
+    assert response.status_code == 400
+
+
+def test_a_failed_fetch_is_explained_with_a_way_out(client, monkeypatch, fake_doc_pages):
+    """
+    Intent: The docs sit behind CloudFront, which refuses a caller that has asked for too much
+        — the same refusal the crawl has to handle. A stack trace would read as a bug in this
+        program rather than a pause to wait out.
+    Success: A failed fetch is explained, with links to the raw page and the stored copy.
+    Feature: Documentation rendering — a refusal is reported, not crashed on.
+    """
+    from app.repositories import doc_pages
+    from app.services import doc_corpus
+
+    url = "https://www.mongodb.com/docs/manual/replication.md"
+    doc_pages.upsert_pages([{"url": url, "source": "ix", "title": "Replication", "text": "old"}])
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("403 Forbidden")
+
+    monkeypatch.setattr(doc_corpus, "_get", refuse)
+    body = client.get("/admin/docs/render", params={"url": url}).text
+    assert 'data-fetch-error="true"' in body
+    assert "403 Forbidden" in body
+    assert "/admin/docs/page?url=" in body

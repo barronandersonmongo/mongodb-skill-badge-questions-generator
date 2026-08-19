@@ -97,6 +97,7 @@ bookmarked, shared in Slack, or cited from a question.
 | Badge review, by state | `/admin/skill-badges?status=candidate` |
 | One documentation source | `/admin/docs/source?source=…&q=` |
 | One documentation page | `/admin/docs/page?url=…` |
+| The live page behind a citation | `/admin/docs/render?url=…` |
 
 Consequences that are deliberate: switching a status tab preserves the badge and
 category filters; the export link is built from the same parameters as the screen, so
@@ -529,6 +530,27 @@ dropped, and a question the model left untagged is attributed to the badges the
 run was scoped to. `skill_badges` is what the collection is filtered by, so a
 wrong value there would make a question unfindable.
 
+**Following a citation.** Each question links the documentation page it was written
+from. The visible text is the canonical `mongodb.com` URL, because that is what
+identifies the page — but the link goes through `/admin/docs/render`, which fetches that
+page from MongoDB now and renders it with the same Markdown viewer the stored copy uses.
+MongoDB serves these pages as raw Markdown, so following the URL directly lands on
+unformatted text; a citation nobody wants to read is a citation nobody checks.
+
+Live rather than stored, deliberately: the stored copy is the snapshot the question was
+written from and the live page is what MongoDB publishes today, and after a docs refresh
+the two can differ. The view says which one you are looking at and offers the stored copy
+alongside, so a divergence reads as a divergence rather than as a wrong question. A page
+the corpus no longer holds still renders, and says no question came from it.
+
+**That route is host-pinned.** It fetches a caller-supplied URL server-side, which is a
+server-side request forgery hole unless the host is fixed — an arbitrary URL would reach
+anything the server can reach, including a cloud metadata endpoint, and hand the response
+back. Only `https` pages on `docs_domain` (`www.mongodb.com`) are fetched, checked on the
+parsed hostname rather than by prefix, since `https://www.mongodb.com.evil.example/`
+starts with the right string and is not the right host. The check is enforced in the
+fetcher as well as the route, so a future caller cannot bypass it by forgetting.
+
 **Reading a question's tags.** Three kinds of tag sit together on each question, so they
 are told apart by colour as well as by position: a solid chip for the difficulty, gold
 for the skill badges the question is filed under — the badge artwork is gold, so the
@@ -772,7 +794,8 @@ index location.
 | `GET` | `/api/admin/docs/search?q=&limit=` | The same search, as JSON |
 | `POST` | `/api/admin/docs/prune-stubs` | Delete navigation stubs already stored |
 | `GET` | `/admin/docs/source?source=&q=` | Pages in one source, filterable |
-| `GET` | `/admin/docs/page?url=` | One page, rendered as Markdown |
+| `GET` | `/admin/docs/page?url=` | One stored page, rendered as Markdown |
+| `GET` | `/admin/docs/render?url=` | The canonical page, fetched live and rendered |
 | `POST` | `/api/admin/docs/refresh?mode=replace` | Replace the corpus with a fresh crawl |
 | `POST` | `/api/admin/docs/refresh?mode=fill` | Fetch only missing pages; remove nothing |
 | `GET` | `/api/admin/docs/refresh/status` | Poll a crawl, with progress |

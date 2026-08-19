@@ -1218,3 +1218,18 @@ def test_category_tags_are_not_links(client, fake_collection, fake_questions):
     body = client.get(PAGE).text
     category_tag = body[body.index('data-category-tag="search"') - 260:]
     assert "<a" not in category_tag[: category_tag.index("data-category-tag") + 30]
+
+
+def test_a_citation_links_to_the_rendered_page(client, fake_collection, fake_questions):
+    """
+    Intent: A citation exists so a reviewer can check a question against its source. MongoDB
+        serves these pages as raw Markdown, which a browser shows as unformatted text — so the
+        link went somewhere technically correct and unpleasant to read.
+    Success: The citation points at the renderer while still showing the canonical URL.
+    Feature: Question review screen — citations open rendered.
+    """
+    seed_question(source_urls=["https://www.mongodb.com/docs/manual/replication.md"])
+    body = client.get(PAGE).text
+    assert "/admin/docs/render?url=" in body
+    # The reader still sees the canonical URL: it is what identifies the page.
+    assert "https://www.mongodb.com/docs/manual/replication.md" in body
