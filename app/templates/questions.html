@@ -497,10 +497,11 @@ per_page={{ pagination.per_page }}&
       </div>
       <div class="modal-body">
         <p class="small text-body-secondary">
-          A run walks the documentation pages this badge is about, one at a time, and
-          writes several questions from each. Pages already written from are skipped,
-          so running it again covers new material rather than repeating. This takes
-          minutes — you can leave this page open and it will report when done.
+          A run walks the documentation pages a badge is about, one at a time, and writes
+          several questions from each. Pages already written from are skipped, so running
+          it again covers new material rather than repeating. Several badges are walked
+          one after another, each getting the full budget below. You can leave this page
+          open and it will report when done.
         </p>
         <label for="badge-picker" class="form-label">Skill badges</label>
         <select class="form-select" id="badge-picker" multiple size="8">
@@ -526,9 +527,21 @@ per_page={{ pagination.per_page }}&
             <input class="form-control" id="per-page" type="number" value="3" min="1" max="10">
           </div>
         </div>
+        {# The budget is per badge, not per run: every selected badge is walked with
+           these numbers in full. The old hint read "25 pages at 3 questions each is up
+           to 75 questions", which is true of one badge and wrong by a factor of however
+           many were selected — the one number on this form that decides what a run
+           costs, stated as the smallest it could be. #}
         <div class="form-text">
-          25 pages at 3 questions each is up to 75 questions, and a few minutes per
-          page. A run picks up where the last one stopped.
+          Per badge, not per run: each selected badge is walked with these numbers. A
+          badge picks up where its last run stopped, so a badge with less unused material
+          contributes fewer pages than the maximum.
+        </div>
+
+        {# Spelled out because the multiplication is where the surprise was. It is a
+           ceiling, not an estimate: skipped pages and a stop both bring it down. #}
+        <div class="alert alert-info mt-3 mb-0 py-2 small" data-projection="true">
+          <span data-projection-text="true">Pick a badge to see what a run would cover.</span>
         </div>
 
         <label for="difficulty" class="form-label mt-3">Skill level</label>
@@ -910,6 +923,37 @@ document.querySelectorAll("[data-copy-id]").forEach((chip) => {
     setTimeout(() => { chip.textContent = shown; }, 1200);
   });
 });
+
+// What the numbers on the form add up to. The budget applies to every selected badge,
+// so the total is the product — which is the thing that surprised an author who selected
+// everything and read a hint written for one badge.
+const badgePicker = document.getElementById("badge-picker");
+const maxPagesInput = document.getElementById("max-pages");
+const perPageInput = document.getElementById("per-page");
+const projection = document.querySelector("[data-projection-text]");
+
+function updateProjection() {
+  const badges = badgePicker.selectedOptions.length;
+  const pages = Number(maxPagesInput.value) || 0;
+  const perPage = Number(perPageInput.value) || 0;
+  if (badges === 0) {
+    projection.textContent = "Pick a badge to see what a run would cover.";
+    return;
+  }
+  const pagesTotal = badges * pages;
+  const questions = pagesTotal * perPage;
+  projection.textContent =
+    badges + (badges === 1 ? " badge × " : " badges × ") + pages + " pages × " +
+    perPage + " per page — up to " + questions.toLocaleString() + " questions from " +
+    pagesTotal.toLocaleString() + " pages. A ceiling, not an estimate: pages already " +
+    "written from are skipped, and stopping ends the whole run.";
+}
+
+[badgePicker, maxPagesInput, perPageInput].forEach((control) => {
+  control.addEventListener("input", updateProjection);
+  control.addEventListener("change", updateProjection);
+});
+updateProjection();
 
 document.getElementById("start-run").addEventListener("click", async () => {
   const picker = document.getElementById("badge-picker");

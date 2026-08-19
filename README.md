@@ -485,6 +485,13 @@ coverage a counter against an enumerable list. It also spreads the cost — ques
 per badge when somebody asks for that badge, so the first badge tells you whether the
 output is any good before the other 33 are paid for.
 
+**The page budget is per badge, and the form says so.** Selecting several badges walks
+each one with the full budget in turn, so 25 pages at 3 questions each over 34 badges is up
+to 2,550 questions and 850 pages, not 75. The form projects the multiplication as the
+selection changes, and calls it a ceiling: pages already written from are skipped, so a
+badge with little unused material contributes fewer, and **Stop after this page** ends the
+whole run rather than the badge being walked.
+
 **One section, one structured call.** Not the draft-then-extract pair the older
 research path uses: that earns its keep when a turn is doing research and benefits from
 thinking in prose first, but reading one section needs no tools, so a second pass would

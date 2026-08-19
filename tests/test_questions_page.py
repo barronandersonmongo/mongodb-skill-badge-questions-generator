@@ -1384,3 +1384,56 @@ def test_a_search_result_is_paged_too(client, fake_collection, fake_questions, m
     )
     body = client.get(PAGE, params={"q": "aggregation stages", "per_page": 5}).text
     assert body.count('data-question-id="') == 5
+
+
+# --- what a run would cost before starting it ---
+
+
+def test_the_form_says_the_budget_is_per_badge(client, fake_collection, fake_questions):
+    """
+    Intent: The page budget and the questions-per-page are passed to each selected badge in
+        full, so a run over several badges walks that many times as much. The hint said "25
+        pages at 3 questions each is up to 75 questions", which is true of one badge and wrong
+        by a factor of however many were selected — understating the one number on the form
+        that decides what a run costs.
+    Success: The form states that the numbers apply per badge.
+    Feature: Question generation — the form says what the budget applies to.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert "Per badge, not per run" in body
+
+
+def test_the_form_projects_the_questions_a_run_would_write(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: The surprise was a multiplication the reader had to do themselves, from a hint that
+        did it wrong. Selecting every badge with the default budget is thousands of questions
+        and hours of work, and nothing on the form said so before the run started.
+    Success: The form carries a projection that multiplies badges by pages by questions per
+        page, and updates as those change.
+    Feature: Question generation — the run's size is projected before it starts.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'data-projection="true"' in body
+    script = body[body.index("function updateProjection"):]
+    script = script[: script.index("\n}")]
+    assert "badges * pages" in script
+    assert "pagesTotal * perPage" in script
+
+
+def test_the_projection_is_named_as_a_ceiling(client, fake_collection, fake_questions):
+    """
+    Intent: A projected number read as a promise would be wrong in the other direction: pages
+        already written from are skipped, so a badge with little unused material contributes
+        far fewer, and stopping ends the run. An author deciding whether to wait needs to know
+        which way the number can move.
+    Success: The projection says it is a ceiling and why the real figure can be lower.
+    Feature: Question generation — the projection states its own uncertainty.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert "A ceiling, not an estimate" in body
+    assert "already " in body and "skipped" in body
