@@ -578,6 +578,25 @@ The API route is `/api/questions/by-id/{identifier}` rather than `/{identifier}`
 latter would capture every named route added under the prefix later, and the collision
 would surface as a puzzling 422 on whichever route lost.
 
+### Paging
+
+The bank is meant to hold thousands of questions, so the list is paged: 5, 10, 25, 50,
+100, 200 or 500 at a time, defaulting to 50. Rendering everything builds a document the
+browser is slow to lay out and scroll, from a cursor that read every match to produce it —
+the screen would get worse exactly as the collection got more valuable.
+
+The size is validated against that list rather than trusted, because it reaches the
+database as a limit and a hand-edited URL asking for a hundred thousand would render the
+page this exists to prevent. A page number past the end is clamped to the last page rather
+than refused: deleting the last question on the last page leaves a URL pointing past it,
+and an error there is a dead end where showing the last page is what was meant. Changing a
+filter returns to the first page, since page 7 of the old result is not page 7 of the new
+one.
+
+The pager carries the filters, the search and the size, so the view stays an address that
+can be shared. **Export JSON is not paged** — it returns every question matching the
+filters, which is what anyone asking for an export means.
+
 ### No review workflow
 
 A question that passes the format check is stored and usable. There is no draft state, no

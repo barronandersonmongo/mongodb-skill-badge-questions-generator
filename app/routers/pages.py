@@ -29,11 +29,52 @@ router = APIRouter(tags=["ui"])
 # question in use. The only count worth a heading is how many are in scope.
 # How many matches a search considers before the screen's filters narrow it.
 SEARCH_LIMIT = 50
+
+# How many questions one screen renders. The bank is meant to hold thousands, and
+# rendering all of them is a document the browser is slow to lay out and scroll.
+# The choices span "read a handful closely" to "scan a lot at once"; 50 is the
+# default because it fills a screen or two without the page becoming a burden.
+PAGE_SIZES = (5, 10, 25, 50, 100, 200, 500)
+DEFAULT_PAGE_SIZE = 50
 DIFFICULTY_STYLES = {
     "foundational": "info",
     "intermediate": "primary",
     "advanced": "dark",
 }
+
+
+def _page_size(requested: int | None) -> int:
+    """The page size to use. An unoffered one falls back to the default.
+
+    Validated rather than trusted: the size reaches the database as a limit, and a
+    hand-edited URL asking for a hundred thousand would render the page this exists
+    to prevent.
+    """
+    return requested if requested in PAGE_SIZES else DEFAULT_PAGE_SIZE
+
+
+def _pagination(total: int, page: int, per_page: int) -> dict:
+    """Where this page sits in the whole result.
+
+    The page number is clamped rather than rejected: deleting the last question on
+    the last page, or narrowing a filter, leaves a URL pointing past the end, and an
+    error there would be a dead end where showing the last page is what was meant.
+    """
+    pages = max(1, -(-total // per_page))
+    page = min(max(1, page), pages)
+    first = 0 if total == 0 else (page - 1) * per_page + 1
+    return {
+        "page": page,
+        "pages": pages,
+        "per_page": per_page,
+        "sizes": PAGE_SIZES,
+        "total": total,
+        "first": first,
+        "last": min(page * per_page, total),
+        "skip": (page - 1) * per_page,
+        "has_previous": page > 1,
+        "has_next": page < pages,
+    }
 
 
 @router.get("/")
@@ -42,6 +83,8 @@ def questions_page(
     skill_badge: str | None = None,
     category: str | None = None,
     q: str | None = None,
+    page: int = 1,
+    per_page: int | None = None,
 ):
     """The main screen: review stored questions and generate new ones.
 
@@ -61,10 +104,19 @@ def questions_page(
     search_error: str | None = None
     query = (q or "").strip()
 
+    size = _page_size(per_page)
+    pagination = _pagination(0, page, size)
+
     try:
         if query:
             stored, search_error = _search(query, skill_badge, category)
+            # A search is already capped at what it considered, so its matches are in
+            # hand and paged here rather than by the database. Paging them at all is
+            # for consistency: a result that behaved differently from the list would
+            # be a second set of rules to learn.
+            pagination = _pagination(len(stored), page, size)
             counts = {"": len(stored)}
+            stored = stored[pagination["skip"]:pagination["skip"] + size]
             categories = questions_repo.categories_in_use()
             badges = skill_badges.list_badges()
             return _render(
@@ -76,11 +128,18 @@ def questions_page(
                 skill_badge=skill_badge,
                 category=category,
                 query=query,
+                pagination=pagination,
                 storage_error=None,
                 search_error=search_error,
             )
-        stored = questions_repo.list_questions(skill_badge, category)
-        counts = {"": len(stored)}
+        # Counted before it is read: the count is what the pager needs, and it is
+        # cheaper than fetching every match to measure it.
+        total = questions_repo.count_questions(skill_badge, category)
+        pagination = _pagination(total, page, size)
+        stored = questions_repo.list_questions(
+            skill_badge, category, skip=pagination["skip"], limit=size
+        )
+        counts = {"": total}
         categories = questions_repo.categories_in_use()
         badges = skill_badges.list_badges()
     except PyMongoError as exc:
@@ -97,6 +156,7 @@ def questions_page(
         skill_badge=skill_badge,
         category=category,
         query=query,
+        pagination=pagination,
         storage_error=storage_error,
         search_error=None,
     )
@@ -148,6 +208,7 @@ def _render(
     skill_badge: str | None,
     category: str | None,
     query: str,
+    pagination: dict,
     storage_error: str | None,
     search_error: str | None,
 ):
@@ -162,6 +223,7 @@ def _render(
             "badge_filter": skill_badge or "",
             "category_filter": category or "",
             "query": query,
+            "pagination": pagination,
             "is_identifier_query": questions_repo.looks_like_an_identifier(query),
             "badges": badges,
             "categories": categories,

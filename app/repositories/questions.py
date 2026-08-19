@@ -88,20 +88,32 @@ def insert_questions(
 def list_questions(
     skill_badge: str | None = None,
     category: str | None = None,
+    *,
+    skip: int = 0,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Questions matching every filter given, newest first.
 
     Newest first because the author's usual question is "what did that run just
     produce?", and a generation run appends to the end of the collection.
+
+    `skip` and `limit` page the result on the server. The bank is meant to hold
+    thousands, and rendering all of them builds a document the browser is slow to
+    lay out and scroll, from a cursor that read every match to produce it. Omitting
+    `limit` still returns everything, which is what the export wants: an export
+    filtered to one page of results would be a surprising thing to hand someone.
     """
     query: dict[str, Any] = {}
     if skill_badge:
         query["skill_badges"] = skill_badge
     if category:
         query["categories"] = category
-    return list(
-        collection().find(query, LIST_PROJECTION).sort("created_at", DESCENDING)
+    cursor = (
+        collection().find(query, LIST_PROJECTION).sort("created_at", DESCENDING).skip(skip)
     )
+    if limit is not None:
+        cursor = cursor.limit(limit)
+    return list(cursor)
 
 
 def delete_question(question_id: str) -> bool:

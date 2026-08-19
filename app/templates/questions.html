@@ -6,6 +6,15 @@
 {% block content %}
 {% import "_ui.html" as ui %}
 
+{# Everything a page link must preserve. A pager that dropped the filters would move
+   through a different collection from the one being read. #}
+{% set page_query %}
+{%- if badge_filter %}skill_badge={{ badge_filter | urlencode }}&{% endif %}
+{%- if category_filter %}category={{ category_filter | urlencode }}&{% endif %}
+{%- if query %}q={{ query | urlencode }}&{% endif %}
+per_page={{ pagination.per_page }}&
+{%- endset %}
+
 {# A question named by its identifier, linking to it. A stem alone cannot be checked
    — the options, the badges and the source are what decide whether two questions are
    really the same — and the search box takes an identifier, so that is the address.
@@ -327,6 +336,16 @@
       {% endfor %}
     </select>
   {% endcall %}
+  {% call ui.field("Per page", "per-page-filter") %}
+    <select class="form-select" id="per-page-filter" data-filter="per_page"
+            data-page-size="true">
+      {% for size in pagination.sizes %}
+      <option value="{{ size }}" {% if pagination.per_page == size %}selected{% endif %}>
+        {{ size }}
+      </option>
+      {% endfor %}
+    </select>
+  {% endcall %}
   {% call ui.field("Category", "category-filter") %}
     <select class="form-select" id="category-filter" data-filter="category">
       <option value="">All categories</option>
@@ -370,6 +389,14 @@
     {{ counts.get("", 0) }} question{{ "" if counts.get("", 0) == 1 else "s" }}
     {%- if badge_filter or category_filter or query %} in this view{% endif %}
   </span>
+  {# Which of them is on screen. Without it, a page of 50 out of 3,000 looks like the
+     whole collection — the difference between "that is all there is" and "that is all
+     that fits". #}
+  {% if pagination.total > pagination.per_page %}
+  <span class="meta" data-page-range="true">
+    Showing {{ pagination.first }}–{{ pagination.last }}
+  </span>
+  {% endif %}
 </div>
 
 <div class="card">
@@ -493,8 +520,28 @@
   </div>
 </div>
 
+{% if pagination.pages > 1 %}
+{# Kept below the list rather than above it as well: paging is what you do having read
+   the page, and a second copy on top would be one more thing between the filters and
+   the questions. Plain links, so a page is an address that can be shared. #}
+<nav class="pager" aria-label="Question pages" data-pager="true">
+  <a class="btn btn-outline-secondary {% if not pagination.has_previous %}disabled{% endif %}"
+     data-page-previous="true"
+     href="?{{ page_query }}page={{ pagination.page - 1 }}">Previous</a>
+  <span class="meta" data-page-position="true">
+    Page {{ pagination.page }} of {{ pagination.pages }}
+  </span>
+  <a class="btn btn-outline-secondary {% if not pagination.has_next %}disabled{% endif %}"
+     data-page-next="true"
+     href="?{{ page_query }}page={{ pagination.page + 1 }}">Next</a>
+</nav>
+{% endif %}
+
 <p class="meta mt-3 mb-0">
-  <strong>Export JSON</strong> returns exactly the questions matching the filters above.
+  {# Said here because the export is the one thing on this screen that is not paged, and
+     a screen that shows 50 of 3,000 invites the assumption that its export would too. #}
+  <strong>Export JSON</strong> returns every question matching the filters above, not
+  only this page.
   Stored in <span class="font-monospace">{{ database }}.{{ collection }}</span>.
 </p>
 
@@ -964,6 +1011,9 @@ document.querySelectorAll("[data-filter]").forEach((select) => {
     } else {
       url.searchParams.delete(select.dataset.filter);
     }
+    // Back to the first page: page 7 of the old result is not page 7 of the new one,
+    // and is frequently past the end of it.
+    url.searchParams.delete("page");
     window.location.assign(url.toString());
   });
 });

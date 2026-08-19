@@ -32,6 +32,10 @@ class FakeCursor:
         self._docs.sort(key=lambda d: d.get(key), reverse=direction < 0)
         return self
 
+    def skip(self, count: int) -> "FakeCursor":
+        self._docs = self._docs[count:]
+        return self
+
     def limit(self, count: int) -> "FakeCursor":
         self._docs = self._docs[:count]
         return self

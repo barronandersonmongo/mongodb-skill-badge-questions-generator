@@ -1487,3 +1487,135 @@ def test_opening_a_pairs_question_cannot_lose_the_report(
     report = body[body.index('data-sweep-flagged="true"'):body.index("delete-dupes-btn")]
     for fragment in report.split("<a ")[1:]:
         assert 'target="_blank"' in fragment[: fragment.index(">")]
+
+
+# --- paging a bank of thousands ---
+
+
+def test_only_one_page_of_questions_is_rendered(client, fake_collection, fake_questions):
+    """
+    Intent: The bank is meant to hold thousands of questions. Rendering all of them builds a
+        document the browser is slow to lay out and slow to scroll, from a cursor that read
+        every match to produce it — the screen gets worse exactly as the collection gets more
+        valuable.
+    Success: A page shows at most the requested number of questions, not the whole
+        collection.
+    Feature: Question review screen — the list is paged.
+    """
+    for index in range(12):
+        seed_question(stem=f"Question {index}?")
+    body = client.get(PAGE, params={"per_page": 5}).text
+    assert body.count('data-question-id="') == 5
+
+
+def test_fifty_questions_is_the_default_page(client, fake_collection, fake_questions):
+    """
+    Intent: A default that has to be chosen before the screen is useful is a decision pushed
+        onto the reader. Fifty fills a screen or two — enough to scan a run's output without
+        the page becoming a burden.
+    Success: With no size asked for, the page offers fifty.
+    Feature: Question review screen — a default page size.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    assert '<option value="50" selected>' in body
+
+
+def test_a_page_size_that_is_not_offered_is_refused(client, fake_collection, fake_questions):
+    """
+    Intent: The size reaches the database as a limit. A hand-edited URL asking for a hundred
+        thousand would render the very page this exists to prevent, and nothing in the
+        request is worth trusting for that.
+    Success: An unoffered size falls back to the default rather than being honoured.
+    Feature: Question review screen — the page size is validated, not trusted.
+    """
+    seed_question()
+    body = client.get(PAGE, params={"per_page": 100000}).text
+    assert '<option value="50" selected>' in body
+
+
+def test_a_later_page_shows_the_questions_after_the_first(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Paging is only useful if the pages differ. Newest first is the order, so page two
+        must continue where page one stopped rather than starting over.
+    Success: The second page shows the next questions, and none of the first page's.
+    Feature: Question review screen — pages continue rather than repeat.
+    """
+    for index in range(12):
+        seed_question(stem=f"Question {index}?")
+    first = client.get(PAGE, params={"per_page": 5}).text
+    second = client.get(PAGE, params={"per_page": 5, "page": 2}).text
+    first_ids = set(re.findall(r'data-question-id="([^"]+)"', first))
+    second_ids = set(re.findall(r'data-question-id="([^"]+)"', second))
+    assert len(first_ids) == 5 and len(second_ids) == 5
+    assert not (first_ids & second_ids)
+
+
+def test_a_page_past_the_end_shows_the_last_page(client, fake_collection, fake_questions):
+    """
+    Intent: Deleting the last question on the last page, or narrowing a filter, leaves a URL
+        pointing past the end of the result. An error there is a dead end where showing the
+        last page is plainly what was meant.
+    Success: A page number beyond the end renders the last page rather than failing.
+    Feature: Question review screen — an out-of-range page is clamped.
+    """
+    for index in range(12):
+        seed_question(stem=f"Question {index}?")
+    response = client.get(PAGE, params={"per_page": 5, "page": 99})
+    assert response.status_code == 200
+    assert 'data-page-position="true"' in response.text
+    assert "Page 3 of 3" in re.sub(r"\s+", " ", response.text)
+
+
+def test_the_pager_keeps_the_filters_and_the_size(client, fake_collection, fake_questions):
+    """
+    Intent: A pager that dropped the filters would move through a different collection from
+        the one being read — page two of everything, having asked for one badge. The current
+        view is the URL, so the URL has to carry all of it.
+    Success: The next-page link preserves the badge filter, the search and the page size.
+    Feature: Question review screen — paging preserves the view.
+    """
+    for index in range(6):
+        seed_question(stem=f"Question {index}?", skill_badges=["atlas-search"])
+    body = client.get(PAGE, params={"skill_badge": "atlas-search", "per_page": 5}).text
+    link = body[body.index('data-page-next="true"'):]
+    link = body[body.rindex("<a", 0, body.index('data-page-next="true"')):][: link.index(">") + 200]
+    assert "skill_badge=atlas-search" in link
+    assert "per_page=5" in link
+    assert "page=2" in link
+
+
+def test_the_screen_says_which_questions_are_on_it(client, fake_collection, fake_questions):
+    """
+    Intent: A page of fifty out of three thousand looks like the whole collection unless it
+        says otherwise — the difference between "that is all there is" and "that is all that
+        fits" is the whole point of a count.
+    Success: The screen shows the range on this page alongside the total.
+    Feature: Question review screen — the count distinguishes the page from the whole.
+    """
+    for index in range(12):
+        seed_question(stem=f"Question {index}?")
+    body = re.sub(r"\s+", " ", client.get(PAGE, params={"per_page": 5, "page": 2}).text)
+    assert "12 questions" in body
+    assert "Showing 6–10" in body
+
+
+def test_a_search_result_is_paged_too(client, fake_collection, fake_questions, monkeypatch):
+    """
+    Intent: A result that behaved differently from the list would be a second set of rules to
+        learn — and a search that matches everything is as long as the list is.
+    Success: A search shows one page of its matches.
+    Feature: Question review screen — search results are paged.
+    """
+    ids = [seed_question(stem=f"Question {index}?") for index in range(12)]
+    monkeypatch.setattr(
+        questions,
+        "similar_by_embedding_text",
+        lambda *a, **k: [{"question_id": qid, "stem": "x", "options": [],
+                          "skill_badges": [], "categories": [],
+                          "difficulty": "intermediate"} for qid in ids],
+    )
+    body = client.get(PAGE, params={"q": "aggregation stages", "per_page": 5}).text
+    assert body.count('data-question-id="') == 5
