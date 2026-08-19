@@ -515,6 +515,22 @@ a:focus-visible,
   font-size: 0.75rem;
 }
 
+/* The identifier reads as text, because that is what it is. Nothing about it is a
+   chip: chips on this screen mean "this question belongs to that", and an
+   identifier is not a category. The affordance is the pointer and the hover, not a
+   border. */
+.copy-id {
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.copy-id:hover { color: var(--forest); text-decoration: underline; }
+
 .question-stem {
   font-size: 1rem;
   font-weight: 600;
@@ -605,17 +621,6 @@ a:focus-visible,
 .tag-badge { color: var(--forest); background: var(--forest-wash); border-color: #cfe6dc; }
 .tag-badge:hover { background: #dcece5; color: var(--forest-hover); text-decoration: none; }
 .tag-category { color: var(--warn); background: var(--warn-wash); border-color: #f0e3bf; }
-
-.tag-meta {
-  color: var(--ink-3);
-  background: var(--surface-sunken);
-  border-color: var(--line-strong);
-  font-family: var(--mono);
-  font-size: 0.6875rem;
-  font-weight: 400;
-}
-
-.tag-meta:hover { color: var(--ink); background: var(--line); }
 
 /* Bootstrap's own badges, wherever a template still uses one, are given the same
    pill shape so they cannot look like a different species of chip. */

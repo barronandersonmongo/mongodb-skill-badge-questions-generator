@@ -364,7 +364,11 @@
                  not a counter, so nothing can be read from their order. #}
               <dt>Question ID</dt>
               <dd>
-                <button type="button" class="tag tag-meta"
+                {# Plain text, not a chip. A pill reads as a category the question
+                   belongs to; this is the question's own name, and it now has a label
+                   telling you so. It is still a button because clicking copies the full
+                   identifier — 32 hex characters is not something anyone should retype. #}
+                <button type="button" class="copy-id"
                         data-copy-id="{{ question.question_id }}"
                         title="{{ question.question_id }} — click to copy">
                   {{ question.question_id[:8] }}

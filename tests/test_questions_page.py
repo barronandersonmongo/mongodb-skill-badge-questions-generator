@@ -1397,3 +1397,17 @@ def test_a_question_with_no_source_omits_the_source_row(
     body = client.get(PAGE).text
     head = body[body.index("question-head"):body.index('data-stem="true"')]
     assert "<dt>Source</dt>" not in head
+
+
+def test_the_identifier_is_not_rendered_as_a_chip(client, fake_collection, fake_questions):
+    """
+    Intent: Chips on this screen mean "this question belongs to that" — a skill badge or a
+        topic area. The identifier is the question's own name, so a pill put it in the wrong
+        category of thing, and it now has a label saying what it is instead.
+    Success: The identifier renders as plain text, carrying no tag class.
+    Feature: Question review screen — the identifier reads as text, not as a tag.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    element = body[body.rindex("<button", 0, body.index("data-copy-id=")):]
+    assert "tag" not in element[: element.index(">")]

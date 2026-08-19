@@ -187,8 +187,8 @@ and replaces its components, keeping the class names the scripts and tests hook 
 Surfaces are separated by elevation and whitespace rather than by hairline borders, and
 MongoDB forest green appears only where something is the primary action or the current
 screen. Colour means one thing each — forest for a primary action and for a skill badge,
-spring green for focus, red for destructive, a warm neutral for a topic area, flat grey
-for anything that is only an identifier.
+spring green for focus, red for destructive, a warm neutral for a topic area, and nothing else is a chip
+at all.
 
 ### 3. One shell, with authoring separated from curation
 

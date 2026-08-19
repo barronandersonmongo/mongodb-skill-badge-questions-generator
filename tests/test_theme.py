@@ -203,7 +203,12 @@ def test_a_tag_colour_means_exactly_one_thing(client):
     Feature: Shared look — tag colours are a closed set.
     """
     css = client.get("/static/theme.css").text
-    assert set(re.findall(r"\.tag-([a-z]+)\b", css)) == {"badge", "category", "meta"}
+    # The third kind, a flat grey chip for an identifier, no longer exists: an
+    # identifier is not something a question belongs to, so it is rendered as plain
+    # labelled text rather than as a chip at all. The recorded requirement — that the
+    # tag colours are a closed set with one meaning each — is what is asserted, and
+    # the set is now the two kinds that remain.
+    assert set(re.findall(r"\.tag-([a-z]+)\b", css)) == {"badge", "category"}
 
 
 def test_no_template_hand_rolls_a_page_header(client):
