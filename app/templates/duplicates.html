@@ -6,15 +6,20 @@
 {% block content %}
 {% import "_ui.html" as ui %}
 
-{# A question named by its identifier, linking to it. A stem alone cannot be checked —
-   the options, the badges and the source are what decide whether two questions are
-   really the same — and the search box takes an identifier, so that is the address.
-   Opened in a new tab: this report exists only in the run state of the page showing
-   it, so navigating away in the same tab throws away minutes of round trips. #}
-{% macro question_link(question_id) %}
-<a class="dupe-id font-monospace" href="/?q={{ question_id }}" target="_blank"
-   rel="noopener" title="{{ question_id }} — open this question in a new tab"
-   data-question-link="{{ question_id }}">{{ question_id[:8] }}</a>
+{# Which question this is. Named, not linked: opening it elsewhere asked the reader to
+   hold one question in their head while looking at the other, and holding the two
+   side by side is the whole of the judgement being asked for — see the compare
+   control on each pair. #}
+{% macro question_id(value) %}
+<span class="dupe-id font-monospace" title="{{ value }}"
+      data-question-id="{{ value }}">{{ value[:8] }}</span>
+{% endmacro %}
+
+{# Puts both questions of a pair on screen together, in full. #}
+{% macro compare_button(pair) %}
+<button type="button" class="btn btn-sm btn-outline-secondary ms-1"
+        data-compare="true" data-compare-drop="{{ pair.drop }}"
+        data-compare-keep="{{ pair.keep }}">Compare</button>
 {% endmacro %}
 
 {% call ui.page_header(
@@ -90,12 +95,13 @@
                  data-dupe-id="{{ pair.drop }}" checked>
           <span>
             <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
+            {{ compare_button(pair) }}
             <span class="d-block">
-              Delete: {{ question_link(pair.drop) }}
+              Delete: {{ question_id(pair.drop) }}
               <span class="fst-italic">{{ pair.drop_stem }}</span>
             </span>
             <span class="d-block text-body-secondary">
-              Keep: {{ question_link(pair.keep) }}
+              Keep: {{ question_id(pair.keep) }}
               <span class="fst-italic">{{ pair.keep_stem }}</span>
             </span>
           </span>
@@ -116,10 +122,11 @@
     </summary>
     <ul class="small mb-0 mt-2">
       {% for pair in last_result.below_threshold %}
-      <li>
-        {{ question_link(pair.drop) }} <span class="fst-italic">{{ pair.drop_stem }}</span>
-        vs {{ question_link(pair.keep) }} <span class="fst-italic">{{ pair.keep_stem }}</span>
+      <li class="mb-1">
+        {{ question_id(pair.drop) }} <span class="fst-italic">{{ pair.drop_stem }}</span>
+        vs {{ question_id(pair.keep) }} <span class="fst-italic">{{ pair.keep_stem }}</span>
         <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
+        {{ compare_button(pair) }}
       </li>
       {% endfor %}
     </ul>
@@ -141,6 +148,41 @@
   a large collection.
 {% endcall %}
 {% endif %}
+
+<div class="modal fade" id="compare-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5">Compare this pair</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-body-secondary">
+          Both questions in full, as stored. The stems are the part a duplicate pair has
+          most in common — what tells them apart, if anything does, is the options, the
+          badges and the source.
+        </p>
+        <div class="compare-grid" data-compare-grid="true">
+          <div class="compare-side" data-compare-side="drop">
+            <div class="compare-heading compare-heading-drop">
+              Would be deleted
+            </div>
+            <div data-compare-body="drop">Loading…</div>
+          </div>
+          <div class="compare-side" data-compare-side="keep">
+            <div class="compare-heading compare-heading-keep">
+              Would be kept
+            </div>
+            <div data-compare-body="keep">Loading…</div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 {# The same dialog the questions screen uses, and the same typed confirmation: deleting
    a batch must be no easier to trigger by accident than deleting one. #}
@@ -310,6 +352,103 @@ document.getElementById("sweep-btn").addEventListener("click", async () => {
     return;
   }
   pollStatus();
+});
+
+// Both questions of a pair, side by side and in full. Built with the DOM rather than
+// innerHTML throughout: every string here is model-written text, and a question's own
+// words must never be able to become markup.
+const compareModalEl = document.getElementById("compare-modal");
+const compareModal = new bootstrap.Modal(compareModalEl);
+
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
+}
+
+function labelledRow(label, valueNode) {
+  const row = element("div", "compare-row");
+  row.append(element("span", "compare-label", label), valueNode);
+  return row;
+}
+
+function renderQuestion(question) {
+  const wrapper = document.createElement("div");
+  wrapper.append(element("div", "compare-stem", question.stem));
+
+  const options = element("ol", "question-options");
+  options.type = "A";
+  (question.options || []).forEach((option) => {
+    const item = document.createElement("li");
+    if (option.is_correct) {
+      item.dataset.correct = "true";
+      item.className = "fw-semibold";
+    }
+    item.append(document.createTextNode(option.text));
+    if (option.rationale) {
+      item.append(element("div", "small text-body-secondary", option.rationale));
+    }
+    options.append(item);
+  });
+  wrapper.append(options);
+
+  if (question.explanation) {
+    const why = element("div", "small text-body-secondary mb-2");
+    why.append(element("strong", null, "Why: "), document.createTextNode(question.explanation));
+    wrapper.append(why);
+  }
+
+  const tags = element("div", "mb-2");
+  if (question.difficulty) {
+    tags.append(element("span", "tag tag-category me-1", question.difficulty));
+  }
+  (question.skill_badges || []).forEach((slug) => {
+    tags.append(element("span", "tag tag-badge me-1", slug));
+  });
+  (question.categories || []).forEach((name) => {
+    tags.append(element("span", "tag tag-category me-1", name));
+  });
+  wrapper.append(tags);
+
+  wrapper.append(labelledRow("Question ID",
+    element("span", "font-monospace", question.question_id)));
+  if (question.created_at) {
+    wrapper.append(labelledRow("Generated",
+      element("span", null, new Date(question.created_at).toLocaleString())));
+  }
+  (question.source_urls || []).forEach((url) => {
+    // The one link kept in the report: a source is a documentation page, not a question,
+    // so following it cannot lead back to where the reader already is.
+    const link = element("a", "question-source font-monospace", url);
+    link.href = "/admin/docs/render?url=" + encodeURIComponent(url);
+    link.target = "_blank";
+    link.rel = "noopener";
+    wrapper.append(labelledRow("Source", link));
+  });
+  return wrapper;
+}
+
+async function fillCompareSide(side, questionId) {
+  const target = compareModalEl.querySelector('[data-compare-body="' + side + '"]');
+  target.replaceChildren(element("p", "text-body-secondary", "Loading…"));
+  const response = await fetch(API + "/by-id/" + encodeURIComponent(questionId));
+  if (!response.ok) {
+    // A question deleted since the sweep ran is the likely cause, and saying so is
+    // more useful than an empty column.
+    target.replaceChildren(element("p", "text-body-secondary",
+      "This question could not be loaded — it may already have been deleted."));
+    return;
+  }
+  target.replaceChildren(renderQuestion(await response.json()));
+}
+
+document.querySelectorAll("[data-compare]").forEach((button) => {
+  button.addEventListener("click", () => {
+    compareModal.show();
+    fillCompareSide("drop", button.dataset.compareDrop);
+    fillCompareSide("keep", button.dataset.compareKeep);
+  });
 });
 
 // Deleting from the report ends at the same typed confirmation the questions screen

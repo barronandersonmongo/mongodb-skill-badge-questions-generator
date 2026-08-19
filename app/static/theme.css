@@ -648,6 +648,72 @@ a:focus-visible,
 .modal-title { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.015em; }
 .modal-backdrop.show { opacity: 0.35; }
 
+/* Two questions read at the same time. Side by side, because that is what comparing
+   is; stacked below 62rem, where two columns would be two columns too narrow to read
+   a question in. The divider is what stops the pair reading as one long question. */
+.compare-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s5);
+}
+
+.compare-side + .compare-side {
+  padding-left: var(--s5);
+  border-left: 1px solid var(--line);
+}
+
+@media (max-width: 62rem) {
+  .compare-grid { grid-template-columns: minmax(0, 1fr); }
+  .compare-side + .compare-side {
+    padding-left: 0;
+    padding-top: var(--s4);
+    border-left: none;
+    border-top: 1px solid var(--line);
+  }
+}
+
+/* Which side is which, said in words and in colour — the two columns are otherwise
+   identical in form, and getting them the wrong way round deletes the wrong question. */
+.compare-heading {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 0.1875rem var(--s2);
+  border-radius: var(--r-sm);
+  margin-bottom: var(--s3);
+  display: inline-block;
+}
+
+.compare-heading-drop { color: var(--danger); background: var(--danger-wash); }
+.compare-heading-keep { color: var(--forest); background: var(--forest-wash); }
+
+.compare-stem {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: var(--s3);
+}
+
+.compare-row {
+  display: flex;
+  gap: var(--s2);
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+  min-width: 0;
+}
+
+.compare-label {
+  flex: none;
+  width: 6rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding-top: 0.1875rem;
+}
+
 /* ---------- tags ---------- */
 
 /* Colour means one thing each, and the meaning is repeated in the title

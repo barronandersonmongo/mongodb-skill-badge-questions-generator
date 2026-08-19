@@ -168,39 +168,7 @@ def test_each_question_in_a_pair_is_named_by_its_identifier(client):
     api_module._run_state["last_result"] = sweep_result()
     body = client.get(PAGE).text
     for question_id in ("k" * 32, "d" * 32, "y" * 32, "z" * 32):
-        assert 'data-question-link="' + question_id + '"' in body
-
-def test_an_identifier_in_the_report_opens_that_question(client):
-    """
-    Intent: A stem is not enough to judge whether two questions are really the same — the
-        options, the badges and the source are what decide it. Going and looking must not
-        mean copying a hex string into the search box by hand.
-    Success: Each identifier is a link to that question, opened in a new tab.
-    Feature: Question duplicate sweep — a pair's questions are one click away.
-    """
-    api_module._run_state["last_result"] = sweep_result()
-    body = client.get(PAGE).text
-    link = body[body.index('data-question-link="' + "d" * 32) - 300:]
-    link = link[link.rindex("<a", 0, link.index("data-question-link")):]
-    link = link[: link.index(">")]
-    assert 'href="/?q=' + "d" * 32 + '"' in link
-    assert 'target="_blank"' in link
-
-def test_opening_a_pairs_question_cannot_lose_the_report(client):
-    """
-    Intent: A sweep's report exists only in the run state of the page that is showing it —
-        leaving the page and coming back does not bring it back, and re-running the sweep is
-        minutes of round trips. Navigating away from it in the same tab would throw away the
-        work it took to produce.
-    Success: Every link out of the report opens in a new tab.
-    Feature: Question duplicate sweep — checking a question does not discard the report.
-    """
-    api_module._run_state["last_result"] = sweep_result()
-    body = client.get(PAGE).text
-    report = body[body.index('data-sweep-flagged="true"'):body.index("delete-dupes-btn")]
-    for fragment in report.split("<a ")[1:]:
-        assert 'target="_blank"' in fragment[: fragment.index(">")]
-
+        assert 'data-question-id="' + question_id + '"' in body
 
 # --- the screen exists so the report is not on the questions screen ---
 
@@ -267,3 +235,65 @@ def test_a_generation_run_in_progress_is_named_as_such(client):
     """
     body = client.get(PAGE).text
     assert 'state.kind !== "duplicate-sweep"' in body
+
+
+# --- reading the two questions of a pair ---
+
+
+def test_every_pair_offers_a_comparison(client):
+    """
+    Intent: Replaces the identifier links that opened each question elsewhere. Judging whether
+        two questions are the same means reading both — and a link asked the reader to hold one
+        in their head while looking at the other in a different tab, which is exactly the work
+        they were trying to do.
+    Success: Every pair, flagged or below the threshold, offers a control that names both of
+        its questions.
+    Feature: Duplicates screen — a pair can be compared in place.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    assert body.count('data-compare="true"') == 2
+    assert 'data-compare-drop="' + "d" * 32 + '"' in body
+    assert 'data-compare-keep="' + "k" * 32 + '"' in body
+
+
+def test_the_comparison_shows_both_questions_at_once(client):
+    """
+    Intent: The stems are the part a duplicate pair has most in common — that is why it was
+        flagged — so a comparison that showed one question at a time would be comparing the
+        two things least likely to differ. Both have to be on screen together.
+    Success: The comparison renders two sides in one view.
+    Feature: Duplicates screen — both questions are shown together.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    assert 'data-compare-grid="true"' in body
+    assert 'data-compare-body="drop"' in body
+    assert 'data-compare-body="keep"' in body
+
+
+def test_the_comparison_says_which_side_would_be_deleted(client):
+    """
+    Intent: The two sides are identical in form, and the whole decision is which of them goes.
+        Getting them the wrong way round deletes the question that was meant to be kept, so
+        the distinction cannot rest on position alone.
+    Success: Each side is labelled with what would happen to it.
+    Feature: Duplicates screen — the two sides of a comparison are named.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    assert "Would be deleted" in body
+    assert "Would be kept" in body
+
+
+def test_a_questions_own_words_cannot_become_markup(client):
+    """
+    Intent: A stem, an option and a rationale are all model-written text, drawn from
+        documentation this program fetched. Putting any of it into the page as HTML would let
+        fetched content decide what the page is.
+    Success: The comparison is built through the DOM, never by assigning innerHTML.
+    Feature: Duplicates screen — question text is inserted as text.
+    """
+    body = client.get(PAGE).text
+    script = body[body.index("function renderQuestion"):body.index("</script>")]
+    assert "innerHTML" not in script

@@ -681,6 +681,15 @@ money, the other only compares what is already stored — so the screen reports 
 its own words, hides the stats that belong to a walk, and offers no stop button, there
 being no seam to stop at.
 
+A pair is judged by reading both questions, so each one offers a **Compare** control that
+puts them side by side in full — options, badges, source and all. Links to the questions
+came first and were wrong: they asked the reader to hold one question in their head while
+looking at the other in a different tab, which is the work they were trying to do. The two
+sides are labelled "would be deleted" and "would be kept", because they are identical in
+form and getting them the wrong way round deletes the one that was meant to survive. The
+comparison is built through the DOM and never by assigning innerHTML — a stem, an option
+and a rationale are all model-written text drawn from fetched documentation.
+
 **Finding never deletes.** Pairs at or above the threshold are *flagged*, with the question
 this program would drop and the one it would keep both named — more badges beats fewer, then
 older beats newer — and pairs below it are listed too, so the threshold stays visible as a
