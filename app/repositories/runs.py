@@ -104,14 +104,32 @@ def totals() -> dict[str, Any]:
             }
         }
     ]
+    empty = {
+        "runs": 0,
+        "questions": 0,
+        "pages": 0,
+        "dollars": 0.0,
+        "seconds": 0.0,
+        "questions_per_minute": None,
+        "dollars_per_question": None,
+    }
     rows = list(collection().aggregate(pipeline))
     if not rows:
-        return {"runs": 0, "questions": 0, "pages": 0, "dollars": 0.0, "seconds": 0.0}
+        return empty
     row = rows[0]
+    questions = row.get("questions") or 0
+    seconds = row.get("seconds") or 0.0
+    dollars = row.get("dollars") or 0.0
     return {
         "runs": row.get("runs") or 0,
-        "questions": row.get("questions") or 0,
+        "questions": questions,
         "pages": row.get("pages") or 0,
-        "dollars": round(row.get("dollars") or 0.0, 4),
-        "seconds": round(row.get("seconds") or 0.0, 1),
+        "dollars": round(dollars, 4),
+        "seconds": round(seconds, 1),
+        # Derived across every run rather than averaged over the per-run figures: a
+        # thirty-second run and an hour-long one must not carry the same weight.
+        "questions_per_minute": (
+            round(questions / seconds * 60, 1) if seconds and questions else None
+        ),
+        "dollars_per_question": round(dollars / questions, 5) if questions else None,
     }

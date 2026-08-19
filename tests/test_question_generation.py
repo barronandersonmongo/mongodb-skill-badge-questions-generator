@@ -1662,3 +1662,128 @@ def test_the_form_is_chosen_by_the_material(fake_client, walk_settings):
     client = fake_client(parsed_by_format=walk_run())
     question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
     assert "Let the material choose the form" in client.messages.parse_calls[0]["system"]
+
+
+# --- throughput and unit cost during a walk ---
+
+
+def test_a_walk_reports_questions_per_minute(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: Pages per minute describes the machinery; questions per minute describes the
+        output, and it is what an author plans a session against. Reported only at the end it
+        arrives too late to decide whether to let a run continue.
+    Success: The finished run and its progress snapshots both carry a questions-per-minute
+        figure.
+    Feature: Question generation — throughput reported in questions per minute.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    fake_client(parsed_by_format=walk_run())
+    seen = []
+    result = question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    assert result["questions_per_minute"] is not None
+    assert any(s.get("questions_per_minute") is not None for s in seen)
+
+
+def test_a_walk_reports_what_each_question_is_costing(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: Spend so far does not say whether a run is going well — a big number may be fine
+        if it is producing a lot. Cost per question is the figure that makes stopping an
+        informed decision, and during a run the running average is also the best projection
+        of what the rest will cost.
+    Success: Progress and the finished run both report dollars per question.
+    Feature: Question generation — cost per question while the walk runs.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    client = fake_client(parsed_by_format=walk_run())
+    client.messages.usage = {"input_tokens": 1000, "output_tokens": 500}
+    seen = []
+    result = question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    assert result["cost"]["dollars_per_question"] > 0
+    mid = [s for s in seen if s["pages_done"] == 1][-1]
+    assert mid["cost"]["dollars_per_question"] > 0
+
+
+# --- asking for a skill level ---
+
+
+def test_a_requested_skill_level_reaches_the_prompt(fake_client, walk_settings):
+    """
+    Intent: The badge decides the subject matter; the skill level decides who the question is
+        for, and a quiz aimed at people who own the deployment is a different artefact from
+        one aimed at people who installed it last week. Dropped between the form and the
+        prompt, the choice would silently do nothing.
+    Success: The requested level's guidance reaches the authoring prompt.
+    Feature: Question generation — questions pitched at a chosen skill level.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(
+        PAGE, BADGE, [BADGE], difficulty="advanced", settings=walk_settings
+    )
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "ADVANCED" in prompt
+    assert "owns the deployment" in prompt
+
+
+def test_each_level_says_what_it_means(fake_client, walk_settings):
+    """
+    Intent: "Advanced" on its own is read as harder wording rather than harder judgement,
+        which produces obscure trivia — a version number nobody remembers — instead of
+        questions a senior engineer finds worth answering. Each level has to describe the
+        reader and the kind of thinking wanted.
+    Success: Every level's guidance describes who it is for, and advanced rules trivia out.
+    Feature: Question generation — the skill levels are defined, not just named.
+    """
+    guidance = question_generation.DIFFICULTY_GUIDANCE
+    assert set(guidance) == {"foundational", "intermediate", "advanced"}
+    assert "few weeks" in guidance["foundational"]
+    assert "production" in guidance["intermediate"]
+    assert "not obscurer trivia" in guidance["advanced"]
+
+
+def test_no_chosen_level_spreads_the_questions(fake_client, walk_settings):
+    """
+    Intent: Left silent the model pitches a whole page at one level of its own choosing, which
+        is the same problem as forcing every question into a scenario. "Mixed" has to be an
+        instruction to spread them, not the absence of one.
+    Success: With no level requested the prompt asks for a spread across the three levels.
+    Feature: Question generation — a mixed run spreads across levels.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "spread the questions across" in prompt
+
+
+def test_the_level_asked_for_is_recorded_with_the_run(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: The level is one of the choices that explains a run's output, so it belongs with
+        the record — comparing two runs on a badge is meaningless if you cannot see that one
+        asked for foundational and the other for advanced.
+    Success: The run summary reports the level that was requested.
+    Feature: Run history — the requested skill level is recorded.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE])
+    fake_client(parsed_by_format=walk_run())
+    result = question_generation.generate_for_badge(
+        "atlas-search", difficulty="intermediate", settings=walk_settings
+    )
+    assert result["requested"]["difficulty"] == "intermediate"

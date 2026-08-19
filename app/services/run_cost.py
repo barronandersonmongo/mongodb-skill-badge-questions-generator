@@ -64,7 +64,19 @@ class RunCost:
             return None
         return self.dollars / done * total
 
-    def snapshot(self, done: int = 0, total: int = 0) -> dict[str, Any]:
+    def dollars_per_question(self, questions: int) -> float | None:
+        """What each question has cost so far, or None if none have been written yet.
+
+        The figure that makes a run comparable with the last one: total spend depends on
+        how many pages were walked, while cost per question is the number that says
+        whether a prompt or effort change was worth it. During a run it is a running
+        average, which is also the best available projection of the rest.
+        """
+        if not questions:
+            return None
+        return self.dollars / questions
+
+    def snapshot(self, done: int = 0, total: int = 0, questions: int = 0) -> dict[str, Any]:
         """The cost figures a status panel shows."""
         return {
             "input_tokens": self.input_tokens,
@@ -74,6 +86,11 @@ class RunCost:
             "calls": self.calls,
             "dollars": round(self.dollars, 4),
             "projected_dollars": _round_or_none(self.projected_dollars(done, total)),
+            # More places than the totals: a question costs cents, and two decimals
+            # would round most runs to $0.00 and read as free.
+            "dollars_per_question": _round_or_none(
+                self.dollars_per_question(questions), 5
+            ),
         }
 
 
@@ -82,5 +99,5 @@ def _field(usage: Any, name: str) -> int:
     return int(value or 0)
 
 
-def _round_or_none(value: float | None) -> float | None:
-    return None if value is None else round(value, 4)
+def _round_or_none(value: float | None, places: int = 4) -> float | None:
+    return None if value is None else round(value, places)

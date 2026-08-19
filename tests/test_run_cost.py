@@ -128,3 +128,47 @@ def test_the_price_list_is_configurable(settings):
     cost = RunCost(_settings=dearer)
     cost.add({"input_tokens": 1_000_000})
     assert round(cost.dollars, 6) == 50.0
+
+
+# --- unit cost ---
+
+
+def test_cost_per_question_is_reported(settings):
+    """
+    Intent: Total spend depends on how many pages a run walked, so it says nothing about
+        whether the run was efficient. Cost per question is the comparable figure — the one
+        that answers whether a prompt or effort change paid for itself.
+    Success: Spend divided by questions written is reported.
+    Feature: Run cost — cost per question.
+    """
+    cost = RunCost(_settings=settings)
+    cost.add({"input_tokens": 1_000_000})
+    per_question = cost.dollars_per_question(10)
+    assert round(per_question, 6) == round(cost.dollars / 10, 6)
+
+
+def test_no_unit_cost_before_any_question_exists(settings):
+    """
+    Intent: Zero would read as "these questions are free" at exactly the moment none have
+        been written — and dividing by zero would take the run down over a display figure.
+    Success: With no questions the unit cost is None.
+    Feature: Run cost — no unit cost without questions.
+    """
+    cost = RunCost(_settings=settings)
+    cost.add({"input_tokens": 1000})
+    assert cost.dollars_per_question(0) is None
+    assert cost.snapshot(1, 10, 0)["dollars_per_question"] is None
+
+
+def test_the_unit_cost_keeps_enough_precision_to_be_useful(settings):
+    """
+    Intent: A question costs cents. Rounded to the two places that suit a run total, almost
+        every question would read as $0.00 and the figure would be worthless for the
+        comparison it exists to support.
+    Success: A sub-cent unit cost is reported as a non-zero number.
+    Feature: Run cost — unit cost is reported to a useful precision.
+    """
+    cost = RunCost(_settings=settings)
+    cost.add({"input_tokens": 1000})
+    snapshot = cost.snapshot(1, 1, 100)
+    assert snapshot["dollars_per_question"] > 0

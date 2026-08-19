@@ -1099,3 +1099,60 @@ def test_the_screen_offers_the_run_history(client, fake_collection, fake_questio
     body = client.get(PAGE).text
     assert 'id="history-btn"' in body
     assert 'id="history-modal"' in body
+
+
+# --- skill level, rate and unit cost on screen ---
+
+
+def test_the_form_offers_a_skill_level(client, fake_collection, fake_questions):
+    """
+    Intent: A quiz for people who own the deployment is a different artefact from one for
+        people who installed MongoDB last week, so the level is a choice the author has to be
+        able to make — and mixed has to be offered, since spreading the levels is the sensible
+        default for filling a bank.
+    Success: The form offers the three levels and a mixed option.
+    Feature: Question generation — skill level is choosable on the screen.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'id="difficulty"' in body
+    for level in ("foundational", "intermediate", "advanced"):
+        assert 'value="' + level + '"' in body
+    assert "Mixed" in body
+
+
+def test_the_panel_shows_throughput_and_unit_cost(client, fake_collection, fake_questions):
+    """
+    Intent: Spend so far does not say whether a run is going well — a large number is fine if
+        it is producing a lot. Questions per minute and cost per question are the two figures
+        that make "let it run or stop it" an informed decision.
+    Success: The panel has cells for the rate and the cost per question.
+    Feature: Question generation — throughput and unit cost on the panel.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'data-stat="qpm"' in body
+    assert 'data-stat="per-question"' in body
+
+
+def test_a_finished_run_reports_its_unit_cost_and_rate(client, fake_collection, fake_questions):
+    """
+    Intent: Total spend cannot be compared between runs because it depends on how many pages
+        were walked. Cost per question and questions per minute are the comparable figures,
+        and they are what a later decision about the other badges turns on.
+    Success: The run summary reports both alongside the total.
+    Feature: Question generation — a finished run reports its unit cost and rate.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 9,
+        "pages_done": 3,
+        "pages_available": 20,
+        "rejected": [],
+        "source_pages": [],
+        "questions_per_minute": 2.5,
+        "cost": {"dollars": 0.184, "dollars_per_question": 0.0204},
+    }
+    body = client.get(PAGE).text
+    assert "0.0204" in body and "per question" in body
+    assert "2.5" in body and "per minute" in body

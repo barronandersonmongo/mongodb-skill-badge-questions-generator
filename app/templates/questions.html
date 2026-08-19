@@ -60,6 +60,8 @@
       <div><div class="text-body-secondary">Remaining</div><div data-stat="eta">—</div></div>
       <div><div class="text-body-secondary">Spent</div><div data-stat="spent">—</div></div>
       <div><div class="text-body-secondary">Projected</div><div data-stat="projected">—</div></div>
+      <div><div class="text-body-secondary">Questions/min</div><div data-stat="qpm">—</div></div>
+      <div><div class="text-body-secondary">Per question</div><div data-stat="per-question">—</div></div>
     </div>
     <div class="d-flex justify-content-between align-items-center gap-2">
       <div class="small text-body-secondary text-truncate" data-stat="current-page">—</div>
@@ -112,6 +114,10 @@
   {% if last_result.cost and last_result.cost.dollars %}
   <span class="text-body-secondary" data-run-cost="true">
     — ${{ "%.3f"|format(last_result.cost.dollars) }} spent
+    {%- if last_result.cost.dollars_per_question %},
+    ${{ "%.4f"|format(last_result.cost.dollars_per_question) }} per question{% endif %}
+    {%- if last_result.questions_per_minute %},
+    {{ last_result.questions_per_minute }} per minute{% endif %}
   </span>
   {% endif %}
   {% if last_result.stopped_early %}
@@ -526,6 +532,18 @@
           page. A run picks up where the last one stopped.
         </div>
 
+        <label for="difficulty" class="form-label mt-3">Skill level</label>
+        <select class="form-select" id="difficulty">
+          <option value="" selected>Mixed — let the material decide</option>
+          <option value="foundational">Foundational — a few weeks with MongoDB</option>
+          <option value="intermediate">Intermediate — ships it in production</option>
+          <option value="advanced">Advanced — owns the deployment</option>
+        </select>
+        <div class="form-text">
+          The same scale every question is tagged with. Advanced means deeper judgement —
+          failure modes and why a recommendation holds — not obscurer trivia.
+        </div>
+
         <label for="instructions" class="form-label mt-3">
           Extra instructions (optional)
         </label>
@@ -636,6 +654,13 @@ function formatMoney(value) {
   return "$" + (value < 1 ? value.toFixed(3) : value.toFixed(2));
 }
 
+function formatUnitCost(value) {
+  // A question costs cents, so this needs more places than a run total: rounded to two
+  // it would read as $0.00 and be useless for comparing one run with the next.
+  if (value === null || value === undefined) return "—";
+  return "$" + value.toFixed(4);
+}
+
 function formatTokens(n) {
   if (!n) return "0";
   if (n < 1000) return String(n);
@@ -701,6 +726,9 @@ function showProgress(p) {
   setStat("eta", p.phase === "done" || p.phase === "stopped" ? "—" : formatDuration(p.eta_seconds));
 
   const cost = p.cost || {};
+  setStat("qpm", p.questions_per_minute === null || p.questions_per_minute === undefined
+    ? "—" : p.questions_per_minute.toFixed(1));
+  setStat("per-question", formatUnitCost(cost.dollars_per_question));
   setStat("spent", formatMoney(cost.dollars));
   setStat("projected", p.phase === "done" || p.phase === "stopped"
     ? "—" : formatMoney(cost.projected_dollars));
@@ -811,7 +839,10 @@ document.getElementById("history-modal").addEventListener("show.bs.modal", async
   document.getElementById("history-totals").textContent =
     (t.runs || 0) + " run(s) · " + (t.questions || 0) + " question(s) · "
     + (t.pages || 0) + " page(s) · " + formatMoney(t.dollars) + " · "
-    + formatDuration(t.seconds);
+    + formatDuration(t.seconds)
+    + (t.questions_per_minute ? " · " + t.questions_per_minute.toFixed(1) + " q/min" : "")
+    + (t.dollars_per_question
+        ? " · " + formatUnitCost(t.dollars_per_question) + " per question" : "");
   target.textContent = "";
   if ((payload.runs || []).length === 0) {
     target.textContent = "No runs recorded yet.";
@@ -821,13 +852,13 @@ document.getElementById("history-modal").addEventListener("show.bs.modal", async
   table.className = "table table-sm align-middle mb-0";
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
-  ["When", "Badge", "Pages", "Questions", "Per page", "Effort", "Took", "Cost", "Outcome"]
-    .forEach((label, i) => {
-      const th = document.createElement("th");
-      th.textContent = label;
-      if (i >= 2 && i <= 7) th.className = "text-end";
-      headRow.append(th);
-    });
+  ["When", "Badge", "Pages", "Questions", "Per page", "Level", "Effort", "Q/min",
+   "Took", "Cost", "Per question", "Outcome"].forEach((label, i) => {
+    const th = document.createElement("th");
+    th.textContent = label;
+    if (i >= 2 && i <= 10) th.className = "text-end";
+    headRow.append(th);
+  });
   head.append(headRow);
   const tbody = document.createElement("tbody");
   (payload.runs || []).forEach((run) => {
@@ -838,16 +869,20 @@ document.getElementById("history-modal").addEventListener("show.bs.modal", async
       (run.pages_done || 0) + (run.pages_total ? " / " + run.pages_total : ""),
       String(run.inserted || 0),
       run.requested ? String(run.requested.questions_per_page || "—") : "—",
+      (run.requested && run.requested.difficulty) || "mixed",
       run.effort || "—",
+      run.questions_per_minute === null || run.questions_per_minute === undefined
+        ? "—" : run.questions_per_minute.toFixed(1),
       formatDuration(run.elapsed_seconds),
       formatMoney(run.cost ? run.cost.dollars : null),
+      formatUnitCost(run.cost ? run.cost.dollars_per_question : null),
       run.error ? "failed" : (run.phase || "—"),
     ];
     cells.forEach((value, i) => {
       const td = document.createElement("td");
       td.textContent = value;
-      if (i >= 2 && i <= 7) td.className = "text-end";
-      if (i === 8 && run.error) td.className = "text-danger";
+      if (i >= 2 && i <= 10) td.className = "text-end";
+      if (i === 11 && run.error) td.className = "text-danger";
       tr.append(td);
     });
     tbody.append(tr);
@@ -933,6 +968,7 @@ document.getElementById("start-run").addEventListener("click", async () => {
       skill_badges: slugs,
       max_pages: Number(document.getElementById("max-pages").value),
       questions_per_page: Number(document.getElementById("per-page").value),
+      difficulty: document.getElementById("difficulty").value || null,
       extra_instructions: document.getElementById("instructions").value.trim() || null,
     }),
   });

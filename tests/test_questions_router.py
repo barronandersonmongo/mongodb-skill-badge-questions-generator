@@ -849,3 +849,60 @@ def test_dismissing_clears_a_failure_as_well(client, fake_questions, fake_runs):
     client.post(API + "/generate/dismiss")
     state = client.get(API + "/generate/status").json()
     assert state["last_error"] is None and state["last_traceback"] is None
+
+
+# --- choosing a skill level ---
+
+
+def test_the_chosen_skill_level_reaches_the_generator(client, monkeypatch, fake_questions):
+    """
+    Intent: The dropdown is the author's control over who the questions are for. If the
+        endpoint dropped it, every run would be mixed and the control would be decoration.
+    Success: The requested level arrives at the generator.
+    Feature: Question generation — the chosen skill level is honoured.
+    """
+    seen: dict = {}
+
+    def record(slug, **kwargs):
+        seen.update(kwargs)
+        return {"skill_badge": slug, "inserted": 0, "pages_done": 0, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["atlas-search"], "max_pages": 1, "difficulty": "advanced"},
+    )
+    assert seen["difficulty"] == "advanced"
+
+
+def test_no_skill_level_means_a_mixed_run(client, monkeypatch, fake_questions):
+    """
+    Intent: Mixed is the default and has to stay reachable — a request that omits the field
+        must mean "spread them", not fail validation or silently pick a level.
+    Success: Omitting the level passes None through.
+    Feature: Question generation — a mixed run is the default.
+    """
+    seen: dict = {}
+
+    def record(slug, **kwargs):
+        seen.update(kwargs)
+        return {"skill_badge": slug, "inserted": 0, "pages_done": 0, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
+    assert seen["difficulty"] is None
+
+
+def test_an_unrecognised_skill_level_is_refused(client, fake_questions):
+    """
+    Intent: The level names are the same vocabulary every stored question is tagged with. An
+        arbitrary value would reach the prompt as guidance nobody wrote and tag questions with
+        a level nothing filters on.
+    Success: A level outside the three is a validation error.
+    Feature: Question generation — a controlled skill-level vocabulary.
+    """
+    response = client.post(
+        API + "/generate",
+        json={"skill_badges": ["atlas-search"], "max_pages": 1, "difficulty": "expert"},
+    )
+    assert response.status_code == 422

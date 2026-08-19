@@ -167,7 +167,13 @@ def test_the_history_totals_what_every_run_spent(fake_runs):
     runs.record_run(summary("b", inserted=6, pages_done=2, elapsed_seconds=30.0,
                             cost={"dollars": 0.15}))
     totals = runs.totals()
-    assert totals == {"runs": 2, "questions": 15, "pages": 5, "dollars": 0.4, "seconds": 90.0}
+    # The summed fields, checked individually: the totals also carry figures derived
+    # from them, and pinning the whole dict would break on every addition.
+    assert totals["runs"] == 2
+    assert totals["questions"] == 15
+    assert totals["pages"] == 5
+    assert totals["dollars"] == 0.4
+    assert totals["seconds"] == 90.0
 
 
 def test_totals_of_an_empty_history_are_zero(fake_runs):
@@ -177,7 +183,10 @@ def test_totals_of_an_empty_history_are_zero(fake_runs):
     Success: With nothing recorded the totals are zeroes.
     Feature: Run history — an empty history totals cleanly.
     """
-    assert runs.totals() == {"runs": 0, "questions": 0, "pages": 0, "dollars": 0.0, "seconds": 0.0}
+    totals = runs.totals()
+    assert [totals[k] for k in ("runs", "questions", "pages", "dollars", "seconds")] == [
+        0, 0, 0, 0.0, 0.0
+    ]
 
 
 def test_run_history_is_indexed_for_the_way_it_is_read(fake_runs):
@@ -192,3 +201,59 @@ def test_run_history_is_indexed_for_the_way_it_is_read(fake_runs):
     by_name = {index["name"]: index for index in fake_runs.indexes}
     assert {"run_id_unique", "finished_at", "skill_badges"} <= by_name.keys()
     assert by_name["run_id_unique"]["unique"] is True
+
+
+# --- throughput and unit cost ---
+
+
+def test_the_history_reports_questions_per_minute(fake_runs):
+    """
+    Intent: Pages per minute is an implementation detail; questions per minute is the output,
+        and it is what an author plans a session against — "34 badges at this rate" is only
+        answerable from it.
+    Success: Totals report the rate across every recorded run.
+    Feature: Run history — throughput in questions per minute.
+    """
+    runs.record_run(summary("a", inserted=30, elapsed_seconds=60.0))
+    runs.record_run(summary("b", inserted=30, elapsed_seconds=60.0))
+    assert runs.totals()["questions_per_minute"] == 30.0
+
+
+def test_the_rate_weights_long_runs_more_than_short_ones(fake_runs):
+    """
+    Intent: Averaging the per-run rates would let a thirty-second run count as much as an
+        hour-long one, so one fast outlier would misreport the throughput of a whole
+        afternoon. The rate has to be derived from the totals, not averaged over runs.
+    Success: A long slow run dominates a short fast one.
+    Feature: Run history — the rate is weighted by time, not by run.
+    """
+    runs.record_run(summary("fast", inserted=10, elapsed_seconds=10.0))
+    runs.record_run(summary("slow", inserted=10, elapsed_seconds=590.0))
+    # 20 questions in 600 seconds is 2/min, not the 30.5 an unweighted mean would give.
+    assert runs.totals()["questions_per_minute"] == 2.0
+
+
+def test_the_history_reports_cost_per_question(fake_runs):
+    """
+    Intent: Total spend depends on how many pages were walked, so it cannot be compared
+        between runs. Cost per question is the figure that says whether a prompt or effort
+        change was worth it.
+    Success: Totals report dollars per question.
+    Feature: Run history — unit cost per question.
+    """
+    runs.record_run(summary("a", inserted=100, cost={"dollars": 2.0}))
+    assert runs.totals()["dollars_per_question"] == 0.02
+
+
+def test_unit_figures_are_absent_rather_than_zero_when_nothing_was_produced(fake_runs):
+    """
+    Intent: A rate of zero and a cost per question of zero both read as facts about a cheap,
+        fast run rather than as "there is nothing to divide by". A run that produced no
+        questions has no unit cost.
+    Success: With no questions recorded, both derived figures are None.
+    Feature: Run history — derived figures need something to divide by.
+    """
+    runs.record_run(summary("a", inserted=0, elapsed_seconds=60.0, cost={"dollars": 0.1}))
+    totals = runs.totals()
+    assert totals["questions_per_minute"] is None
+    assert totals["dollars_per_question"] is None

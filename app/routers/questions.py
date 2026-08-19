@@ -17,6 +17,7 @@ badges are unrelated jobs, and one must not report the other's result.
 import logging
 import time
 import traceback
+from typing import Literal
 from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -72,6 +73,9 @@ class GenerateRequest(BaseModel):
     skill_badges: list[str] = Field(min_length=1, max_length=25)
     max_pages: int = Field(default=25, ge=1, le=MAX_PAGES_PER_RUN)
     questions_per_page: int = Field(default=3, ge=1, le=10)
+    # The scale every question already carries. None means "let the material decide",
+    # which spreads a run across the three levels rather than pitching them all alike.
+    difficulty: Literal["foundational", "intermediate", "advanced"] | None = None
     extra_instructions: str | None = None
 
 
@@ -106,6 +110,7 @@ def _run_generation(request: GenerateRequest) -> None:
                     slug,
                     max_pages=request.max_pages,
                     questions_per_page=request.questions_per_page,
+                    difficulty=request.difficulty,
                     extra_instructions=request.extra_instructions,
                     progress=progress,
                     stop=lambda: _run_state["stop_requested"],

@@ -111,6 +111,31 @@ Use only slugs from the badge list given to you — never invent one, and never 
 alter one. Always include the badges the question was written for. Say briefly \
 why any additional badge applies."""
 
+# The difficulty scale every question already carries. Described here because
+# "advanced" on its own is read as "harder wording" rather than "harder judgement",
+# which produces obscure trivia instead of questions a senior engineer finds worth
+# answering.
+DIFFICULTY_GUIDANCE = {
+    "foundational": (
+        "Target FOUNDATIONAL difficulty: someone who has used MongoDB for a few "
+        "weeks. Test what a feature does and when to reach for it. Do not test "
+        "interactions between features, tuning, or failure modes."
+    ),
+    "intermediate": (
+        "Target INTERMEDIATE difficulty: someone who ships MongoDB in production. "
+        "Test choosing between two reasonable approaches, reading diagnostic output, "
+        "and the consequences of a configuration. Assume the basics."
+    ),
+    "advanced": (
+        "Target ADVANCED difficulty: someone who owns the deployment. Test failure "
+        "modes, interactions between features, and the reasoning behind a "
+        "recommendation rather than the recommendation itself. Harder means deeper "
+        "judgement, not obscurer trivia — a version number nobody remembers is not "
+        "an advanced question."
+    ),
+}
+
+
 PAGE_AUTHOR_SYSTEM = """\
 You write assessment questions for MongoDB's skill badge quizzes, on behalf of \
 the team that authors them. The reader is a practitioner earning a badge, not a \
@@ -688,6 +713,7 @@ def build_page_prompt(
     catalog: list[dict[str, Any]],
     count: int,
     *,
+    difficulty: str | None = None,
     extra_instructions: str | None = None,
 ) -> str:
     """Assemble the request for one page. Kept separate so it can be asserted on."""
@@ -700,6 +726,14 @@ def build_page_prompt(
         "Every MongoDB skill badge, by slug — file each question under every one it "
         "genuinely tests:\n" + "\n".join(badge_lines) + "\n\n"
     )
+    if difficulty:
+        prompt += DIFFICULTY_GUIDANCE.get(difficulty, "") + "\n\n"
+    else:
+        prompt += (
+            "Difficulty is yours to judge per question — let the material decide, and "
+            "spread the questions across foundational, intermediate and advanced "
+            "rather than pitching them all the same.\n\n"
+        )
     if extra_instructions:
         prompt += f"Additional instructions from the author:\n{extra_instructions}\n\n"
     return prompt + (
@@ -727,6 +761,7 @@ def questions_from_page(
     catalog: list[dict[str, Any]],
     *,
     count: int | None = None,
+    difficulty: str | None = None,
     extra_instructions: str | None = None,
     settings: Settings | None = None,
 ) -> PageResult:
@@ -762,6 +797,7 @@ def questions_from_page(
                         badge,
                         catalog,
                         count,
+                        difficulty=difficulty,
                         extra_instructions=extra_instructions,
                     ),
                 }
@@ -783,6 +819,7 @@ def generate_for_badge(
     *,
     max_pages: int | None = None,
     questions_per_page: int | None = None,
+    difficulty: str | None = None,
     extra_instructions: str | None = None,
     settings: Settings | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
@@ -823,6 +860,7 @@ def generate_for_badge(
         "requested": {
             "max_pages": max_pages,
             "questions_per_page": questions_per_page,
+            "difficulty": difficulty,
             "extra_instructions": extra_instructions,
         },
         "model": settings.model,
@@ -862,11 +900,18 @@ def generate_for_badge(
         state["questions_per_page_actual"] = (
             round(summary["inserted"] / done, 1) if done else None
         )
+        # The throughput figure an author actually plans against: pages per minute is
+        # an implementation detail, questions per minute is the output.
+        state["questions_per_minute"] = (
+            round(summary["inserted"] / elapsed * 60, 1)
+            if elapsed > 0 and summary["inserted"]
+            else None
+        )
         # No confident estimate before any page has finished: "0%, 0 seconds left" is
         # worse than saying nothing.
         state["percent"] = round(done / total * 100, 1) if total else None
         state["eta_seconds"] = round((total - done) / rate) if rate and total else None
-        state["cost"] = cost.snapshot(done, total)
+        state["cost"] = cost.snapshot(done, total, summary["inserted"])
         progress(state)
 
     report()
@@ -946,6 +991,7 @@ def generate_for_badge(
                 badge,
                 catalog,
                 count=questions_per_page,
+                difficulty=difficulty,
                 extra_instructions=extra_instructions,
                 settings=settings,
             )
@@ -986,7 +1032,17 @@ def generate_for_badge(
     summary["current_page"] = None
     summary["failure_count"] = len(summary["failures"])
     summary["elapsed_seconds"] = round(time.monotonic() - started, 1)
-    summary["cost"] = cost.snapshot(summary["pages_done"], summary["pages_total"])
+    summary["cost"] = cost.snapshot(
+        summary["pages_done"], summary["pages_total"], summary["inserted"]
+    )
+    # From the raw clock, not the rounded figure on the summary: a fast run rounds to
+    # 0.0 seconds, and dividing by that reports no rate for a run that had one.
+    elapsed = time.monotonic() - started
+    summary["questions_per_minute"] = (
+        round(summary["inserted"] / elapsed * 60, 1)
+        if elapsed > 0 and summary["inserted"]
+        else None
+    )
     summary["percent"] = (
         round(summary["pages_done"] / summary["pages_total"] * 100, 1)
         if summary["pages_total"]
