@@ -593,3 +593,81 @@ def test_coverage_says_how_much_material_a_badge_has_left(
     rows = client.get(API + "/coverage").json()
     assert rows[0]["pages_used"] == 0
     assert rows[0]["pages_available"] is not None
+
+
+# --- stopping a run ---
+
+
+def test_a_run_can_be_asked_to_stop(client, monkeypatch, fake_questions):
+    """
+    Intent: A 200-page walk is a long commitment and the only reason to stop one is to stop
+        it spending. Without an endpoint the only way out is restarting the server, which
+        loses the run state as well.
+    Success: POST /generate/stop sets the stop flag while a run is in progress.
+    Feature: Question generation — a run can be stopped.
+    """
+    api_module._run_state.update(running=True, stop_requested=False)
+    try:
+        response = client.post(API + "/generate/stop")
+        assert response.status_code == 200
+        assert response.json() == {"stopping": True}
+        assert api_module._run_state["stop_requested"] is True
+    finally:
+        api_module._run_state.update(running=False, stop_requested=False)
+
+
+def test_stopping_when_nothing_is_running_is_refused(client, fake_questions):
+    """
+    Intent: A stop with no run to stop would leave the flag set, and the next run would
+        halt after its first page for no reason the author could see.
+    Success: Stopping with no run in progress is a 409.
+    Feature: Question generation — a stop needs a run to stop.
+    """
+    api_module._run_state.update(running=False, stop_requested=False)
+    assert client.post(API + "/generate/stop").status_code == 409
+    assert api_module._run_state["stop_requested"] is False
+
+
+def test_the_walk_is_given_the_stop_flag(client, monkeypatch, fake_questions):
+    """
+    Intent: The endpoint only sets a flag; if the walk is not reading it, the button does
+        nothing and the author watches the cost keep climbing after pressing it.
+    Success: The generator is passed a stop callable that reflects the run state.
+    Feature: Question generation — the stop request reaches the walk.
+    """
+    seen: dict = {}
+
+    def record(slug, **kwargs):
+        seen["stop"] = kwargs.get("stop")
+        return {"skill_badge": slug, "inserted": 0, "pages_done": 0, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
+    assert seen["stop"] is not None
+    api_module._run_state["stop_requested"] = True
+    try:
+        assert seen["stop"]() is True
+    finally:
+        api_module._run_state["stop_requested"] = False
+
+
+def test_progress_is_reported_separately_from_the_finished_run(
+    client, monkeypatch, fake_questions
+):
+    """
+    Intent: The panel reads progress while a walk runs and the final figures when it ends.
+        Written to the same field, a mid-walk snapshot would be indistinguishable from a
+        finished run, and the screen would report a run as complete at page three.
+    Success: A walk's progress appears under `progress`, leaving `last_result` for the
+        finished run.
+    Feature: Question generation — progress and result are separate.
+    """
+    def record(slug, **kwargs):
+        kwargs["progress"]({"phase": "writing", "pages_done": 1})
+        return {"skill_badge": slug, "inserted": 2, "pages_done": 1, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
+    state = client.get(API + "/generate/status").json()
+    assert state["progress"]["phase"] == "writing"
+    assert state["last_result"]["inserted"] == 2

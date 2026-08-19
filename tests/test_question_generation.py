@@ -1317,9 +1317,15 @@ def test_a_walk_reports_progress_page_by_page(
     question_generation.generate_for_badge(
         "atlas-search", settings=walk_settings, progress=seen.append
     )
-    assert [s["pages_done"] for s in seen] == [0, 1, 2]
+    # Reported more than once per page — before the set is resolved, as each page is
+    # named, and as each finishes — so this checks the sequence advances and ends
+    # complete rather than pinning the number of snapshots.
+    assert [s["pages_done"] for s in seen] == sorted(s["pages_done"] for s in seen)
+    assert seen[0]["pages_done"] == 0
+    assert seen[-1]["pages_done"] == 2
     assert seen[-1]["pages_total"] == 2
     assert seen[-1]["inserted"] == 2
+    assert seen[-1]["phase"] == "done"
 
 
 def test_a_walk_can_be_stopped(
@@ -1402,3 +1408,125 @@ def test_walking_an_unknown_badge_is_refused(fake_collection, fake_questions, wa
     """
     with pytest.raises(ValueError, match="No skill badge"):
         question_generation.generate_for_badge("not-a-badge", settings=walk_settings)
+
+
+# --- what a walk costs, and stopping it ---
+
+
+def test_a_walk_reports_what_it_has_spent(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: Cost is the reason to stop a walk, so the walk has to account for it as it
+        goes rather than only at the end. Reported from the token counts each response
+        carries, so the figure is what was spent rather than a guess at it.
+    Success: The run summary carries token counts, a call count and a dollar figure.
+    Feature: Question generation — a walk accounts for its own cost.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    client = fake_client(parsed_by_format=walk_run())
+    client.messages.usage = {"input_tokens": 1000, "output_tokens": 500}
+    result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    assert result["cost"]["calls"] == 2
+    assert result["cost"]["input_tokens"] == 2000
+    assert result["cost"]["dollars"] > 0
+
+
+def test_progress_carries_the_cost_so_far_and_the_projection(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: The stop decision has to be made while there is still something to stop, so
+        spend and the projected total both belong in the progress snapshot rather than the
+        final summary.
+    Success: A progress snapshot mid-walk reports dollars spent and a projected total.
+    Feature: Question generation — cost reported during the walk.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    client = fake_client(parsed_by_format=walk_run())
+    client.messages.usage = {"input_tokens": 1000, "output_tokens": 500}
+    seen = []
+    question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    mid = [s for s in seen if s["pages_done"] == 1][-1]
+    assert mid["cost"]["dollars"] > 0
+    assert mid["cost"]["projected_dollars"] > mid["cost"]["dollars"]
+
+
+def test_a_walk_names_the_page_it_is_reading(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: "Page 7 of 25" says how far along a run is; it does not say whether it is
+        working on something sensible. Naming the page is what lets an author notice a walk
+        spending its budget on material that does not belong to the badge.
+    Success: A progress snapshot names the page currently being read.
+    Feature: Question generation — the page being read is reported.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE])
+    fake_client(parsed_by_format=walk_run())
+    seen = []
+    question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    named = [s["current_page"] for s in seen if s["current_page"]]
+    assert named and named[0]["url"] == "https://x/a.md"
+    # Cleared at the end: a finished run is not still reading anything.
+    assert seen[-1]["current_page"] is None
+
+
+def test_a_walk_reports_its_phase(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: Resolving a badge to its page set happens before the total is known, so a
+        progress bar has nothing honest to show during it. A phase lets the screen say what
+        is happening instead of inventing a percentage.
+    Success: A walk reports resolving before writing, and done at the end.
+    Feature: Question generation — the phase of a walk is reported.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE])
+    fake_client(parsed_by_format=walk_run())
+    seen = []
+    question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    phases = [s["phase"] for s in seen]
+    assert phases[0] == "resolving"
+    assert "writing" in phases
+    assert phases[-1] == "done"
+
+
+def test_a_stopped_walk_reports_the_stopped_phase(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A stopped walk and a completed one both end with a run summary. Reported as
+        done, a stopped walk would look like a badge that had run out of material, and the
+        pages still waiting would be invisible.
+    Success: A walk that was stopped ends in the stopped phase rather than done.
+    Feature: Question generation — a stopped walk is distinguishable from a finished one.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    fake_client(parsed_by_format=walk_run())
+    result = question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, stop=lambda: True
+    )
+    assert result["phase"] == "stopped"
+    assert result["stopped_early"] is True

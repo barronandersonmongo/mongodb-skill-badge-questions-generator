@@ -46,6 +46,13 @@ _run_state: dict = {
     # rather than from when the browser happened to start watching.
     "started_at": None,
     "finished_at": None,
+    # Written as the walk proceeds, so the screen shows where it is rather than only
+    # what it produced. Separate from last_result, which is the finished run.
+    "progress": None,
+    # Set by the stop endpoint and read between pages. A flag rather than a signal
+    # because the walk must finish the page it is on and keep what it wrote — killing
+    # it mid-call would pay for a page and store nothing.
+    "stop_requested": False,
 }
 
 
@@ -81,6 +88,8 @@ def _run_generation(request: GenerateRequest) -> None:
         # trip to another screen; the browser cannot remember it across either.
         started_at=time.time(),
         finished_at=None,
+        progress=None,
+        stop_requested=False,
     )
     logger.info(
         "Generation run started: up to %d page(s) each for %s",
@@ -91,7 +100,7 @@ def _run_generation(request: GenerateRequest) -> None:
     def progress(state: dict) -> None:
         # Written straight onto the run state, so the polling endpoint reports the
         # walk as it happens rather than only when it ends.
-        _run_state["last_result"] = state
+        _run_state["progress"] = state
 
     try:
         results = []
@@ -103,8 +112,13 @@ def _run_generation(request: GenerateRequest) -> None:
                     questions_per_page=request.questions_per_page,
                     extra_instructions=request.extra_instructions,
                     progress=progress,
+                    stop=lambda: _run_state["stop_requested"],
                 )
             )
+            if _run_state["stop_requested"]:
+                # A stop applies to the request, not just the badge being walked:
+                # the author asked for the spending to end.
+                break
         _run_state["last_result"] = (
             results[0] if len(results) == 1 else _combine(results, request)
         )
@@ -197,6 +211,21 @@ def start_generation(request: GenerateRequest, background: BackgroundTasks) -> d
     return {"started": True}
 
 
+@router.post("/generate/stop")
+def stop_generation() -> dict:
+    """Ask the running walk to stop after the page it is on.
+
+    Not a cancellation: the page in flight is already paid for, so it is allowed to
+    finish and its questions are kept. Everything after it is skipped, which is the
+    point — the reason to stop a walk is to stop it spending.
+    """
+    if not _run_state["running"]:
+        raise HTTPException(409, "No generation run is in progress.")
+    _run_state["stop_requested"] = True
+    logger.info("Generation run asked to stop after the current page")
+    return {"stopping": True}
+
+
 @router.get("/generate/status")
 def generation_status() -> dict:
     """Run state, plus the server's clock.
@@ -241,6 +270,8 @@ def _run_sweep(dry_run: bool) -> None:
         last_traceback=None,
         started_at=time.time(),
         finished_at=None,
+        progress=None,
+        stop_requested=False,
     )
     logger.info("Duplicate sweep started%s", " (dry run)" if dry_run else "")
     try:

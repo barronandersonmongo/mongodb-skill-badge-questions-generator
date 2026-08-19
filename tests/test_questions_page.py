@@ -967,3 +967,97 @@ def test_pages_that_produced_nothing_are_listed(client, fake_collection, fake_qu
     body = client.get(PAGE).text
     assert 'data-page-failures="true"' in body
     assert "https://x/bad.md" in body and "refused" in body
+
+
+# --- the status panel ---
+
+
+def test_the_screen_carries_a_run_progress_panel(client, fake_collection, fake_questions):
+    """
+    Intent: A walk of 25 pages runs for many minutes. A spinner cannot distinguish a slow
+        run from a stuck one, so the screen needs the same kind of panel the documentation
+        refresh has: phase, a bar, and the numbers behind it.
+    Success: The panel and its progress bar are on the page, with cells for pages,
+        questions, rate, elapsed and remaining.
+    Feature: Question generation — a detailed run status panel.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'data-progress-panel="true"' in body
+    assert 'data-progress-bar="true"' in body
+    for stat in ("pages", "questions", "rate", "elapsed", "eta"):
+        assert 'data-stat="' + stat + '"' in body
+
+
+def test_the_status_panel_shows_what_the_run_is_spending(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Cost is the reason to stop a walk, so it has to be visible while there is
+        still something to stop. Spend and a projection together are what make that an
+        informed decision rather than a guess.
+    Success: The panel has cells for spend, the projected total and the token counts.
+    Feature: Question generation — run cost on screen.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'data-stat="spent"' in body
+    assert 'data-stat="projected"' in body
+    assert 'data-stat="tokens"' in body
+
+
+def test_the_status_panel_offers_a_stop_button(client, fake_collection, fake_questions):
+    """
+    Intent: A 200-page walk is a long commitment, and an author who started the wrong one
+        should be able to stop the spending without restarting the server. The button says
+        "after this page" because the page in flight is already paid for.
+    Success: A stop control is present on the panel.
+    Feature: Question generation — a run can be stopped from the screen.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'data-stop-run="true"' in body
+    assert "Stop after this page" in body
+
+
+def test_a_finished_run_reports_what_it_cost(client, fake_collection, fake_questions):
+    """
+    Intent: Cost per badge is how an author decides whether the next 33 badges are worth
+        it. Shown only while running, the number is gone by the time there is a decision
+        to make.
+    Success: The run alert reports the dollars the walk spent.
+    Feature: Question generation — a finished run reports its cost.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 9,
+        "pages_done": 3,
+        "pages_available": 20,
+        "rejected": [],
+        "source_pages": [],
+        "cost": {"dollars": 0.184},
+    }
+    body = client.get(PAGE).text
+    assert 'data-run-cost="true"' in body
+    assert "0.184" in body
+
+
+def test_a_stopped_run_is_labelled_as_one(client, fake_collection, fake_questions):
+    """
+    Intent: A stopped walk looks like a walk that ran out of material — both end with
+        fewer questions than asked for. Without a label the author cannot tell that the
+        remaining pages are still there to walk.
+    Success: A run that stopped early is marked as stopped on screen.
+    Feature: Question generation — a stopped run is visible as stopped.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 3,
+        "pages_done": 1,
+        "pages_available": 20,
+        "rejected": [],
+        "source_pages": [],
+        "stopped_early": True,
+    }
+    body = client.get(PAGE).text
+    assert 'data-stopped-early="true"' in body

@@ -39,6 +39,37 @@
 
 <div id="run-alert" class="alert d-none" role="status"></div>
 
+<div class="card mb-3 d-none" id="progress-panel" data-progress-panel="true">
+  <div class="card-body py-3">
+    <div class="d-flex justify-content-between align-items-baseline mb-2">
+      <span class="fw-semibold" data-phase="true">Starting…</span>
+      <span class="font-monospace small" data-headline="true"></span>
+    </div>
+    <div class="progress mb-2" role="progressbar" style="height: 1.25rem;">
+      <div class="progress-bar progress-bar-striped progress-bar-animated"
+           id="progress-bar" data-progress-bar="true" style="width: 0%;">0%</div>
+    </div>
+    <div class="row row-cols-2 row-cols-md-4 g-2 small mb-2" data-progress-stats="true">
+      <div><div class="text-body-secondary">Pages</div><div data-stat="pages">—</div></div>
+      <div><div class="text-body-secondary">Questions</div><div data-stat="questions">—</div></div>
+      <div><div class="text-body-secondary">Rate</div><div data-stat="rate">—</div></div>
+      <div><div class="text-body-secondary">Per page</div><div data-stat="per-page">—</div></div>
+      <div><div class="text-body-secondary">Elapsed</div><div data-stat="elapsed">—</div></div>
+      <div><div class="text-body-secondary">Remaining</div><div data-stat="eta">—</div></div>
+      <div><div class="text-body-secondary">Spent</div><div data-stat="spent">—</div></div>
+      <div><div class="text-body-secondary">Projected</div><div data-stat="projected">—</div></div>
+    </div>
+    <div class="d-flex justify-content-between align-items-center gap-2">
+      <div class="small text-body-secondary text-truncate" data-stat="current-page">—</div>
+      <button class="btn btn-sm btn-outline-danger text-nowrap d-none" id="stop-run-btn"
+              type="button" data-stop-run="true">
+        Stop after this page
+      </button>
+    </div>
+    <div class="small text-body-secondary mt-2" data-stat="tokens">—</div>
+  </div>
+</div>
+
 {% if storage_error %}
 <div class="alert alert-danger">
   <strong>Cannot reach MongoDB.</strong>
@@ -74,6 +105,14 @@
   <strong>Last run:</strong>
   {{ last_result.inserted }} question(s) stored from
   {{ last_result.pages_done }} documentation page(s)
+  {% if last_result.cost and last_result.cost.dollars %}
+  <span class="text-body-secondary" data-run-cost="true">
+    — ${{ "%.3f"|format(last_result.cost.dollars) }} spent
+  </span>
+  {% endif %}
+  {% if last_result.stopped_early %}
+  <span class="badge text-bg-warning" data-stopped-early="true">stopped early</span>
+  {% endif %}
   {% if last_result.exhausted %}
   <div class="mt-1 small" data-exhausted="true">
     Every page that resolves to this badge has already been written from. Widen the
@@ -522,31 +561,105 @@ function stopElapsed() {
   }
 }
 
+const panel = document.getElementById("progress-panel");
+const bar = document.getElementById("progress-bar");
+const stopButton = document.getElementById("stop-run-btn");
+
+const PHASES = {
+  resolving: "Working out which documentation this badge is about…",
+  writing: "Reading pages and writing questions…",
+  stopped: "Stopped",
+  done: "Finished",
+};
+
+function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return total + "s";
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return minutes + "m " + String(total % 60).padStart(2, "0") + "s";
+  return Math.floor(minutes / 60) + "h " + String(minutes % 60).padStart(2, "0") + "m";
+}
+
+function formatMoney(value) {
+  if (value === null || value === undefined) return "—";
+  // Sub-cent runs are normal for a short walk, so two decimals would round most of
+  // them to $0.00 and look broken.
+  return "$" + (value < 1 ? value.toFixed(3) : value.toFixed(2));
+}
+
+function formatTokens(n) {
+  if (!n) return "0";
+  if (n < 1000) return String(n);
+  if (n < 1000000) return (n / 1000).toFixed(1) + "k";
+  return (n / 1000000).toFixed(2) + "M";
+}
+
+function setStat(name, value) {
+  const cell = panel.querySelector('[data-stat="' + name + '"]');
+  if (cell) cell.textContent = value;
+}
+
+function showProgress(p) {
+  if (!p) return;
+  panel.classList.remove("d-none");
+  panel.querySelector("[data-phase]").textContent = PHASES[p.phase] || p.phase || "Working…";
+
+  // A percentage is only shown once the page set is known — while resolving, the walk
+  // genuinely does not know how much work there is, and inventing a number would be
+  // worse than admitting it.
+  const known = p.percent !== null && p.percent !== undefined;
+  bar.style.width = (known ? p.percent : 100) + "%";
+  bar.textContent = known ? p.percent.toFixed(1) + "%" : "";
+  bar.classList.toggle("bg-secondary", !known);
+
+  panel.querySelector("[data-headline]").textContent = known
+    ? p.pages_done + " / " + p.pages_total + " pages" +
+      (p.badge_name ? " · " + p.badge_name : "")
+    : (p.badge_name || "");
+
+  setStat("pages", p.pages_total ? p.pages_done + " of " + p.pages_total : String(p.pages_done || 0));
+  setStat("questions", String(p.inserted || 0)
+    + (p.failure_count ? " · " + p.failure_count + " page(s) failed" : ""));
+  setStat("rate", p.pages_per_minute ? p.pages_per_minute.toFixed(1) + "/min" : "—");
+  setStat("per-page", p.questions_per_page_actual === null || p.questions_per_page_actual === undefined
+    ? "—" : p.questions_per_page_actual.toFixed(1));
+  setStat("elapsed", formatDuration(p.elapsed_seconds));
+  setStat("eta", p.phase === "done" || p.phase === "stopped" ? "—" : formatDuration(p.eta_seconds));
+
+  const cost = p.cost || {};
+  setStat("spent", formatMoney(cost.dollars));
+  setStat("projected", p.phase === "done" || p.phase === "stopped"
+    ? "—" : formatMoney(cost.projected_dollars));
+  setStat("tokens", cost.calls
+    ? formatTokens(cost.input_tokens) + " in · " + formatTokens(cost.output_tokens)
+      + " out · " + cost.calls + " call(s)"
+      + (cost.cache_read_tokens ? " · " + formatTokens(cost.cache_read_tokens) + " cached" : "")
+    : "—");
+
+  setStat("current-page", p.current_page
+    ? "Reading: " + (p.current_page.title || p.current_page.url)
+    : (p.pages_available !== null && p.pages_available !== undefined
+        ? p.pages_available + " page(s) not yet written from remain for this badge"
+        : "—"));
+}
+
 async function pollStatus() {
   const response = await fetch(API + "/generate/status");
   const state = await response.json();
   adoptServerClock(state);
+  showProgress(state.progress);
   if (state.running) {
-    // The walk reports per page, so the message says where it is rather than only
-    // that something is happening. A walk of 25 pages is far too long for a spinner.
-    const at = state.last_result || {};
-    let message = "Writing questions — this takes a few minutes…";
-    if (at.pages_total) {
-      message =
-        "Page " + (at.pages_done || 0) + " of " + at.pages_total +
-        (at.badge_name ? " for " + at.badge_name : "") +
-        " — " + (at.inserted || 0) + " question(s) written so far";
-      if (at.percent !== null && at.percent !== undefined) {
-        message += " (" + at.percent + "%)";
-      }
-      if (at.eta_seconds) {
-        message += ", about " + formatElapsed(at.eta_seconds * 1000) + " left";
-      }
-    }
-    showAlert("info", message + "…", {timed: true});
-    setTimeout(pollStatus, 3000);
+    stopButton.classList.remove("d-none");
+    showAlert("info", "Writing questions — you can leave this page open…", {timed: true});
+    setTimeout(pollStatus, 2000);
     return;
   }
+  stopButton.classList.add("d-none");
+  bar.classList.remove("progress-bar-animated");
+  // The finished run carries the final figures, which the last progress snapshot may
+  // predate.
+  if (state.last_result) showProgress(state.last_result);
   if (state.last_error) {
     showAlert("danger", "Run failed: " + state.last_error);
     if (state.last_traceback) {
@@ -635,6 +748,17 @@ document.getElementById("coverage-modal").addEventListener("show.bs.modal", asyn
   });
   table.append(head, tbody);
   target.append(table);
+});
+
+stopButton.addEventListener("click", async () => {
+  stopButton.disabled = true;
+  stopButton.textContent = "Stopping…";
+  const response = await fetch(API + "/generate/stop", {method: "POST"});
+  if (!response.ok && response.status !== 409) {
+    showAlert("danger", "Could not stop the run (HTTP " + response.status + ").");
+    stopButton.disabled = false;
+    stopButton.textContent = "Stop after this page";
+  }
 });
 
 document.getElementById("start-run").addEventListener("click", async () => {

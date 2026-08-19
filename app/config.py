@@ -111,6 +111,16 @@ class Settings:
     # all — dominate the cost of a walk, so the effort is tuned separately here rather
     # than inheriting the `high` used for research.
     page_author_effort: str = "medium"
+    # --- what a run costs ---
+    # Claude Opus 5 list prices, dollars per million tokens, as published on
+    # 2026-08-19. Cached input reads at a tenth and writes at 1.25x. These are only
+    # used to report what a run has spent: the figure on the screen is computed from
+    # the token counts Claude actually returns, not from an estimate of them, so the
+    # only thing that can be wrong here is the price itself. Update alongside `model`.
+    cost_input_per_mtok: float = 5.00
+    cost_output_per_mtok: float = 25.00
+    cost_cache_read_per_mtok: float = 0.50
+    cost_cache_write_per_mtok: float = 6.25
     max_pages_per_run: int = 25
     # MongoDB publishes an agent-oriented index of its documentation, and serves
     # every page as Markdown. That is the only enumerable route to the whole corpus:

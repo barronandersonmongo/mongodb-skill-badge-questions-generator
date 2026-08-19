@@ -475,10 +475,16 @@ class FakeStream:
 
 
 class FakeParsedResponse:
-    def __init__(self, parsed_output, stop_reason: str = "end_turn", stop_details=None):
+    def __init__(
+        self, parsed_output, stop_reason: str = "end_turn", stop_details=None, usage=None
+    ):
         self.parsed_output = parsed_output
         self.stop_reason = stop_reason
         self.stop_details = stop_details
+        # Token counts, as every real response carries. Left None unless a test sets
+        # FakeMessages.usage, so a test that does not care about cost stays unaffected
+        # — and a run priced at nothing is then visibly nothing, not a silent zero.
+        self.usage = usage
 
 
 class FakeMessages:
@@ -491,6 +497,8 @@ class FakeMessages:
         self._parsed_by_format = parsed_by_format or {}
         self.stream_calls: list[dict] = []
         self.parse_calls: list[dict] = []
+        # Set by a test that asserts on run cost; attached to every parse() response.
+        self.usage = None
 
     def stream(self, **kwargs) -> FakeStream:
         self.stream_calls.append(kwargs)
@@ -501,11 +509,11 @@ class FakeMessages:
     def parse(self, **kwargs) -> FakeParsedResponse:
         self.parse_calls.append(kwargs)
         scripted = self._parsed_by_format.get(kwargs.get("output_format"), self._parsed)
-        return (
-            scripted
-            if isinstance(scripted, FakeParsedResponse)
-            else FakeParsedResponse(scripted)
-        )
+        if isinstance(scripted, FakeParsedResponse):
+            if scripted.usage is None:
+                scripted.usage = self.usage
+            return scripted
+        return FakeParsedResponse(scripted, usage=self.usage)
 
 
 class FakeAnthropic:

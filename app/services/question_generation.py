@@ -25,9 +25,11 @@ minutes a run used to spend waiting on fetches are gone.
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from app.config import Settings, get_settings
+from app.services.run_cost import RunCost
 from app.models.question import (
     GeneratedQuestion,
     GeneratedQuestions,
@@ -634,6 +636,19 @@ def build_page_prompt(
     )
 
 
+@dataclass
+class PageResult:
+    """What one page produced, and what it cost to produce.
+
+    Usage travels with the questions rather than being read back from the client,
+    because a walk needs to attribute spend to the page that incurred it — that is
+    what makes "stop, this is getting expensive" an informed decision.
+    """
+
+    questions: list[GeneratedQuestion]
+    usage: Any = None
+
+
 def questions_from_page(
     page: dict[str, Any],
     badge: dict[str, Any],
@@ -642,7 +657,7 @@ def questions_from_page(
     count: int | None = None,
     extra_instructions: str | None = None,
     settings: Settings | None = None,
-) -> list[GeneratedQuestion]:
+) -> PageResult:
     """Questions this one page supports, structured, in a single Claude call.
 
     One pass, not the draft-then-extract pair the badge-wide path uses. That pair
@@ -688,7 +703,7 @@ def questions_from_page(
             f"Page authoring produced no structured output (stop_reason="
             f"{response.stop_reason}, details={response.stop_details})."
         )
-    return response.parsed_output.questions
+    return PageResult(response.parsed_output.questions, getattr(response, "usage", None))
 
 
 def generate_for_badge(
@@ -725,21 +740,22 @@ def generate_for_badge(
         raise ValueError(f"No skill badge with slug {slug!r}.")
     badge = known[slug]
 
-    already = questions_repo.source_urls_for_badge(slug)
-    page_set = doc_retrieval.page_set_for_badge(
-        badge, exclude_urls=already, settings=settings
-    )
     started = time.monotonic()
+    cost = RunCost(_settings=settings)
 
     summary: dict[str, Any] = {
         "source": "badge-page-walk",
         "skill_badge": slug,
         "badge_name": badge.get("name"),
         "skill_badges": [slug],
-        "pages_available": len(page_set),
-        "pages_already_used": len(already),
-        "pages_total": min(len(page_set), max_pages),
+        # "resolving" until the page set is known: the walk genuinely cannot say how
+        # much work there is yet, and a confident 0% would be a lie.
+        "phase": "resolving",
+        "pages_available": None,
+        "pages_already_used": 0,
+        "pages_total": 0,
         "pages_done": 0,
+        "current_page": None,
         "questions_per_page": questions_per_page,
         "inserted": 0,
         "generated": 0,
@@ -760,12 +776,26 @@ def generate_for_badge(
         state = dict(summary)
         state["elapsed_seconds"] = round(elapsed, 1)
         state["pages_per_minute"] = round(rate * 60, 1)
+        state["questions_per_page_actual"] = (
+            round(summary["inserted"] / done, 1) if done else None
+        )
         # No confident estimate before any page has finished: "0%, 0 seconds left" is
         # worse than saying nothing.
         state["percent"] = round(done / total * 100, 1) if total else None
         state["eta_seconds"] = round((total - done) / rate) if rate and total else None
+        state["cost"] = cost.snapshot(done, total)
         progress(state)
 
+    report()
+
+    already = questions_repo.source_urls_for_badge(slug)
+    page_set = doc_retrieval.page_set_for_badge(
+        badge, exclude_urls=already, settings=settings
+    )
+    summary["pages_available"] = len(page_set)
+    summary["pages_already_used"] = len(already)
+    summary["pages_total"] = min(len(page_set), max_pages)
+    summary["phase"] = "writing"
     report()
     if not page_set:
         # Nothing left to walk. If the badge has never been walked, its material was
@@ -779,6 +809,10 @@ def generate_for_badge(
                 slug,
             )
             summary["exhausted"] = True
+            summary["phase"] = "done"
+            summary["failure_count"] = 0
+            summary["cost"] = cost.snapshot()
+            report()
             return summary
         logger.warning(
             "No documentation pages resolve to %s; falling back to a single "
@@ -797,6 +831,9 @@ def generate_for_badge(
         fallback["pages_done"] = 0
         fallback["pages_total"] = 0
         fallback["fell_back_to_research"] = True
+        fallback["phase"] = "done"
+        fallback["failure_count"] = 0
+        fallback["cost"] = cost.snapshot()
         return fallback
 
     for page_ref in page_set[:max_pages]:
@@ -804,6 +841,13 @@ def generate_for_badge(
             summary["stopped_early"] = True
             break
 
+        # Named before the work starts, so the panel says which page is being read
+        # rather than only how many have finished.
+        summary["current_page"] = {
+            "url": page_ref["url"],
+            "title": page_ref.get("title"),
+        }
+        report()
         page = doc_pages_page(page_ref["url"])
         if page is None:
             summary["failures"].append(
@@ -814,7 +858,7 @@ def generate_for_badge(
             continue
 
         try:
-            written = questions_from_page(
+            result = questions_from_page(
                 page,
                 badge,
                 catalog,
@@ -822,6 +866,8 @@ def generate_for_badge(
                 extra_instructions=extra_instructions,
                 settings=settings,
             )
+            written = result.questions
+            cost.add(result.usage)
         except Exception as exc:
             # Recorded per page, not raised: a badge's walk is worth more than any one
             # page in it, and a refusal on one page says nothing about the next.
@@ -850,7 +896,17 @@ def generate_for_badge(
         summary["pages_done"] += 1
         report()
 
+    summary["phase"] = "stopped" if summary["stopped_early"] else "done"
+    summary["current_page"] = None
     summary["failure_count"] = len(summary["failures"])
+    summary["elapsed_seconds"] = round(time.monotonic() - started, 1)
+    summary["cost"] = cost.snapshot(summary["pages_done"], summary["pages_total"])
+    summary["percent"] = (
+        round(summary["pages_done"] / summary["pages_total"] * 100, 1)
+        if summary["pages_total"]
+        else None
+    )
+    report()
     logger.info(
         "Badge walk finished for %s: %d question(s) from %d page(s), %d page(s) failed",
         slug,

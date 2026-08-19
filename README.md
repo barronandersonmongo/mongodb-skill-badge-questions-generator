@@ -34,7 +34,9 @@ Optional overrides: `ANTHROPIC_MODEL`, `WEB_SEARCH_TOOL_TYPE`, `WEB_FETCH_TOOL_T
 `SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`,
 `QUESTIONS_VECTOR_INDEX_NAME`, `DOC_PAGES_VECTOR_INDEX_NAME`, `DOCS_INDEX_URL`, `LOG_DIR`, `LOG_LEVEL`.
 
-Page-walk tuning lives in `app/config.py` rather than the environment, since each
+Token prices (`cost_input_per_mtok`, `cost_output_per_mtok`,
+`cost_cache_read_per_mtok`, `cost_cache_write_per_mtok`) and page-walk tuning live in
+`app/config.py` rather than the environment, since each
 number is a measured judgement documented next to it: `doc_page_set_score_floor`
 (0.70), `doc_page_set_size` (400), `doc_reference_url_pattern`, `questions_per_page`
 (3), `max_pages_per_run` (25) and `page_author_effort` (`medium`).
@@ -339,8 +341,38 @@ refuses, truncates, or has vanished from the corpus is recorded with its reason 
 stepped over — one bad page says nothing about the next. A walk can also be stopped,
 and keeps what it has written.
 
-Progress is reported per page: which page of how many, questions written so far, the
-rate and the time left. A walk of 25 pages is far too long for a spinner.
+**The status panel.** The same shape as the documentation refresh, because a walk is
+the same kind of job: a phase, a progress bar, and the numbers behind it. Pages done
+of how many, questions written, pages per minute, actual questions per page, elapsed,
+time remaining, and the name of the page currently being read — that last one is what
+lets an author notice a walk spending its budget on material that does not belong to
+the badge.
+
+The bar shows no percentage while the badge is still being resolved to its page set.
+The walk genuinely does not know how much work there is yet, and inventing a number
+would be worse than admitting it — so the phase says what is happening instead.
+
+**Cost is reported, not estimated.** Every response carries its token counts, so the
+panel adds up exactly what the run consumed and prices it: spend so far, and the
+projected total at the rate it is going. The projection is what makes stopping an
+informed decision rather than a guess — "$0.31 spent, about $2.60 by the end" is
+actionable in a way that a spinner is not. Nothing is projected until at least one
+page has finished, because a projection from zero reads as "this run is free" at
+exactly the wrong moment.
+
+Prices live in `Settings` next to the model they apply to (`cost_input_per_mtok` and
+friends, Claude Opus 5 list prices as published 2026-08-19, with cached reads at a
+tenth and writes at 1.25x). Since the token counts are measured, the published price
+is the only thing here that can be wrong — update it alongside `model`. The finished
+run reports its cost too, because cost per badge is how an author decides whether the
+other 33 are worth it.
+
+**Stopping.** A **Stop after this page** button appears on the panel while a walk
+runs. It is not a cancellation: the page in flight is already paid for, so it finishes
+and its questions are kept, and everything after it is skipped. That is the point —
+the reason to stop a walk is to stop it spending, not to undo it. A run stopped this
+way is labelled as stopped rather than done, so it cannot be mistaken for a badge that
+ran out of material, and the pages it did not reach are still there for the next run.
 
 **When a badge has no pages.** Two different situations, with two different answers.
 A badge that has *never* been walked and resolves to nothing has no material in the
@@ -476,7 +508,8 @@ exactly the filtered set from the same endpoint the screen reads.
 |---|---|---|
 | `GET` | `/` | The main screen; `?status=`, `?skill_badge=`, `?category=` |
 | `POST` | `/api/questions/generate` | Start a walk: `skill_badges`, `max_pages`, `questions_per_page` |
-| `GET` | `/api/questions/generate/status` | Poll a run — reports the page it is on |
+| `GET` | `/api/questions/generate/status` | Poll a run — phase, pages, cost, page in flight |
+| `POST` | `/api/questions/generate/stop` | Stop the walk after the page it is on |
 | `GET` | `/api/questions/coverage` | Per-badge question counts and pages left to walk |
 | `GET` | `/api/questions` | List / export questions, same filters |
 | `GET` | `/api/questions/search?q=&limit=` | Questions ranked by similarity to `q` |
@@ -698,6 +731,7 @@ app/models/question.py               question schemas (Claude output + stored do
 app/services/badge_discovery.py      the two Claude passes
 app/services/question_generation.py  the Claude passes for questions
 app/services/doc_retrieval.py        resolves a badge to the pages it is about
+app/services/run_cost.py             prices a run from the tokens it reported
 app/services/question_duplicates.py  the ad-hoc duplicate sweep ($vectorSearch + $rerank)
 app/services/discover_cli.py         shell entry point
 app/repositories/skill_badges.py     upsert / list / status, indexes
