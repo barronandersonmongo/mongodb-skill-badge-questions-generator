@@ -202,51 +202,6 @@ def test_questions_are_returned_as_plain_json(client, fake_questions):
     assert "_id" not in body[0]
 
 
-def test_the_export_honours_the_screens_filters(client, fake_questions):
-    """
-    Intent: The author exports what they are looking at. If the endpoint ignored the
-        filters, the exported file would contain questions they had deliberately
-        excluded — silently, since it is downloaded not displayed.
-    Success: Filtering by badge, category and status each narrow the response.
-    Feature: Question export — filtered by badge, category and status.
-    """
-    questions.insert_questions(
-        [
-            make("Search one?", skill_badges=["atlas-search"], categories=["search"]),
-            make("Agg one?", skill_badges=["aggregation"], categories=["aggregation"]),
-        ]
-    )
-    assert len(client.get(API, params={"skill_badge": "atlas-search"}).json()) == 1
-    assert len(client.get(API, params={"category": "aggregation"}).json()) == 1
-    assert client.get(API, params={"status": "approved"}).json() == []
-
-
-def test_a_question_can_be_approved(client, fake_questions):
-    """
-    Intent: Approval is the decision the tool exists to record; the screen's button
-        must actually persist it.
-    Success: POST /{id}/status stores the new status and reports it.
-    Feature: Question lifecycle — approve and reject.
-    """
-    question_id = questions.insert_questions([make()])["question_ids"][0]
-    response = client.post(f"{API}/{question_id}/status", json={"status": "approved"})
-    assert response.status_code == 200
-    assert response.json()["status"] == "approved"
-    assert questions.list_questions()[0]["status"] == "approved"
-
-
-def test_an_unrecognised_status_is_rejected(client, fake_questions):
-    """
-    Intent: The status vocabulary is what the review tabs and filters are built on. An
-        arbitrary value would create a question that appears under no tab at all.
-    Success: A status outside draft/approved/rejected is a validation error.
-    Feature: Question lifecycle — controlled status vocabulary.
-    """
-    question_id = questions.insert_questions([make()])["question_ids"][0]
-    response = client.post(f"{API}/{question_id}/status", json={"status": "published"})
-    assert response.status_code == 422
-
-
 def test_acting_on_an_unknown_question_is_a_404(client, fake_questions):
     """
     Intent: A stale page must be told its question is gone rather than getting a
@@ -542,7 +497,7 @@ def test_coverage_reports_every_badge(client, fake_collection, fake_questions, f
     )
     rows = client.get(API + "/coverage").json()
     assert [r["skill_badge"] for r in rows] == ["atlas-search"]
-    assert rows[0]["total"] == 0 and rows[0]["draft"] == 0
+    assert rows[0]["total"] == 0
 
 
 def test_coverage_lists_the_thinnest_badge_first(client, fake_collection, fake_questions, fake_doc_pages):
@@ -671,3 +626,66 @@ def test_progress_is_reported_separately_from_the_finished_run(
     state = client.get(API + "/generate/status").json()
     assert state["progress"]["phase"] == "writing"
     assert state["last_result"]["inserted"] == 2
+
+
+# --- no review workflow ---
+
+
+def test_there_is_no_status_endpoint(client, fake_questions):
+    """
+    Intent: Replaces tests for approving a question and for rejecting an unrecognised
+        status. With no review state the endpoint has nothing to write, and leaving it in
+        place would let a stale page put questions into a state the screen cannot show.
+    Success: Posting a status is a 404 — the route does not exist.
+    Feature: Question lifecycle — no review endpoint.
+    """
+    question_id = questions.insert_questions([make()])["question_ids"][0]
+    response = client.post(f"{API}/{question_id}/status", json={"status": "approved"})
+    assert response.status_code == 404
+
+
+def test_the_export_honours_the_badge_and_category_filters(client, fake_questions):
+    """
+    Intent: Replaces a test that also filtered by status. The author exports what they are
+        looking at, and an endpoint ignoring the filters would hand over questions they had
+        deliberately excluded — silently, since the export is downloaded rather than shown.
+    Success: Filtering by badge and by category each narrow the response.
+    Feature: Question export — filtered by badge and category.
+    """
+    questions.insert_questions(
+        [
+            make("Search one?", skill_badges=["atlas-search"], categories=["search"]),
+            make("Agg one?", skill_badges=["aggregation"], categories=["aggregation"]),
+        ]
+    )
+    assert len(client.get(API, params={"skill_badge": "atlas-search"}).json()) == 1
+    assert len(client.get(API, params={"category": "aggregation"}).json()) == 1
+
+
+def test_an_exported_question_carries_no_review_state(client, fake_questions):
+    """
+    Intent: The export is the deliverable — questions are copied out of here into whatever
+        builds a quiz. A leftover "status": "draft" tells that consumer the question is
+        unfinished when no such state exists, which is a lie in the thing being handed
+        over.
+    Success: An exported question has no status field.
+    Feature: Question export — no review state in the output.
+    """
+    questions.insert_questions([make()])
+    exported = client.get(API).json()
+    assert exported and "status" not in exported[0]
+
+
+def test_the_legacy_review_field_can_be_stripped_from_the_api(client, fake_questions):
+    """
+    Intent: Questions written before the workflow was dropped still carry the field, and it
+        is the export they pollute. An operator needs a way to clean that up without
+        reaching for a mongo shell.
+    Success: The endpoint reports how many documents it changed.
+    Feature: Question storage — the legacy review field is cleanable from the UI.
+    """
+    fake_questions.docs.append({"question_id": "a", "status": "draft"})
+    response = client.post(API + "/drop-status")
+    assert response.status_code == 200
+    assert response.json() == {"changed": 1}
+    assert "status" not in fake_questions.docs[0]

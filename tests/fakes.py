@@ -342,7 +342,23 @@ class FakeCollection:
             for item in incoming:
                 if item not in values:
                     values.append(item)
+        for field in update.get("$unset", {}):
+            doc.pop(field, None)
         return doc != before
+
+    def update_many(self, query: dict, update: dict) -> "FakeUpdateResult":
+        """Every match updated, with the count of those that actually changed.
+
+        `modified_count` is what a caller reports to an operator, and MongoDB counts
+        only documents the update altered — a cleanup run twice must say it changed
+        nothing the second time rather than re-reporting every document it matched.
+        """
+        matched = modified = 0
+        for doc in self.docs:
+            if self._matches(doc, query):
+                matched += 1
+                modified += int(self._apply_update(doc, update, inserting=False))
+        return FakeUpdateResult(matched, modified)
 
     def update_one(self, query: dict, update: dict, upsert: bool = False):
         for doc in self.docs:

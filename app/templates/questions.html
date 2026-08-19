@@ -31,7 +31,7 @@
       Dry run
     </button>
     <a class="btn btn-outline-secondary" id="export-btn" target="_blank" rel="noopener"
-       href="{{ api }}?{% if status_filter %}status={{ status_filter }}&{% endif %}{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
+       href="{{ api }}?{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
       Export JSON
     </a>
   </div>
@@ -268,7 +268,6 @@
       <input class="form-control form-control-sm" type="search" id="search" name="q"
              value="{{ query }}" style="min-width: 22rem;"
              placeholder="e.g. joining data from another collection">
-      {% if status_filter %}<input type="hidden" name="status" value="{{ status_filter }}">{% endif %}
       {% if badge_filter %}<input type="hidden" name="skill_badge" value="{{ badge_filter }}">{% endif %}
       {% if category_filter %}<input type="hidden" name="category" value="{{ category_filter }}">{% endif %}
       <button class="btn btn-sm btn-outline-primary" type="submit">Search</button>
@@ -315,18 +314,14 @@
 </p>
 {% endif %}
 
-<ul class="nav nav-tabs mb-0">
-  {% for tab, label in tabs %}
-  <li class="nav-item">
-    <a class="nav-link {% if status_filter == tab %}active{% endif %}"
-       href="/?{% if tab %}status={{ tab }}&{% endif %}{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
-      {{ label }} <span class="badge text-bg-secondary">{{ counts.get(tab, 0) }}</span>
-    </a>
-  </li>
-  {% endfor %}
-</ul>
+<div class="d-flex justify-content-between align-items-baseline mb-2">
+  <span class="fw-semibold" data-question-count="true">
+    {{ counts.get("", 0) }} question{{ "" if counts.get("", 0) == 1 else "s" }}
+    {%- if badge_filter or category_filter or query %} in this view{% endif %}
+  </span>
+</div>
 
-<div class="card border-top-0 rounded-top-0">
+<div class="card">
   <div class="list-group list-group-flush">
     {% for question in questions %}
     <div class="list-group-item py-3" data-question-id="{{ question.question_id }}">
@@ -378,19 +373,8 @@
           {% endif %}
         </div>
         <div class="text-end text-nowrap">
-          <span class="badge text-bg-{{ status_styles.get(question.status, 'secondary') }} mb-2 d-block">
-            {{ question.status }}
-          </span>
-          {% if question.status != "approved" %}
-          <button class="btn btn-sm btn-outline-success js-status" data-status="approved">Approve</button>
-          {% endif %}
-          {% if question.status != "rejected" %}
-          <button class="btn btn-sm btn-outline-secondary js-status" data-status="rejected">Reject</button>
-          {% endif %}
-          {% if question.status != "draft" %}
-          <button class="btn btn-sm btn-outline-primary js-status" data-status="draft">Re-open</button>
-          {% endif %}
-          <button class="btn btn-sm btn-outline-danger js-delete" data-delete="true">Delete</button>
+          <button class="btn btn-sm btn-outline-danger js-delete" data-delete="true"
+                  data-stem="{{ question.stem }}">Delete</button>
         </div>
       </div>
     </div>
@@ -398,7 +382,7 @@
     <div class="list-group-item text-center text-body-secondary py-5" data-empty="true">
       {% if query %}
         Nothing close to “{{ query }}” in the collection.
-      {% elif status_filter or badge_filter or category_filter %}
+      {% elif badge_filter or category_filter %}
         No questions match these filters.
       {% else %}
         No questions yet. Run <strong>Generate questions</strong> to write the first.
@@ -412,6 +396,34 @@
   Stored in <span class="font-monospace">{{ database }}.{{ collection }}</span>.
   <strong>Export JSON</strong> returns exactly the questions matching the filters above.
 </p>
+
+<div class="modal fade" id="delete-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5">Delete this question?</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-body-secondary mb-2">
+          Deleting is the only editorial act there is, and it is final — nothing can
+          re-create this question. Read it once more before you do.
+        </p>
+        <blockquote class="border-start border-3 ps-3 mb-3" data-delete-stem="true"></blockquote>
+        <label for="delete-confirm" class="form-label small">
+          Type <strong>delete</strong> to confirm.
+        </label>
+        <input class="form-control" id="delete-confirm" type="text" autocomplete="off"
+               data-delete-confirm="true" placeholder="delete">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirm-delete" disabled
+                data-confirm-delete="true">Delete permanently</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="modal fade" id="coverage-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -750,7 +762,7 @@ document.getElementById("coverage-modal").addEventListener("show.bs.modal", asyn
   table.className = "table table-sm align-middle mb-0";
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
-  ["Skill badge", "Draft", "Approved", "Total", "Pages left"].forEach((label, i) => {
+  ["Skill badge", "Questions", "Pages left"].forEach((label, i) => {
     const th = document.createElement("th");
     th.textContent = label;
     if (i > 0) th.className = "text-end";
@@ -766,7 +778,7 @@ document.getElementById("coverage-modal").addEventListener("show.bs.modal", asyn
     link.textContent = row.name || row.skill_badge;
     name.append(link);
     tr.append(name);
-    [row.draft, row.approved, row.total].forEach((value) => {
+    [row.total].forEach((value) => {
       const td = document.createElement("td");
       td.className = "text-end";
       td.textContent = value;
@@ -849,38 +861,57 @@ document.getElementById("sweep-btn").addEventListener("click", () => {
 
 document.getElementById("sweep-dry-run-btn").addEventListener("click", () => startSweep(true));
 
-document.querySelectorAll(".js-status").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const id = button.closest("[data-question-id]").dataset.questionId;
-    button.disabled = true;
-    const response = await fetch(API + "/" + encodeURIComponent(id) + "/status", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({status: button.dataset.status}),
-    });
-    if (!response.ok) {
-      button.disabled = false;
-      showAlert("danger", "Could not update the question (HTTP " + response.status + ").");
-      return;
-    }
-    window.location.reload();
+// Deleting is the only irreversible act on this screen and the only editorial one,
+// so it is guarded twice over: the question is shown again in the dialog, and the
+// word has to be typed. A single misplaced click cannot lose a question.
+const deleteModalEl = document.getElementById("delete-modal");
+const deleteModal = new bootstrap.Modal(deleteModalEl);
+const deleteConfirmInput = document.getElementById("delete-confirm");
+const confirmDeleteButton = document.getElementById("confirm-delete");
+let pendingDeleteId = null;
+
+function resetDeleteDialog() {
+  deleteConfirmInput.value = "";
+  confirmDeleteButton.disabled = true;
+  confirmDeleteButton.textContent = "Delete permanently";
+}
+
+deleteConfirmInput.addEventListener("input", () => {
+  confirmDeleteButton.disabled =
+    deleteConfirmInput.value.trim().toLowerCase() !== "delete";
+});
+
+deleteModalEl.addEventListener("hidden.bs.modal", () => {
+  pendingDeleteId = null;
+  resetDeleteDialog();
+});
+
+deleteModalEl.addEventListener("shown.bs.modal", () => deleteConfirmInput.focus());
+
+document.querySelectorAll(".js-delete").forEach((button) => {
+  button.addEventListener("click", () => {
+    pendingDeleteId = button.closest("[data-question-id]").dataset.questionId;
+    // textContent, never innerHTML: a stem is model-written text.
+    deleteModalEl.querySelector("[data-delete-stem]").textContent =
+      button.dataset.stem || "";
+    resetDeleteDialog();
+    deleteModal.show();
   });
 });
 
-document.querySelectorAll(".js-delete").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const id = button.closest("[data-question-id]").dataset.questionId;
-    if (!window.confirm(
-      "Permanently delete this question?\n\nThis cannot be undone — nothing can " +
-      "re-create it. Reject it instead if you may want it back."
-    )) return;
-    const response = await fetch(API + "/" + encodeURIComponent(id), {method: "DELETE"});
-    if (!response.ok) {
-      showAlert("danger", "Could not delete the question (HTTP " + response.status + ").");
-      return;
-    }
-    window.location.reload();
+confirmDeleteButton.addEventListener("click", async () => {
+  if (!pendingDeleteId) return;
+  confirmDeleteButton.disabled = true;
+  confirmDeleteButton.textContent = "Deleting…";
+  const response = await fetch(API + "/" + encodeURIComponent(pendingDeleteId), {
+    method: "DELETE",
   });
+  if (!response.ok) {
+    deleteModal.hide();
+    showAlert("danger", "Could not delete the question (HTTP " + response.status + ").");
+    return;
+  }
+  window.location.reload();
 });
 
 // A run may already be going when the page loads (started elsewhere, or a reload).

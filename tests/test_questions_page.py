@@ -254,47 +254,12 @@ def test_filtered_emptiness_is_distinguished_from_an_empty_collection(
     Feature: Question review screen — filtered empty state.
     """
     seed_question()
-    body = client.get(PAGE, params={"status": "approved"}).text
+    body = client.get(PAGE, params={"category": "nothing-uses-this"}).text
     assert 'data-empty="true"' in body
     assert "match these filters" in body
 
 
 # --- filtering ---
-
-
-def test_the_status_tabs_count_the_questions_in_each_state(
-    client, fake_collection, fake_questions
-):
-    """
-    Intent: The counts are how an author sees there is review work waiting without
-        clicking every tab.
-    Success: With one draft, the All and Drafts tabs both show 1 and Approved shows 0.
-    Feature: Question review screen — status tabs with counts.
-    """
-    seed_question()
-    body = client.get(PAGE).text
-    tabs = [
-        (label.strip(), count)
-        for label, count in re.findall(
-            r'>([^<>]+?)<span class="badge text-bg-secondary">(\d+)</span>', body
-        )
-    ]
-    assert ("All", "1") in tabs
-    assert ("Drafts", "1") in tabs
-    assert ("Approved", "0") in tabs
-
-
-def test_filtering_by_status_narrows_the_list(client, fake_collection, fake_questions):
-    """
-    Intent: The tabs must actually filter. A tab that changed only the highlight would
-        misrepresent what state the collection is in.
-    Success: Filtering to approved hides the draft question.
-    Feature: Question review screen — status filter.
-    """
-    seed_question()
-    assert "Which stage filters documents?" not in client.get(
-        PAGE, params={"status": "approved"}
-    ).text
 
 
 def test_filtering_by_badge_and_category_narrows_the_list(
@@ -313,20 +278,6 @@ def test_filtering_by_badge_and_category_narrows_the_list(
     assert "Search question?" in by_badge and "Agg question?" not in by_badge
     by_category = client.get(PAGE, params={"category": "aggregation"}).text
     assert "Agg question?" in by_category and "Search question?" not in by_category
-
-
-def test_the_tabs_keep_the_badge_and_category_filters(client, fake_collection, fake_questions):
-    """
-    Intent: An author working through one badge switches status tabs constantly. If a
-        tab dropped the badge filter they would land in the whole collection and lose
-        their place.
-    Success: A tab link rendered under a badge filter carries that filter too.
-    Feature: Question review screen — filters survive tab changes.
-    """
-    seed_badge()
-    seed_question()
-    body = client.get(PAGE, params={"skill_badge": "atlas-search"}).text
-    assert 'href="/?status=draft&skill_badge=atlas-search' in body
 
 
 def test_the_filter_menus_offer_the_badges_and_categories_in_use(
@@ -359,9 +310,9 @@ def test_the_export_link_carries_the_current_filters(client, fake_collection, fa
     """
     seed_badge()
     seed_question()
-    body = client.get(PAGE, params={"status": "approved", "skill_badge": "atlas-search"}).text
+    body = client.get(PAGE, params={"skill_badge": "atlas-search"}).text
     assert 'id="export-btn"' in body
-    assert "/api/questions?status=approved&skill_badge=atlas-search" in body
+    assert "/api/questions?skill_badge=atlas-search" in body
 
 
 # --- generating ---
@@ -499,37 +450,6 @@ def test_the_page_names_where_questions_are_stored(client, fake_collection, fake
 # --- review actions ---
 
 
-def test_each_question_offers_the_review_decisions(client, fake_collection, fake_questions):
-    """
-    Intent: Approving, rejecting and deleting are the review actions the screen exists
-        to provide, and each must be bound to the question it appears on — not to the
-        first one on the page.
-    Success: The row carries the question's id and the three action buttons.
-    Feature: Question review screen — review actions.
-    """
-    question_id = seed_question()
-    body = client.get(PAGE).text
-    assert f'data-question-id="{question_id}"' in body
-    assert 'class="btn btn-sm btn-outline-success js-status" data-status="approved"' in body
-    assert 'class="btn btn-sm btn-outline-secondary js-status" data-status="rejected"' in body
-    assert 'data-delete="true"' in body
-
-
-def test_the_current_state_is_not_offered_as_an_action(client, fake_collection, fake_questions):
-    """
-    Intent: Offering "Approve" on an approved question invites a click that changes
-        nothing and makes the current state harder to read.
-    Success: An approved question offers Reject and Re-open but not Approve.
-    Feature: Question review screen — actions reflect current state.
-    """
-    question_id = seed_question()
-    questions.set_status(question_id, "approved")
-    body = client.get(PAGE).text
-    assert 'data-status="approved"' not in body
-    assert 'data-status="rejected"' in body
-    assert 'data-status="draft"' in body
-
-
 def test_the_elapsed_timer_is_driven_by_the_servers_start_time(
     client, fake_collection, fake_questions
 ):
@@ -655,7 +575,7 @@ def test_a_search_result_can_still_be_narrowed_by_the_filters(
     Feature: Question search — filters narrow the matches.
     """
     seed_question("Which stage filters documents?")
-    params = {"q": "stage filters documents", "status": "approved"}
+    params = {"q": "stage filters documents", "category": "nothing-uses-this"}
     assert "Which stage filters documents?" not in client.get(PAGE, params=params).text
 
 
@@ -1061,3 +981,74 @@ def test_a_stopped_run_is_labelled_as_one(client, fake_collection, fake_question
     }
     body = client.get(PAGE).text
     assert 'data-stopped-early="true"' in body
+
+
+# --- no review workflow, guarded deletion ---
+
+
+def test_a_question_offers_only_deletion(client, fake_collection, fake_questions):
+    """
+    Intent: Replaces a test requiring approve, reject and re-open buttons. With no review
+        state there is nothing to approve and nothing to re-open, and every extra control
+        is one more thing to read on a screen holding thousands of questions. Deletion is
+        the one editorial act left, and it must be bound to the question it appears on
+        rather than the first on the page.
+    Success: The row carries its question id and a delete control, and offers no status
+        actions.
+    Feature: Question review screen — deletion is the only action.
+    """
+    question_id = seed_question()
+    body = client.get(PAGE).text
+    assert f'data-question-id="{question_id}"' in body
+    assert 'data-delete="true"' in body
+    assert "js-status" not in body
+
+
+def test_the_screen_no_longer_offers_status_tabs(client, fake_collection, fake_questions):
+    """
+    Intent: Replaces a test requiring Drafts, Approved and Rejected tabs with counts. Tabs
+        over states that no longer exist would filter on a field nothing writes, so every
+        tab but the first would read as empty — the screen would claim the collection was
+        empty when it was not.
+    Success: The list is headed by a single count of what is in view, with no status tabs.
+    Feature: Question review screen — one list, no review states.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    assert 'data-question-count="true"' in body
+    assert "1 question" in body
+    assert "nav-tabs" not in body
+
+
+def test_deleting_asks_twice_before_it_happens(client, fake_collection, fake_questions):
+    """
+    Intent: Deletion is the only irreversible act on this screen — nothing can re-create a
+        question — and it now sits next to no other button, so a misplaced click has
+        nowhere else to land. A single confirm is not enough for an action that is one
+        click from a list of thousands.
+    Success: The delete control opens a dialog that shows the question again and requires
+        the word to be typed before the confirming button is enabled.
+    Feature: Question deletion — guarded against an accidental click.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    assert 'id="delete-modal"' in body
+    assert 'data-delete-stem="true"' in body
+    assert 'data-delete-confirm="true"' in body
+    assert 'data-confirm-delete="true"' in body
+    assert "disabled" in body
+
+
+def test_the_delete_dialog_shows_the_question_it_will_delete(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: A confirmation that does not show what is about to be lost is a confirmation
+        nobody reads. The stem in the dialog is what makes the second click a decision
+        rather than a reflex — and it must be the stem of the row that was clicked.
+    Success: The delete control carries its own question's stem.
+    Feature: Question deletion — the dialog names the question.
+    """
+    seed_question("Which stage filters documents?")
+    body = client.get(PAGE).text
+    assert 'data-stem="Which stage filters documents?"' in body

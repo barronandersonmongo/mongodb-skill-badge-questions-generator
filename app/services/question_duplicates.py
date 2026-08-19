@@ -38,14 +38,13 @@ def _text(question: dict[str, Any]) -> str:
 def _rank(question: dict[str, Any]) -> tuple:
     """How much a question is worth keeping, highest first.
 
-    Approved questions carry a review decision and must outlive a draft. Beyond
-    that, prefer the one attributed to more badges — it is reachable from more
-    places, so keeping it loses the least findability — and then the older one,
-    which anything downstream is more likely to have seen already.
+    There is no review state to prefer, so this turns on findability and age: prefer
+    the question attributed to more badges, because it is reachable from more places
+    and dropping it loses the most, and then the older one, which anything downstream
+    is more likely to have seen already.
     """
     created = question.get("created_at")
     return (
-        question.get("status") == "approved",
         len(question.get("skill_badges") or []),
         -(created.timestamp() if created else 0),
     )

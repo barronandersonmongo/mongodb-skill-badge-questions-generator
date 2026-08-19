@@ -103,6 +103,5 @@ class QuestionDoc(GeneratedQuestion):
     question_id: str
     created_at: datetime
     generation_run_id: str
-    status: Literal["draft", "approved", "rejected"] = "draft"
     # Written on insert by the repository; the path a vector index points at.
     embedding_text: str = ""

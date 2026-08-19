@@ -17,8 +17,6 @@ badges are unrelated jobs, and one must not report the other's result.
 import logging
 import time
 import traceback
-from typing import Literal
-
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -73,10 +71,6 @@ class GenerateRequest(BaseModel):
     max_pages: int = Field(default=25, ge=1, le=MAX_PAGES_PER_RUN)
     questions_per_page: int = Field(default=3, ge=1, le=10)
     extra_instructions: str | None = None
-
-
-class StatusRequest(BaseModel):
-    status: Literal["draft", "approved", "rejected"]
 
 
 def _run_generation(request: GenerateRequest) -> None:
@@ -185,7 +179,7 @@ def coverage() -> list[dict]:
         row = {
             "skill_badge": slug,
             "name": badge.get("name"),
-            **counts.get(slug, {"draft": 0, "approved": 0, "rejected": 0, "total": 0}),
+            "total": counts.get(slug, 0),
         }
         try:
             used = questions.source_urls_for_badge(slug)
@@ -239,12 +233,11 @@ def generation_status() -> dict:
 
 @router.get("")
 def list_questions(
-    status: str | None = None,
     skill_badge: str | None = None,
     category: str | None = None,
 ) -> list[dict]:
     """Stored questions, filtered. This is also the export: it returns plain JSON."""
-    return questions.list_questions(status, skill_badge, category)
+    return questions.list_questions(skill_badge, category)
 
 
 @router.post("/duplicates/sweep")
@@ -311,6 +304,19 @@ def search_questions(
         ) from exc
 
 
+@router.post("/drop-status")
+def drop_status() -> dict:
+    """Strip `status` from questions stored before the review workflow was dropped.
+
+    A leftover `"status": "draft"` rides along in the JSON export and tells whoever
+    consumes it that the question is unfinished, when no such state exists any more.
+    Safe to run repeatedly.
+    """
+    changed = questions.drop_status_field()
+    logger.info("Dropped the status field from %d question(s)", changed)
+    return {"changed": changed}
+
+
 @router.post("/backfill-embedding-text")
 def backfill_embedding_text() -> dict:
     """Compose the embedding field for any stored question missing it.
@@ -326,13 +332,6 @@ def backfill_embedding_text() -> dict:
         result["already_correct"],
     )
     return result
-
-
-@router.post("/{question_id}/status")
-def update_status(question_id: str, request: StatusRequest) -> dict:
-    if not questions.set_status(question_id, request.status):
-        raise HTTPException(404, f"No question with id {question_id!r}.")
-    return {"question_id": question_id, "status": request.status}
 
 
 @router.delete("/{question_id}")

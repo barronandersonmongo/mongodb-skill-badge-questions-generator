@@ -4,8 +4,11 @@ Questions are keyed on `question_id`, a generated identifier rather than a slug:
 two questions on the same topic are legitimately different questions, so nothing
 about a question's content is its identity.
 
-`status` is a human decision and is only set on insert; a later generation run
-never revisits it.
+There is no review workflow. A question that passes the format check is stored and
+usable, so the only states a question has are "stored" and "deleted". A draft state
+was a bottleneck rather than a safeguard: at thousands of questions nobody reads a
+queue of drafts, and questions nobody has blessed are indistinguishable from
+questions nobody wants. Deletion is the one editorial act, and it is final.
 """
 
 from datetime import datetime, timezone
@@ -41,7 +44,6 @@ def ensure_indexes() -> None:
     # The three fields the review screen filters on.
     coll.create_index([("skill_badges", ASCENDING)], name="skill_badges")
     coll.create_index([("categories", ASCENDING)], name="categories")
-    coll.create_index([("status", ASCENDING)], name="status")
 
 
 def insert_questions(questions: list[GeneratedQuestion]) -> dict[str, Any]:
@@ -61,7 +63,6 @@ def insert_questions(questions: list[GeneratedQuestion]) -> dict[str, Any]:
                 "question_id": uuid4().hex,
                 "created_at": now,
                 "generation_run_id": run_id,
-                "status": "draft",
                 # Composed on write, so a question is embeddable the moment it
                 # lands rather than after some later maintenance step.
                 EMBEDDING_FIELD: combined_text(question.stem, question.explanation),
@@ -76,7 +77,6 @@ def insert_questions(questions: list[GeneratedQuestion]) -> dict[str, Any]:
 
 
 def list_questions(
-    status: str | None = None,
     skill_badge: str | None = None,
     category: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -86,8 +86,6 @@ def list_questions(
     produce?", and a generation run appends to the end of the collection.
     """
     query: dict[str, Any] = {}
-    if status:
-        query["status"] = status
     if skill_badge:
         query["skill_badges"] = skill_badge
     if category:
@@ -95,13 +93,6 @@ def list_questions(
     return list(
         collection().find(query, LIST_PROJECTION).sort("created_at", DESCENDING)
     )
-
-
-def set_status(question_id: str, status: str) -> bool:
-    result = collection().update_one(
-        {"question_id": question_id}, {"$set": {"status": status}}
-    )
-    return result.matched_count == 1
 
 
 def delete_question(question_id: str) -> bool:
@@ -150,7 +141,6 @@ def similar_by_embedding_text(
                 "skill_badges": True,
                 "categories": True,
                 "difficulty": True,
-                "status": True,
                 "source_urls": True,
                 "score": {"$meta": "vectorSearchScore"},
             }
@@ -171,7 +161,6 @@ SEARCH_PROJECTION = {
     "skill_badges": True,
     "categories": True,
     "difficulty": True,
-    "status": True,
     "source_urls": True,
     "embedding_text": True,
 }
@@ -265,29 +254,30 @@ def source_urls_for_badge(slug: str) -> set[str]:
     }
 
 
-def counts_by_badge() -> dict[str, dict[str, int]]:
-    """Per-badge question counts by status, for the coverage screen.
+def counts_by_badge() -> dict[str, int]:
+    """How many questions each badge has, for the coverage screen.
 
     A question filed under several badges counts once for each, because the question
     that matters is "does this badge have enough", not "how many questions exist".
     """
     pipeline = [
         {"$unwind": "$skill_badges"},
-        {
-            "$group": {
-                "_id": {"slug": "$skill_badges", "status": "$status"},
-                "n": {"$sum": 1},
-            }
-        },
+        {"$group": {"_id": "$skill_badges", "n": {"$sum": 1}}},
     ]
-    counts: dict[str, dict[str, int]] = {}
-    for row in collection().aggregate(pipeline):
-        slug = row["_id"]["slug"]
-        status = row["_id"].get("status") or "draft"
-        entry = counts.setdefault(slug, {"draft": 0, "approved": 0, "rejected": 0, "total": 0})
-        entry[status] = entry.get(status, 0) + row["n"]
-        entry["total"] += row["n"]
-    return counts
+    return {row["_id"]: row["n"] for row in collection().aggregate(pipeline)}
+
+
+def drop_status_field() -> int:
+    """Remove `status` from questions stored before the review workflow was dropped.
+
+    Left in place it would ride along in the JSON export, telling whoever consumes it
+    that a question is a "draft" when no such state exists any more. Returns how many
+    documents were changed; safe to run repeatedly.
+    """
+    result = collection().update_many(
+        {"status": {"$exists": True}}, {"$unset": {"status": ""}}
+    )
+    return result.modified_count
 
 
 def categories_in_use() -> list[str]:

@@ -33,7 +33,6 @@ def stored(question_id: str, stem: str, **overrides) -> dict:
         "stem": stem,
         "explanation": "Because.",
         "embedding_text": f"Question: {stem}\nExplanation: Because.",
-        "status": "draft",
         "skill_badges": ["atlas-search"],
         "created_at": datetime(2026, 8, 1, tzinfo=timezone.utc),
         **overrides,
@@ -193,19 +192,20 @@ def test_a_question_is_never_compared_against_itself(collection, settings):
     assert calls[0]["exclude"] == "a"
 
 
-def test_an_approved_question_outlives_a_draft(collection, settings):
+def test_the_more_widely_filed_question_outlives_the_narrower_one(fake_questions):
     """
-    Intent: Approval is a human decision the tool exists to capture. Deleting the approved
-        question of a pair and keeping the unreviewed one would throw away exactly the work
-        that matters.
-    Success: The approved question is kept and the draft dropped.
-    Feature: Question duplicate sweep — review work survives.
+    Intent: Replaces a test requiring an approved question to outlive a draft. With no
+        review state there is no decision to preserve, so the tie turns on findability:
+        the question filed under more badges is reachable from more places, and dropping
+        it loses the most.
+    Success: Of a duplicate pair, the one attributed to more badges survives.
+    Feature: Duplicate detection — the most findable question survives.
     """
-    docs = [stored("a", "Draft one?"), stored("b", "Approved one?", status="approved")]
-    collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
-    result = question_duplicates.sweep(settings=settings)
-    assert result["deleted"][0]["keep"] == "b"
-    assert result["deleted"][0]["drop"] == "a"
+    wide = stored("wide", "Which stage filters?", skill_badges=["a", "b"])
+    narrow = stored("narrow", "Which stage filters?", skill_badges=["a"])
+    keep, drop = question_duplicates.choose_survivor(narrow, wide)
+    assert keep["question_id"] == "wide"
+    assert drop["question_id"] == "narrow"
 
 
 def test_the_question_serving_more_badges_is_preferred(collection, settings):

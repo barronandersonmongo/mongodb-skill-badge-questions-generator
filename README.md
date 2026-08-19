@@ -91,9 +91,9 @@ bookmarked, shared in Slack, or cited from a question.
 
 | View | Address |
 |---|---|
-| Questions, filtered | `/?status=&skill_badge=&category=` |
+| Questions, filtered | `/?skill_badge=&category=` |
 | Questions, ranked by meaning | `/?q=joining+collections` |
-| Export of exactly that view | `/api/questions?status=&skill_badge=&category=` |
+| Export of exactly that view | `/api/questions?skill_badge=&category=` |
 | Badge review, by state | `/admin/skill-badges?status=candidate` |
 | One documentation source | `/admin/docs/source?source=…&q=` |
 | One documentation page | `/admin/docs/page?url=…` |
@@ -173,7 +173,7 @@ first, and the narrowing is never allowed to make the decision:
 Review is the product of this tool, so a re-run must not undo it. Status is set on
 insert only; a corrected badge title and curated links are locked against later syncs;
 and when a merge or a duplicate sweep must choose a survivor, it prefers the record
-carrying review work — approved over draft, curated over machine-written.
+carrying review work — curated over machine-written.
 
 ### 8. Model output is validated deterministically
 
@@ -265,7 +265,7 @@ confirms first, and says what cannot be undone.
 
 | Area | What it is for |
 |---|---|
-| `/` | **Authoring** — write, review, filter and export questions |
+| `/` | **Authoring** — write, browse, filter and export questions |
 | `/admin` | **Curation** — maintain the badge catalog the questions are scoped by |
 
 The split is a logical boundary between two kinds of work, so each screen has one
@@ -392,8 +392,8 @@ relevance floor, not another press of the button.
 
 **Coverage.** Because a badge's questions come from its documentation, a badge with
 little documentation gets few questions. The **Coverage** panel makes that a
-workflow rather than a defect: every badge, thinnest first, with draft and approved
-counts and how many pages it has left to walk. Few questions and many pages left
+workflow rather than a defect: every badge, thinnest first, with its question count
+and how many pages it has left to walk. Few questions and many pages left
 means run it again; few questions and no pages left means the material is spent.
 Resolving every badge's page set is dozens of vector searches, so the panel is
 fetched on demand rather than rendered with the screen.
@@ -452,10 +452,25 @@ dropped, and a question the model left untagged is attributed to the badges the
 run was scoped to. `skill_badges` is what the collection is filtered by, so a
 wrong value there would make a question unfindable.
 
-**Reviewing.** Questions arrive as **drafts**. The screen shows the stem, all four
+**No review workflow.** A question that passes the format check is stored and
+usable — there is no draft state, no approve step and no reject step. At thousands of
+questions nobody works a queue of drafts, so the gate was a bottleneck rather than a
+safeguard, and a question nobody had blessed was indistinguishable from one nobody
+wanted. That leaves one list, one count, and no tabs.
+
+The screen still shows everything needed to judge a question: the stem, all four
 options with the correct one marked, each option's rationale, the explanation, the
-difficulty, the badges and categories, and the sources — everything needed to
-judge quality. Per question: approve, reject, re-open, delete.
+difficulty, the badges and categories, and the source pages.
+
+**Deletion is the only editorial act, and it is guarded.** Nothing can re-create a
+question, and the button now sits next to no other control, so a misplaced click has
+nowhere else to land. Deleting opens a dialog that shows the question again and
+requires the word *delete* to be typed before the confirming button enables. Two
+deliberate acts, because the first one is one click away from a list of thousands.
+
+Questions written before the workflow was dropped still carry a `status` field, which
+would ride along in the JSON export and tell whoever consumes it that a question is an
+unfinished draft. `POST /api/questions/drop-status` strips it, and is safe to re-run.
 
 **Embedding text for vector search.** Every stored question carries
 `embedding_text`, the stem and explanation as one labelled block:
@@ -513,8 +528,8 @@ vectors cannot do. Native reranking needs MongoDB **8.3+**; this cluster runs 8.
 
 `question_rerank_delete_threshold` is **0.85**, inside that gap. Note the reranker
 does not return 1.0 for identical text, so a threshold near 1.0 would never fire.
-Pairs at or above it lose one question — approved beats draft, then more badges, then
-older — and the rest are reported with their scores. **Dry run** reports what a sweep
+Pairs at or above it lose one question — more badges beats fewer, then older beats
+newer — and the rest are reported with their scores. **Dry run** reports what a sweep
 would delete without deleting it; re-check that way as the collection grows to span
 more badges.
 
@@ -544,7 +559,7 @@ exactly the filtered set from the same endpoint the screen reads.
 | `GET` | `/api/questions/search?q=&limit=` | Questions ranked by similarity to `q` |
 | `POST` | `/api/questions/duplicates/sweep?dry_run=` | Find duplicates; delete the clear ones |
 | `POST` | `/api/questions/backfill-embedding-text` | Compose `embedding_text` where missing or stale |
-| `POST` | `/api/questions/{id}/status` | Approve, reject or re-open |
+| `POST` | `/api/questions/drop-status` | Strip the legacy review field from stored questions |
 | `DELETE` | `/api/questions/{id}` | Delete a question |
 
 ### Documentation corpus
