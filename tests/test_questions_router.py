@@ -1034,3 +1034,63 @@ def test_the_lookup_route_does_not_shadow_the_named_ones(
     assert client.get(API + "/coverage").status_code == 200
     assert client.get(API + "/answer-positions").status_code == 200
     assert client.get(API + "/count").status_code == 200
+
+
+# --- which of the two jobs is running ---
+
+
+def test_the_sweep_reports_itself_as_a_sweep(client, monkeypatch, fake_questions):
+    """
+    Intent: A generation run and a duplicate sweep share one piece of run state and one
+        status endpoint, but they are not interchangeable: one writes questions and spends
+        money, the other only compares what is already stored. With nothing naming which is
+        running, the screen had to guess, guessed generation, and announced that questions
+        were being written when an operator started a sweep — with no badge selected, which
+        reads as the tool having gone off on its own.
+    Success: While a sweep runs, the status names it as a sweep rather than as generation.
+    Feature: Question duplicate sweep — reported as itself, not as a generation run.
+    """
+    seen: list[str | None] = []
+    monkeypatch.setattr(
+        "app.services.question_duplicates.report",
+        lambda **kwargs: seen.append(api_module._run_state["kind"]) or {},
+    )
+    client.post(API + "/duplicates/sweep")
+    assert seen == ["duplicate-sweep"]
+
+
+def test_a_generation_run_reports_itself_as_generation(
+    client, monkeypatch, fake_collection, fake_questions
+):
+    """
+    Intent: The distinction is only useful if both sides declare themselves — a kind that is
+        set for one job and left stale from the previous one for the other is worse than
+        none, because it is confidently wrong.
+    Success: While a generation run runs, the status names it as generation.
+    Feature: Question generation — reported as itself.
+    """
+    seen: list[str | None] = []
+
+    monkeypatch.setattr(
+        api_module,
+        "generate_for_badge",
+        lambda *a, **k: seen.append(api_module._run_state["kind"]) or {},
+    )
+    api_module._run_state["kind"] = "duplicate-sweep"
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["atlas-search"], "max_pages": 1, "per_page": 1},
+    )
+    assert seen == ["generation"]
+
+
+def test_the_status_endpoint_publishes_which_job_is_running(client, fake_questions):
+    """
+    Intent: The page cannot tell the two jobs apart unless the state it polls says so, and it
+        must survive a reload — the browser cannot be the one remembering which button was
+        pressed, since the run outlives the page.
+    Success: The status response carries the kind of work in progress.
+    Feature: Question generation — run kind is published with run state.
+    """
+    api_module._run_state.update(running=True, kind="duplicate-sweep")
+    assert client.get(API + "/generate/status").json()["kind"] == "duplicate-sweep"

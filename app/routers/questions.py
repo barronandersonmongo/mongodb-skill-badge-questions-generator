@@ -40,6 +40,12 @@ MAX_PAGES_PER_RUN = 200
 # authoring tool; if this ever runs multi-worker, move it into Mongo.
 _run_state: dict = {
     "running": False,
+    # Which kind of work is running: "generation" or "duplicate-sweep". Two different
+    # jobs share this state and this screen, and they are not interchangeable — one
+    # writes questions and costs money, the other only compares what is already
+    # stored. Without this the page had to guess, and it guessed "generation", so
+    # starting a sweep announced that questions were being written.
+    "kind": None,
     "last_result": None,
     "last_error": None,
     "last_traceback": None,
@@ -82,6 +88,7 @@ class GenerateRequest(BaseModel):
 def _run_generation(request: GenerateRequest) -> None:
     _run_state.update(
         running=True,
+        kind="generation",
         last_error=None,
         last_traceback=None,
         # Recorded on the server so the elapsed timer survives a page reload or a
@@ -398,6 +405,7 @@ def _run_sweep() -> None:
 
     _run_state.update(
         running=True,
+        kind="duplicate-sweep",
         last_error=None,
         last_traceback=None,
         started_at=time.time(),

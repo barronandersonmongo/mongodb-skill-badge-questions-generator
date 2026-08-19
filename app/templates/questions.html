@@ -687,6 +687,7 @@ function stopElapsed() {
 const panel = document.getElementById("progress-panel");
 const bar = document.getElementById("progress-bar");
 const stopButton = document.getElementById("stop-run-btn");
+const statsPanel = panel.querySelector("[data-progress-stats]");
 
 const PHASES = {
   resolving: "Working out which documentation this badge is about…",
@@ -843,24 +844,49 @@ async function pollStatus() {
   const state = await response.json();
   adoptServerClock(state);
   showProgress(state.progress);
+  // Two different jobs share this state: a generation run, which writes questions and
+  // costs money, and a duplicate sweep, which only compares what is already stored.
+  // They are reported in their own words. Saying "writing questions" for a sweep read
+  // as a generation run having started with nothing selected — the one thing the
+  // screen must never be ambiguous about, since one of the two spends money.
+  const sweeping = state.kind === "duplicate-sweep";
   if (state.running) {
-    stopButton.classList.remove("d-none");
+    // Only a generation run can be stopped between pages; a sweep has no such seam.
+    stopButton.classList.toggle("d-none", sweeping);
+    // The stats are a generation run's — pages walked, questions written, cost — and
+    // none of them applies to a sweep, so they are not shown reading "—" for it.
+    statsPanel.classList.toggle("d-none", sweeping);
     alertBox.classList.add("d-none");
-    setPanelState("info", "Writing questions — you can leave this page open and come back.");
+    setPanelState("info", sweeping
+      ? "Comparing stored questions — nothing will be deleted."
+      : "Writing questions — you can leave this page open and come back.");
     startPanelClock();
-    await showNewQuestions();
+    if (sweeping) {
+      // A sweep creates nothing, so there is nothing to watch for; polling the count
+      // would only reload the page underneath the operator.
+      panel.querySelector("[data-phase]").textContent =
+        "Comparing every stored question with its nearest neighbours…";
+      bar.style.width = "100%";
+      bar.textContent = "";
+      bar.classList.add("bg-secondary");
+      panel.classList.remove("d-none");
+    } else {
+      await showNewQuestions();
+    }
     setTimeout(pollStatus, 2000);
     return;
   }
   stopButton.classList.add("d-none");
+  statsPanel.classList.remove("d-none");
   stopElapsed();
   bar.classList.remove("progress-bar-animated");
   // The finished run carries the final figures, which the last progress snapshot may
   // predate.
   if (state.last_result) showProgress(state.last_result);
   if (state.last_error) {
-    setPanelState("danger", "Run failed: " + state.last_error);
-    showAlert("danger", "Run failed: " + state.last_error);
+    const what = (sweeping ? "Sweep failed: " : "Run failed: ") + state.last_error;
+    setPanelState("danger", what);
+    showAlert("danger", what);
     if (state.last_traceback) {
       const details = document.createElement("details");
       details.className = "mt-2";
@@ -882,7 +908,8 @@ async function pollStatus() {
   const took = duration === null ? "" : " Took " + formatElapsed(duration) + ".";
   if (duration !== null) setStat("elapsed", formatElapsed(duration));
   alertBox.classList.add("d-none");
-  setPanelState("success", "Run finished." + took + " Reloading…");
+  setPanelState("success", (sweeping ? "Sweep finished." : "Run finished.") + took +
+    " Reloading…");
   window.location.reload();
 }
 

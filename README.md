@@ -645,6 +645,12 @@ Calibrated against `rerank-2.5` on the live collection:
 `question_rerank_delete_threshold` is **0.85**, inside that gap. Note the reranker does not
 return 1.0 for identical text, so a threshold near 1.0 would never fire.
 
+The sweep runs in the background on the same run state a generation run uses, and says
+which of the two it is: they are not interchangeable — one writes questions and spends
+money, the other only compares what is already stored — so the screen reports a sweep in
+its own words, hides the stats that belong to a walk, and offers no stop button, there
+being no seam to stop at.
+
 **Finding never deletes.** Pairs at or above the threshold are *flagged*, with the question
 this program would drop and the one it would keep both named — more badges beats fewer, then
 older beats newer — and pairs below it are listed too, so the threshold stays visible as a
