@@ -1,9 +1,15 @@
-"""Resolve a skill badge to the documentation pages its questions come from.
+"""Resolve a skill badge to the documentation sections its questions come from.
 
-Two things live here. `page_set_for_badge` enumerates a badge's material — the set
-of stored pages that badge's questions should be written from, which the page walk
-then reads one at a time. `pages_for_badges` is the older single-prompt selection,
-kept for the case where a badge resolves to no pages at all.
+Two things live here. `chunk_set_for_badge` enumerates a badge's material — the set
+of stored chunks that badge's questions should be written from, which the walk then
+reads one at a time. `pages_for_badges` is the older single-prompt selection over
+whole pages, kept for the case where a badge resolves to no chunks at all.
+
+Chunks rather than pages, because a page was the wrong unit twice over: sent whole a
+1.7 MB page cost $2.58 for three questions, and capped, everything past the cap was
+unreachable. A chunk is a section of a page with its heading path attached, so it is
+both affordable to send and specific enough that retrieval can tell a section about
+`$search` from the aggregation page it happens to live in.
 
 The page set is the important one. Asking a model for a badge's worth of questions
 out of one prompt caps it at whatever fits in a request; enumerating the badge's
@@ -34,7 +40,7 @@ import re
 from typing import Any
 
 from app.config import Settings, get_settings
-from app.repositories import doc_pages
+from app.repositories import doc_chunks, doc_pages
 
 logger = logging.getLogger(__name__)
 
@@ -69,58 +75,64 @@ def is_reference_url(url: str, settings: Settings | None = None) -> bool:
     return bool(re.search(settings.doc_reference_url_pattern, url or ""))
 
 
-def page_set_for_badge(
+def chunk_set_for_badge(
     badge: dict[str, Any],
     *,
-    exclude_urls: set[str] | None = None,
+    exclude_chunk_ids: set[str] | None = None,
     settings: Settings | None = None,
 ) -> list[dict[str, Any]]:
-    """The pages this badge's questions are written from, best match first.
+    """The documentation sections this badge's questions are written from, best first.
 
-    Drawn from the same per-topic searches as before but much wider, because the job
-    changed: not "the best few pages that fit in one prompt" but "this badge's
-    material". Candidates are then filtered three ways — a similarity floor, so a tag
-    like "Cluster IP" cannot drag VPC peering into a reliability badge; the reference
-    exclusion; and any page already written from, so a walk resumes rather than
-    repeating.
+    Drawn from the same per-topic searches as before, but over chunks: not "the best
+    few pages that fit in one prompt" but "the sections that make up this badge's
+    material". Candidates are filtered three ways — a similarity floor, so a tag like
+    "Cluster IP" cannot drag VPC peering into a reliability badge; the reference-page
+    exclusion, since a parameter list tests lookup rather than skill; and any chunk
+    already written from, so a walk resumes rather than repeating.
 
     Returned in relevance order, so a run that walks only part of the set walks the
     most relevant part of it.
     """
     settings = settings or get_settings()
-    exclude_urls = exclude_urls or set()
+    exclude_chunk_ids = exclude_chunk_ids or set()
 
     best: dict[str, dict[str, Any]] = {}
     for query in queries_for_badge(badge):
         try:
-            found = doc_pages.search_page_refs(
-                query, limit=settings.doc_page_set_per_topic
+            found = doc_chunks.search_chunk_refs(
+                query, limit=settings.doc_page_set_per_topic, settings=settings
             )
         except Exception as exc:
-            # Never fatal: the caller reports an unresolvable page set rather than
-            # failing, and can still fall back to the single-prompt path.
-            logger.warning("Page set search failed for %r: %s", query, exc)
+            # Never fatal: the caller reports an unresolvable set rather than failing,
+            # and can still fall back to the single-prompt path.
+            logger.warning("Chunk set search failed for %r: %s", query, exc)
             return []
-        for page in found:
-            url = page.get("url")
-            score = page.get("score") or 0.0
-            if not url or url in exclude_urls:
+        for chunk in found:
+            chunk_id = chunk.get("chunk_id")
+            url = chunk.get("url") or ""
+            score = chunk.get("score") or 0.0
+            if not chunk_id or chunk_id in exclude_chunk_ids:
                 continue
             if score < settings.doc_page_set_score_floor:
                 continue
             if is_reference_url(url, settings):
                 continue
-            # A page found by several topic queries keeps its best score: it is as
+            # A chunk found by several topic queries keeps its best score: it is as
             # relevant as its strongest match, not its weakest.
-            if url not in best or score > best[url]["score"]:
-                best[url] = {
+            if chunk_id not in best or score > best[chunk_id]["score"]:
+                best[chunk_id] = {
+                    "chunk_id": chunk_id,
                     "url": url,
-                    "title": page.get("title"),
-                    "source": page.get("source"),
+                    "anchor": chunk.get("anchor"),
+                    "page_title": chunk.get("page_title"),
+                    "heading": chunk.get("heading"),
+                    "heading_path": chunk.get("heading_path") or [],
+                    "source": chunk.get("source"),
+                    "chars": chunk.get("chars"),
                     "score": score,
                 }
 
-    ranked = sorted(best.values(), key=lambda p: p["score"], reverse=True)
+    ranked = sorted(best.values(), key=lambda c: c["score"], reverse=True)
     return ranked[: settings.doc_page_set_size]
 
 

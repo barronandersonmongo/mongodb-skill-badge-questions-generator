@@ -507,7 +507,7 @@ def test_coverage_lists_the_thinnest_badge_first(client, fake_collection, fake_q
 
 
 def test_coverage_says_how_much_material_a_badge_has_left(
-    client, fake_collection, fake_questions, fake_doc_pages
+    client, fake_collection, fake_questions, fake_doc_pages, fake_doc_chunks
 ):
     """
     Intent: "Few questions" is not actionable on its own — a badge with 300 unused pages
@@ -516,7 +516,7 @@ def test_coverage_says_how_much_material_a_badge_has_left(
     Success: Coverage reports the pages a badge has used and how many remain unused.
     Feature: Question coverage — remaining documentation per badge.
     """
-    from app.repositories import doc_pages
+    from app.repositories import doc_chunks
 
     fake_collection.docs.append(
         {
@@ -526,10 +526,12 @@ def test_coverage_says_how_much_material_a_badge_has_left(
             "categories": ["indexes"],
         }
     )
-    doc_pages.upsert_pages([
-        {"url": "https://x/a.md", "source": "ix", "title": "Atlas Search indexes",
-         "text": "Atlas Search indexes."},
-    ])
+    doc_chunks.replace_page_chunks("https://x/a.md", [{
+        "chunk_id": "c1", "url": "https://x/a.md", "source": "ix",
+        "page_title": "Atlas Search indexes", "heading": "Atlas Search indexes",
+        "heading_path": [], "ordinal": 0, "text": "Atlas Search indexes.",
+        "embed_text": "Atlas Search indexes", "chars": 20, "bytes": 20,
+    }])
     rows = client.get(API + "/coverage").json()
     assert rows[0]["pages_used"] == 0
     assert rows[0]["pages_available"] is not None

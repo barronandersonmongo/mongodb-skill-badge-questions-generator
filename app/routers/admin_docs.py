@@ -14,7 +14,8 @@ import traceback
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
-from app.repositories import doc_pages
+from app.config import get_settings
+from app.repositories import doc_chunks, doc_pages
 from app.services import doc_corpus
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,56 @@ def start_refresh(
     return {"started": True, "mode": mode}
 
 
+def _run_rechunk() -> None:
+    _run_state.update(
+        running=True, last_error=None, last_traceback=None,
+        started_at=time.time(), finished_at=None, progress=None,
+    )
+    logger.info("Re-chunk started")
+    try:
+        _run_state["last_result"] = doc_corpus.rebuild_chunks(
+            progress=lambda snapshot: _run_state.__setitem__("progress", snapshot)
+        )
+    except Exception as exc:  # surfaced to the page, not swallowed
+        _run_state["last_error"] = str(exc)
+        _run_state["last_traceback"] = traceback.format_exc()
+        logger.exception("Re-chunk failed: %s", exc)
+    finally:
+        _run_state["running"] = False
+        _run_state["finished_at"] = time.time()
+
+
+@router.post("/rechunk")
+def start_rechunk(background: BackgroundTasks) -> dict:
+    """Re-split every stored page into chunks, without re-crawling.
+
+    This is the point of deriving chunks rather than crawling them: the band is a
+    measured judgement that will want re-tuning against real question quality, and
+    trying a different one should cost seconds rather than a twelve-minute crawl and
+    another round of being refused by CloudFront.
+    """
+    if _run_state["running"]:
+        raise HTTPException(409, "A documentation run is already in progress.")
+    background.add_task(_run_rechunk)
+    return {"started": True}
+
+
+@router.get("/chunks")
+def chunk_totals() -> dict:
+    """How the corpus is currently chunked.
+
+    The only way to see whether a band change helped is the shape it produced, so the
+    figures are on the screen rather than something to query for by hand.
+    """
+    return doc_chunks.totals()
+
+
+@router.get("/chunks/page")
+def chunks_for_page(url: str) -> list[dict]:
+    """The sections one page was split into, in reading order."""
+    return doc_chunks.chunks_for_page(url)
+
+
 @router.get("/refresh/status")
 def refresh_status() -> dict:
     """Run state plus the server clock, which the page times the run against."""
@@ -114,8 +165,21 @@ def search(
     q: str = Query(min_length=2, max_length=200),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[dict]:
-    """Semantic search across the whole corpus, best match first, with excerpts."""
-    return doc_pages.search_pages(q, limit=limit)
+    """Semantic search across the whole corpus, best match first, with excerpts.
+
+    Over sections rather than whole pages, which is what makes a result worth reading:
+    a page-level hit says "somewhere in these 40 KB", and a section-level hit says
+    which part.
+    """
+    settings = get_settings()
+    found = doc_chunks.search_chunks(q, limit=limit, settings=settings)
+    terms = [t.strip('"') for t in q.split() if t.strip('"')]
+    results = []
+    for chunk in found:
+        text = chunk.pop("text", "") or ""
+        chunk.pop("embed_text", None)
+        results.append({**chunk, "excerpt": doc_pages.excerpt(text, terms)})
+    return results
 
 
 @router.post("/prune-stubs")

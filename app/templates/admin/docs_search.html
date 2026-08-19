@@ -12,9 +12,10 @@
 
 <h1 class="h4 mb-1">Search the documentation</h1>
 <p class="text-body-secondary small">
-  Every stored page, not one source — the documentation for a topic is often not under
-  the index you would expect it to be. Search is semantic: describe what you are looking
-  for, in your own words, rather than guessing the wording the page uses.
+  Every stored section, not one source — the documentation for a topic is often not under
+  the index you would expect it to be, and a section-level result says which part of a
+  page matched rather than just which page. Search is semantic: describe what you are
+  looking for, in your own words, rather than guessing the wording the page uses.
 </p>
 
 <form method="get" action="/admin/docs/search" class="d-flex gap-1 mb-3"
@@ -29,9 +30,9 @@
   <strong>Search is unavailable.</strong>
   <div class="small font-monospace mt-1">{{ storage_error }}</div>
   <div class="small mt-1">
-    Search runs on the <code>doc_pages_text_vector</code> Atlas Vector Search index. If
-    it is missing, still building, or points at another field, create it on
-    <code>text</code> with autoEmbed and try again.
+    Search runs on the <code>doc_chunks_embed_text_vector</code> Atlas Vector Search
+    index. If it is missing, still building, or points at another field, create it on
+    <code>embed_text</code> with autoEmbed and try again.
   </div>
 </div>
 {% endif %}
@@ -48,16 +49,27 @@
     {% for result in results %}
     <a class="list-group-item list-group-item-action py-3" data-search-result="true"
        href="/admin/docs/page?url={{ result.url | urlencode }}">
+      {# A result is a section, so the heading is what identifies it — the page title
+         repeats across every section of a long page and says the least. #}
       <div class="d-flex justify-content-between align-items-baseline">
-        <span class="fw-semibold">{{ result.title }}</span>
+        <span class="fw-semibold" data-heading="true">
+          {{ result.heading or result.page_title or result.url }}
+        </span>
         <span class="badge text-bg-light border font-monospace" data-score="true">
           {{ "%.2f"|format(result.score) }}
         </span>
       </div>
+      {% if result.page_title and result.page_title != result.heading %}
+      <div class="small text-body-secondary" data-page-title="true">
+        in {{ result.page_title }}{% if result.heading_path %}
+        <span class="text-body-tertiary">
+          · {{ result.heading_path | join(" › ") }}</span>{% endif %}
+      </div>
+      {% endif %}
       <div class="small text-body-secondary" data-excerpt="true">{{ result.excerpt }}</div>
       <div class="small text-body-tertiary font-monospace text-truncate mt-1">
         {{ result.url.replace("https://www.mongodb.com/docs/", "") }}
-        · {{ (result.bytes / 1024) | round(1) }} KB
+        {%- if result.chars %} · {{ result.chars }} chars{% endif %}
       </div>
     </a>
     {% else %}

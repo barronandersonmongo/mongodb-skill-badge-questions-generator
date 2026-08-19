@@ -757,6 +757,113 @@ def build_page_prompt(
     return prompt + f"{header}\n\n{body}"
 
 
+def build_chunk_prompt(
+    chunk: dict[str, Any],
+    badge: dict[str, Any],
+    catalog: list[dict[str, Any]],
+    count: int,
+    *,
+    difficulty: str | None = None,
+    extra_instructions: str | None = None,
+    settings: Settings | None = None,
+) -> str:
+    """Assemble the request for one documentation section.
+
+    The heading path is given as well as the text, because a section read out of its
+    page needs it: "Limitations" says nothing, and "Atlas Vector Search > Filtering >
+    Limitations" says what is being limited. The model is also told this is a section
+    rather than a whole page, so it does not write a question whose answer depends on
+    material that was never in front of it.
+    """
+    settings = settings or get_settings()
+    badge_lines = [
+        f"- {b['slug']}: {b.get('name')} — {b.get('description') or ''}" for b in catalog
+    ]
+    prompt = (
+        f"Write up to {count} question(s) from the documentation section below.\n\n"
+        f"The section was selected for this badge:\n{_badge_brief(badge)}\n\n"
+        "Every MongoDB skill badge, by slug — file each question under every one it "
+        "genuinely tests:\n" + "\n".join(badge_lines) + "\n\n"
+    )
+    if difficulty:
+        prompt += DIFFICULTY_GUIDANCE.get(difficulty, "") + "\n\n"
+    else:
+        prompt += (
+            "Difficulty is yours to judge per question — let the material decide, and "
+            "spread the questions across foundational, intermediate and advanced "
+            "rather than pitching them all the same.\n\n"
+        )
+    if extra_instructions:
+        prompt += f"Additional instructions from the author:\n{extra_instructions}\n\n"
+
+    trail = " > ".join(
+        part
+        for part in [chunk.get("page_title") or "", *(chunk.get("heading_path") or [])]
+        if part
+    )
+    heading = chunk.get("heading")
+    if heading and heading not in trail:
+        trail = f"{trail} > {heading}" if trail else heading
+    return prompt + (
+        "This is ONE SECTION of a documentation page, not the whole page. Write only "
+        "from what is here — if a question would need material from elsewhere on the "
+        "page, ask a different question.\n\n"
+        f"Page: {chunk.get('page_title') or chunk['url']}\n"
+        f"Section: {trail or 'the page opening'}\n"
+        f"Source: {chunk['url']}\n\n"
+        f"{chunk.get('text') or ''}"
+    )
+
+
+def questions_from_chunk(
+    chunk: dict[str, Any],
+    badge: dict[str, Any],
+    catalog: list[dict[str, Any]],
+    *,
+    count: int | None = None,
+    difficulty: str | None = None,
+    extra_instructions: str | None = None,
+    settings: Settings | None = None,
+) -> PageResult:
+    """Questions this one section supports, structured, in a single Claude call."""
+    from app.services.badge_discovery import _client, _translate_auth_error
+
+    settings = settings or get_settings()
+    count = count or settings.questions_per_page
+
+    try:
+        response = _client(settings).messages.parse(
+            model=settings.model,
+            max_tokens=16000,
+            system=PAGE_AUTHOR_SYSTEM,
+            output_format=GeneratedQuestions,
+            output_config={"effort": settings.page_author_effort},
+            messages=[
+                {
+                    "role": "user",
+                    "content": build_chunk_prompt(
+                        chunk,
+                        badge,
+                        catalog,
+                        count,
+                        difficulty=difficulty,
+                        extra_instructions=extra_instructions,
+                        settings=settings,
+                    ),
+                }
+            ],
+        )
+    except Exception as exc:
+        _translate_auth_error(exc)
+        raise
+    if response.parsed_output is None:
+        raise RuntimeError(
+            f"Section authoring produced no structured output (stop_reason="
+            f"{response.stop_reason}, details={response.stop_details})."
+        )
+    return PageResult(response.parsed_output.questions, getattr(response, "usage", None))
+
+
 @dataclass
 class PageResult:
     """What one page produced, and what it cost to produce.
@@ -932,9 +1039,9 @@ def generate_for_badge(
 
     report()
 
-    already = questions_repo.source_urls_for_badge(slug)
-    page_set = doc_retrieval.page_set_for_badge(
-        badge, exclude_urls=already, settings=settings
+    already = questions_repo.source_chunk_ids_for_badge(slug)
+    page_set = doc_retrieval.chunk_set_for_badge(
+        badge, exclude_chunk_ids=already, settings=settings
     )
     summary["pages_available"] = len(page_set)
     summary["pages_already_used"] = len(already)
@@ -989,20 +1096,22 @@ def generate_for_badge(
         # rather than only how many have finished.
         summary["current_page"] = {
             "url": page_ref["url"],
-            "title": page_ref.get("title"),
+            # The heading, not the page title: on a walk through sections, "Failover"
+            # says where the run is and the page title repeats for a dozen of them.
+            "title": page_ref.get("heading") or page_ref.get("page_title"),
         }
         report()
-        page = doc_pages_page(page_ref["url"])
+        page = doc_chunk(page_ref["chunk_id"])
         if page is None:
             summary["failures"].append(
-                {"url": page_ref["url"], "error": "page is no longer in the corpus"}
+                {"url": page_ref["url"], "error": "section is no longer in the corpus"}
             )
             summary["pages_done"] += 1
             report()
             continue
 
         try:
-            result = questions_from_page(
+            result = questions_from_chunk(
                 page,
                 badge,
                 catalog,
@@ -1016,7 +1125,9 @@ def generate_for_badge(
         except Exception as exc:
             # Recorded per page, not raised: a badge's walk is worth more than any one
             # page in it, and a refusal on one page says nothing about the next.
-            logger.warning("Page %s produced no questions: %s", page_ref["url"], exc)
+            logger.warning(
+                "Section %s produced no questions: %s", page_ref["chunk_id"], exc
+            )
             summary["failures"].append({"url": page_ref["url"], "error": str(exc)})
             summary["pages_done"] += 1
             report()
@@ -1024,6 +1135,7 @@ def generate_for_badge(
 
         _drop_unknown_badges(written, set(known), [slug])
         _ensure_source_url(written, page["url"])
+        _stamp_source_chunk(written, page)
         kept, rejected = split_well_formed(written)
         # Stamped with the walk's id, not a fresh one per page: the question a reviewer
         # is looking at has to lead back to the run that wrote it, and a walk is one run
@@ -1037,12 +1149,12 @@ def generate_for_badge(
         summary["source_pages"].append(
             {
                 "url": page["url"],
-                "title": page.get("title"),
+                "chunk_id": page.get("chunk_id"),
+                "title": page.get("heading") or page.get("page_title"),
+                "heading_path": page.get("heading_path") or [],
                 "questions": stored["inserted"],
                 "bytes": page.get("bytes"),
-                # Visible on the run so a page that only contributed its first few
-                # thousand characters is not mistaken for one that was read whole.
-                "truncated": len(page.get("text") or "") > settings.doc_context_page_chars,
+                "chars": page.get("chars"),
             }
         )
         summary["pages_done"] += 1
@@ -1084,6 +1196,25 @@ def doc_pages_page(url: str) -> dict[str, Any] | None:
     from app.repositories import doc_pages
 
     return doc_pages.page_by_url(url)
+
+
+def doc_chunk(chunk_id: str) -> dict[str, Any] | None:
+    """One documentation section by id. Indirected so a test can stand in for it."""
+    from app.repositories import doc_chunks
+
+    return doc_chunks.get_chunk(chunk_id)
+
+
+def _stamp_source_chunk(questions: list[GeneratedQuestion], chunk: dict[str, Any]) -> None:
+    """Record which section a question came from, beyond the page it cites.
+
+    The citation stays a page URL, because that is what a reader opens and what the
+    renderer can fetch. Resumability needs finer grain than that: a page has several
+    sections and walking it again must skip only the ones already used, so the section
+    is recorded separately rather than folded into the URL as a fragment.
+    """
+    for question in questions:
+        question.source_chunk_ids = [chunk["chunk_id"]]
 
 
 def _ensure_source_url(questions: list[GeneratedQuestion], url: str) -> None:

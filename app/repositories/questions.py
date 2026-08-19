@@ -276,6 +276,22 @@ def delete_questions(question_ids: list[str]) -> int:
     )
 
 
+def source_chunk_ids_for_badge(slug: str) -> set[str]:
+    """Every documentation section this badge already has questions from.
+
+    Finer grain than the page: a page has several sections, and walking a badge again
+    must skip the sections already used rather than the whole page — otherwise one
+    question written from a page's opening would make the rest of it unreachable.
+    """
+    return {
+        chunk_id
+        for doc in collection().find(
+            {"skill_badges": slug}, {"_id": False, "source_chunk_ids": True}
+        )
+        for chunk_id in (doc.get("source_chunk_ids") or [])
+    }
+
+
 def counts_by_badge() -> dict[str, int]:
     """How many questions each badge has, for the coverage screen.
 

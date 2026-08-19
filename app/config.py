@@ -15,6 +15,10 @@ class Settings:
     # event and a question is an artefact: deleting a bad batch must not erase the
     # record that it was generated, which is the evidence for changing the prompt.
     runs_collection: str = "generation_runs"
+    # Chunks are derived from pages, not crawled, so they live apart from them: the
+    # band below can be re-tuned and the chunks rebuilt without a twelve-minute
+    # re-crawl, and the page viewer still has whole pages to show.
+    doc_chunks_collection: str = "doc_chunks"
     # Claude Opus 5: adaptive thinking is on by default; effort tunes depth.
     model: str = "claude-opus-5"
     effort: str = "high"
@@ -69,6 +73,21 @@ class Settings:
     # without knowing the words the documentation happens to use.
     doc_pages_vector_index_name: str = "doc_pages_text_vector"
     doc_pages_vector_path: str = "text"
+    # Retrieval runs against chunks, not pages. Configured with autoEmbed on
+    # `embed_text` — the chunk with its page title and heading path in front of it —
+    # because a section called "Limitations" means nothing embedded on its own. This
+    # index must exist in Atlas before retrieval works; it is not created from here.
+    doc_chunks_vector_index_name: str = "doc_chunks_embed_text_vector"
+    doc_chunks_vector_path: str = "embed_text"
+    # The chunk band, chosen by measuring this corpus on 2026-08-19 rather than by
+    # intuition. Splitting the 3,844 non-reference pages at H1-H3 gives 40,561
+    # sections with a median of 642 characters and 47% under 500 — sections are mostly
+    # small, so merging matters more than splitting. Packing neighbours to this floor
+    # and ceiling gives 18,421 chunks: median 2,133 characters (~530 tokens), p90
+    # 7,603, nothing over the ceiling, 3.8% under 500.
+    chunk_heading_depth: int = 3
+    chunk_floor_chars: int = 1_500
+    chunk_ceiling_chars: int = 8_000
     # A page is not compared against the whole corpus: Atlas narrows to this many
     # approximate neighbours before scoring them exactly. Roughly 10x the result cap,
     # which is the usual recommendation for recall at this corpus size.

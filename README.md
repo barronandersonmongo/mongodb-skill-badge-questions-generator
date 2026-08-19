@@ -34,6 +34,13 @@ Optional overrides: `ANTHROPIC_MODEL`, `WEB_SEARCH_TOOL_TYPE`, `WEB_FETCH_TOOL_T
 `SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`,
 `QUESTIONS_VECTOR_INDEX_NAME`, `DOC_PAGES_VECTOR_INDEX_NAME`, `DOCS_INDEX_URL`, `LOG_DIR`, `LOG_LEVEL`.
 
+**Atlas Search indexes are not created by this program** — their definitions live in
+Atlas. Three are needed: `skill-badge-description-vector` (autoEmbed on
+`description`), `questions_embedding_text_vector` (on `embedding_text`), and
+`doc_chunks_embed_text_vector` (on `embed_text` in `doc_chunks`). Until the last of
+those exists, documentation retrieval resolves nothing and every badge falls back to
+researching the web.
+
 Token prices (`cost_input_per_mtok`, `cost_output_per_mtok`,
 `cost_cache_read_per_mtok`, `cost_cache_write_per_mtok`) and page-walk tuning live in
 `app/config.py` rather than the environment, since each
@@ -302,9 +309,62 @@ It also spreads the cost. Questions arrive per badge, when somebody asks for tha
 badge, rather than as one sweep of the whole corpus — so the first badge tells you
 whether the output is any good before the other 33 are paid for.
 
-**Drawing the page set.** The same per-topic semantic searches as before, but much
-wider, because the job changed: not "the best few pages that fit in one prompt" but
-"this badge's material". One search for the badge overall, then one per topic area
+**Questions are written from sections, not pages.** The corpus stores whole pages, and
+a page turned out to be the wrong unit twice over. Sent whole, one 1.7 MB page —
+a driver tutorial repeating every example in a dozen languages — cost **$2.58 for three
+questions**. Capped, everything past the cap became unreachable, so a page's later
+material could never produce a question however many times a badge was walked.
+
+So each page is split into **sections**, and a section is what gets embedded, retrieved
+and written from. Retrieval sharpens as a side effect: a section about `$search` stops
+being buried inside a page about aggregation.
+
+**The band was measured, not guessed.** On 2026-08-19, over the 3,844 non-reference
+pages:
+
+| split | sections | median | under 500 |
+|---|---:|---:|---:|
+| H1–H2 | 26,125 | 642 | 44% |
+| H1–H3 | 40,561 | 545 | 47% |
+| H1–H4 | 43,589 | 528 | 48% |
+
+Sections are mostly *small*, so **merging matters more than splitting** — a naive
+split-on-headings corpus would be mostly heading stubs, which embed badly and support no
+question at all. Packing neighbours to a floor and a ceiling of 1,500/8,000 gives
+**18,421 chunks**: median 2,133 characters (~530 tokens), p90 7,603, nothing over the
+ceiling, 3.8% under 500. Enough material to write several distinct questions from, small
+enough that no single call is expensive.
+
+Three passes, in order: cut at headings to `chunk_heading_depth` (3); cut anything still
+over the ceiling on blank lines, and bluntly if a single paragraph is still too big —
+needed because a handful of sections run to hundreds of kilobytes where the heading
+structure gives out inside one giant code block; then pack neighbours until each chunk
+clears the floor. When a small section is absorbed, the earlier, broader heading stays
+the chunk's own.
+
+**Every chunk says where it came from and what it is about**: its page and page title,
+the heading it sits under and the full heading path above it, its source index, its
+position in the page, its size, and a content hash. The heading path leads the text that
+gets embedded — "Limitations" means nothing on its own and everything under "Atlas Vector
+Search > Filtering > Limitations".
+
+**Chunks are derived, not crawled.** They live in their own collection, rebuilt from
+stored pages by **Re-chunk** on the corpus screen. The band is a judgement that will want
+re-tuning against real question quality, and trying a different one should cost seconds
+rather than a twelve-minute crawl and another round of CloudFront refusals. Chunk ids key
+on the page URL and position, so a rebuild of an unchanged page produces the same ids and
+questions written from it stay attributable. Chunks are stamped with the refresh that
+wrote them and swept the same way pages are — a chunk outliving its page is invisible and
+harmful, since retrieval keeps offering it and a question written from it cites a URL that
+now 404s.
+
+**This needs a new Atlas index.** Retrieval runs on `doc_chunks_embed_text_vector`, over
+`embed_text`, with autoEmbed. It must be created in Atlas before any of this works; the
+old `doc_pages_text_vector` is now used only by the single-prompt fallback.
+
+**Drawing the chunk set.** The same per-topic semantic searches as before, but over
+sections and much wider, because the job changed: not "the best few pages that fit in one
+prompt" but "the sections that make up this badge's material". One search for the badge overall, then one per topic area
 with the badge name attached — "indexes" matches most of the corpus while "Atlas
 Search indexes" matches what the badge means by it.
 
@@ -321,9 +381,11 @@ search:
   pages sit under `reference`, `cli`, `api` or `command` paths. A question written
   from a parameter list tests whether a candidate can look up a flag, which is not
   a skill the badges certify.
-- **Pages already written from are dropped.** This is what makes a walk resumable:
-  the set is derived from the `source_urls` of the badge's existing questions, so
-  running a badge again covers new material instead of re-mining the same pages.
+- **Sections already written from are dropped.** This is what makes a walk resumable:
+  the set is derived from the `source_chunk_ids` of the badge's existing questions.
+  Section-level rather than page-level, because excluding a whole page would mean one
+  question written from a page's opening made the rest of that page unreachable
+  forever — the reverse of what chunking is for.
 
 The set comes back in relevance order, so a run that walks only part of it walks
 the most relevant part.
@@ -809,6 +871,9 @@ index location.
 | `GET` | `/admin/docs/source?source=&q=` | Pages in one source, filterable |
 | `GET` | `/admin/docs/page?url=` | One stored page, rendered as Markdown |
 | `GET` | `/admin/docs/render?url=` | The canonical page, fetched live and rendered |
+| `POST` | `/api/admin/docs/rechunk` | Re-split stored pages into sections; fetches nothing |
+| `GET` | `/api/admin/docs/chunks` | How the corpus is currently chunked |
+| `GET` | `/api/admin/docs/chunks/page?url=` | One page's sections, in order |
 | `POST` | `/api/admin/docs/refresh?mode=replace` | Replace the corpus with a fresh crawl |
 | `POST` | `/api/admin/docs/refresh?mode=fill` | Fetch only missing pages; remove nothing |
 | `GET` | `/api/admin/docs/refresh/status` | Poll a crawl, with progress |
@@ -915,7 +980,9 @@ app/models/skill_badge.py            Pydantic schemas (Claude output + stored do
 app/models/question.py               question schemas (Claude output + stored doc)
 app/services/badge_discovery.py      the two Claude passes
 app/services/question_generation.py  the Claude passes for questions
-app/services/doc_retrieval.py        resolves a badge to the pages it is about
+app/services/doc_chunking.py         splits a page into the sections questions come from
+app/repositories/doc_chunks.py       chunk storage, search, totals
+app/services/doc_retrieval.py        resolves a badge to the sections it is about
 app/services/run_cost.py             prices a run from the tokens it reported
 app/services/question_duplicates.py  the ad-hoc duplicate sweep ($vectorSearch + $rerank)
 app/services/discover_cli.py         shell entry point

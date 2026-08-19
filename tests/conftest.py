@@ -1,7 +1,7 @@
 import pytest
 
 from app.config import Settings
-from app.repositories import doc_pages, questions, runs, skill_badges
+from app.repositories import doc_chunks, doc_pages, questions, runs, skill_badges
 from tests.fakes import FakeCollection
 
 
@@ -59,6 +59,20 @@ def clear_settings_cache():
 @pytest.fixture
 def settings() -> Settings:
     return Settings(mongodb_uri="mongodb://test")
+
+
+@pytest.fixture(autouse=True)
+def fake_doc_chunks(monkeypatch) -> FakeCollection:
+    """Point the chunk repository at an in-memory collection, for every test.
+
+    Autouse for the same reason as the run history: chunking is a side effect of
+    storing a page, so a refresh test that never mentions chunks would still reach for
+    a real database and sit out the driver's server-selection timeout.
+
+    """
+    collection = FakeCollection()
+    monkeypatch.setattr(doc_chunks, "collection", lambda: collection)
+    return collection
 
 
 @pytest.fixture(autouse=True)

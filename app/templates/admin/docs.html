@@ -25,6 +25,10 @@
             title="Fetch only pages the corpus is missing. Removes nothing.">
       Fill gaps
     </button>
+    <button class="btn btn-outline-primary" id="rechunk-btn" type="button"
+            title="Re-split every stored page into sections. Fetches nothing.">
+      Re-chunk
+    </button>
     <button class="btn btn-primary" id="refresh-btn" type="button">
       Refresh documentation
     </button>
@@ -32,6 +36,19 @@
 </div>
 
 <div id="run-alert" class="alert d-none" role="status"></div>
+
+{# Questions are written from sections, not whole pages, so how the corpus is cut is
+   part of what the corpus is. The band is a measured judgement and this is the only
+   way to see what it produced. #}
+<div class="card mb-3" data-chunk-summary="true">
+  <div class="card-body py-2 small d-flex justify-content-between align-items-baseline">
+    <span>
+      <strong>Sections</strong>
+      <span class="text-body-secondary">— what questions are written from</span>
+    </span>
+    <span class="font-monospace" id="chunk-totals">Loading…</span>
+  </div>
+</div>
 
 <div class="card mb-3 d-none" id="progress-panel" data-progress-panel="true">
   <div class="card-body py-3">
@@ -319,6 +336,7 @@ const bar = document.getElementById("progress-bar");
 const PHASES = {
   planning: "Reading the documentation indexes…",
   fetching: "Fetching pages…",
+  chunking: "Splitting pages into sections…",
   sweeping: "Removing pages no longer published…",
   done: "Finished",
   failed: "Failed",
@@ -390,10 +408,43 @@ async function pollStatus() {
   setTimeout(() => window.location.reload(), 2500);
 }
 
+async function loadChunkTotals() {
+  const target = document.getElementById("chunk-totals");
+  const response = await fetch(API + "/chunks");
+  if (!response.ok) {
+    target.textContent = "unavailable";
+    return;
+  }
+  const t = await response.json();
+  target.textContent = t.chunks
+    ? t.chunks.toLocaleString() + " sections across " + t.pages.toLocaleString()
+      + " pages · " + t.mean_chars.toLocaleString() + " chars each on average"
+    : "none yet — refresh the corpus, or re-chunk what is stored";
+}
+
+document.getElementById("rechunk-btn").addEventListener("click", async () => {
+  if (!window.confirm(
+    "Re-split every stored page into sections?\n\nNothing is fetched and no page is " +
+    "lost. Questions already written keep their record of which section they came from."
+  )) return;
+  showAlert("info", "Re-splitting stored pages into sections…", {timed: true});
+  const response = await fetch(API + "/rechunk", {method: "POST"});
+  if (response.status === 409) {
+    showAlert("warning", "A documentation run is already in progress.");
+    return;
+  }
+  if (!response.ok) {
+    showAlert("danger", "Could not start the re-chunk (HTTP " + response.status + ").");
+    return;
+  }
+  pollStatus();
+});
+
 document.getElementById("refresh-btn").addEventListener("click", () => startRefresh("replace"));
 document.getElementById("fill-btn").addEventListener("click", () => startRefresh("fill"));
 
 loadSources();
+loadChunkTotals();
 if ({{ "true" if running else "false" }}) { pollStatus(); }
 </script>
 {% endblock %}

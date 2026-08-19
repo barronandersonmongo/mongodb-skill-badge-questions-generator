@@ -252,8 +252,8 @@ def coverage() -> list[dict]:
     """Per-badge question counts, plus how much documentation each badge still has.
 
     This is the screen that makes a thin badge actionable: a badge with 17 questions
-    and 300 unused pages needs another walk, while one with 17 questions and no unused
-    pages has exhausted its material and needs the corpus widened instead.
+    and 300 unused sections needs another walk, while one with 17 questions and no
+    unused sections has exhausted its material and needs the corpus widened instead.
     """
     from app.repositories import skill_badges
     from app.services import doc_retrieval
@@ -268,15 +268,15 @@ def coverage() -> list[dict]:
             "total": counts.get(slug, 0),
         }
         try:
-            used = questions.source_urls_for_badge(slug)
+            used = questions.source_chunk_ids_for_badge(slug)
             row["pages_used"] = len(used)
             row["pages_available"] = len(
-                doc_retrieval.page_set_for_badge(badge, exclude_urls=used)
+                doc_retrieval.chunk_set_for_badge(badge, exclude_chunk_ids=used)
             )
         except PyMongoError as exc:
-            # The page set needs the Atlas index. Counts are still worth showing
+            # The chunk set needs the Atlas index. Counts are still worth showing
             # without it, so this reports "unknown" rather than failing the screen.
-            logger.warning("Coverage could not resolve pages for %s: %s", slug, exc)
+            logger.warning("Coverage could not resolve sections for %s: %s", slug, exc)
             row["pages_used"] = None
             row["pages_available"] = None
         rows.append(row)

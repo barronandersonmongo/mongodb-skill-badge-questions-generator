@@ -223,141 +223,188 @@ def test_a_truncated_page_says_so_in_the_prompt(settings):
     assert "cut short" in text
 
 
-# --- resolving a badge to its page set ---
+# --- resolving a badge to its chunk set ---
 
 
-def test_a_badge_resolves_to_the_pages_it_is_about(fake_doc_pages, settings):
-    """
-    Intent: A run walks a badge's documentation rather than cramming the best few pages
-        into one prompt, so the badge has to resolve to a set of pages that can be
-        enumerated and counted — that set is what makes coverage a number.
-    Success: Pages matching the badge's topics are returned, each with its URL and score.
-    Feature: Question generation — a badge resolves to its documentation page set.
-    """
-    doc_pages.upsert_pages([
-        page("Atlas Search indexes", "indexes " * 50, "https://x/a.md"),
-        page("Atlas Search aggregation", "aggregation " * 50, "https://x/b.md"),
-    ])
-    found = doc_retrieval.page_set_for_badge(BADGE, settings=settings)
-    assert {p["url"] for p in found} == {"https://x/a.md", "https://x/b.md"}
-    assert all(p["score"] > 0 for p in found)
+def seed_chunks(*specs):
+    """Store chunks directly, as a refresh would after splitting a page."""
+    from app.repositories import doc_chunks
+
+    for ordinal, (chunk_id, url, heading, text) in enumerate(specs):
+        doc_chunks.replace_page_chunks(
+            url,
+            [
+                {
+                    "chunk_id": chunk_id,
+                    "url": url,
+                    "anchor": heading.lower().replace(" ", "-"),
+                    "source": "ix-1",
+                    "page_title": "Atlas Search",
+                    "heading": heading,
+                    "heading_path": ["Atlas Search"],
+                    "heading_level": 2,
+                    "ordinal": 0,
+                    "text": text,
+                    "embed_text": f"{heading}\n\n{text}",
+                    "chars": len(text),
+                    "bytes": len(text.encode("utf-8")),
+                }
+            ],
+        )
 
 
-def test_the_page_set_is_ordered_by_relevance(fake_doc_pages, settings):
+def test_a_badge_resolves_to_the_sections_it_is_about(fake_doc_chunks, settings):
     """
-    Intent: A run walks only part of the set, so it must walk the most relevant part.
-        Returned in discovery order, a 25-page run could spend itself on the weakest
-        matches the searches happened to return last.
-    Success: The page set comes back best match first.
-    Feature: Question generation — the page set is walked in relevance order.
+    Intent: Replaces a test resolving a badge to whole pages. A page was the wrong unit
+        twice over — sent whole, one 1.7 MB page cost $2.58 for three questions; capped,
+        everything past the cap was unreachable. A section of a page is affordable to send
+        and specific enough to retrieve, and it is what a walk now steps through.
+    Success: Chunks matching the badge's topics come back with their ids and scores.
+    Feature: Question generation — a badge resolves to its documentation sections.
     """
-    doc_pages.upsert_pages([
-        page("Atlas Search indexes", "Atlas Search indexes exactly.", "https://x/near.md"),
-        page("Atlas Search", "indexes " + "unrelated " * 40, "https://x/far.md"),
-    ])
-    found = doc_retrieval.page_set_for_badge(BADGE, settings=settings)
-    scores = [p["score"] for p in found]
+    seed_chunks(
+        ("c1", "https://x/a.md", "Atlas Search indexes", "indexes " * 30),
+        ("c2", "https://x/b.md", "Atlas Search aggregation", "aggregation " * 30),
+    )
+    found = doc_retrieval.chunk_set_for_badge(BADGE, settings=settings)
+    assert {c["chunk_id"] for c in found} == {"c1", "c2"}
+    assert all(c["score"] > 0 for c in found)
+
+
+def test_a_section_carries_the_heading_that_explains_it(fake_doc_chunks, settings):
+    """
+    Intent: A section read away from its page needs its context: "Limitations" says nothing
+        on its own and everything under "Atlas Vector Search > Filtering > Limitations". The
+        set has to carry that, or the walk cannot tell the author what it is reading.
+    Success: A resolved section reports its heading and the path above it.
+    Feature: Question generation — sections carry their heading context.
+    """
+    seed_chunks(("c1", "https://x/a.md", "Atlas Search indexes", "indexes " * 30))
+    found = doc_retrieval.chunk_set_for_badge(BADGE, settings=settings)
+    assert found[0]["heading"] == "Atlas Search indexes"
+    assert found[0]["heading_path"] == ["Atlas Search"]
+    assert found[0]["url"] == "https://x/a.md"
+
+
+def test_the_chunk_set_is_ordered_by_relevance(fake_doc_chunks, settings):
+    """
+    Intent: Replaces the page-ordering test. A run walks only part of the set, so it must
+        walk the most relevant part — returned in discovery order, a 25-section run could
+        spend itself on the weakest matches the searches happened to return last.
+    Success: The set comes back best match first.
+    Feature: Question generation — the chunk set is walked in relevance order.
+    """
+    seed_chunks(
+        ("c1", "https://x/a.md", "Atlas Search indexes", "Atlas Search indexes exactly."),
+        ("c2", "https://x/b.md", "Atlas Search", "indexes " + "unrelated " * 40),
+    )
+    found = doc_retrieval.chunk_set_for_badge(BADGE, settings=settings)
+    scores = [c["score"] for c in found]
     assert scores == sorted(scores, reverse=True)
 
 
-def test_a_weak_match_is_not_this_badges_material(fake_doc_pages, settings):
+def test_a_weak_section_is_not_this_badges_material(fake_doc_chunks, settings):
     """
-    Intent: Badge categories come from Credly's marketing tags, not a syllabus. On the
-        live Cluster Reliability badge the tag "Cluster IP" pulled in VPC peering and IP
-        access lists — pages nobody would write a reliability question from. A relevance
-        floor is what keeps a tagging artifact out of a badge's material.
-    Success: A page scoring below the floor is excluded from the page set.
-    Feature: Question generation — a relevance floor on the page set.
+    Intent: Replaces the page-level floor test. Badge categories come from Credly's
+        marketing tags: on the live Cluster Reliability badge the tag "Cluster IP" — a
+        Kubernetes term — pulled VPC peering and IP access lists in at 0.64-0.69 while real
+        matches scored 0.70-0.86. The floor keeps a tagging artifact out, and it applies to
+        sections for the same reason it applied to pages.
+    Success: A section scoring below the floor is excluded.
+    Feature: Question generation — a relevance floor on the chunk set.
     """
-    doc_pages.upsert_pages([
-        page("Atlas Search indexes", "Atlas Search indexes.", "https://x/good.md"),
-        page("Unrelated", "indexes " + "kubernetes " * 60, "https://x/weak.md"),
-    ])
-    strict = replace(settings, doc_page_set_score_floor=0.5)
-    found = doc_retrieval.page_set_for_badge(BADGE, settings=strict)
-    assert "https://x/weak.md" not in {p["url"] for p in found}
-
-
-def test_reference_material_is_not_question_material(fake_doc_pages, settings):
-    """
-    Intent: Measured on 2026-08-19, 3,318 of 7,162 stored pages are parameter lists, CLI
-        synopses and command references. A question written from a parameter list tests
-        whether a candidate can look up a flag, which is not a skill the badges certify.
-    Success: Pages under reference, cli, api and command paths are excluded.
-    Feature: Question generation — reference pages are not walked.
-    """
-    doc_pages.upsert_pages([
-        page("Atlas Search indexes", "Atlas Search indexes.", "https://x/guide/a.md"),
-        page("Atlas Search indexes command", "Atlas Search indexes.",
-             "https://x/reference/command/b.md"),
-        page("atlas clusters indexes", "Atlas Search indexes.", "https://x/cli/c.md"),
-    ])
-    found = doc_retrieval.page_set_for_badge(BADGE, settings=settings)
-    assert {p["url"] for p in found} == {"https://x/guide/a.md"}
-
-
-def test_pages_already_written_from_are_not_walked_again(fake_doc_pages, settings):
-    """
-    Intent: This is what makes a walk resumable. Without it, a second run for a badge
-        re-reads the same pages and produces variations on questions that already exist —
-        the failure the whole page-walk design is meant to remove.
-    Success: An excluded URL does not appear in the page set.
-    Feature: Question generation — a walk resumes rather than repeating.
-    """
-    doc_pages.upsert_pages([
-        page("Atlas Search indexes one", "Atlas Search indexes.", "https://x/a.md"),
-        page("Atlas Search indexes two", "Atlas Search indexes.", "https://x/b.md"),
-    ])
-    found = doc_retrieval.page_set_for_badge(
-        BADGE, exclude_urls={"https://x/a.md"}, settings=settings
+    seed_chunks(
+        ("c1", "https://x/a.md", "Atlas Search indexes", "Atlas Search indexes."),
+        ("c2", "https://x/b.md", "Unrelated", "indexes " + "kubernetes " * 60),
     )
-    assert {p["url"] for p in found} == {"https://x/b.md"}
+    strict = replace(settings, doc_page_set_score_floor=0.5)
+    found = doc_retrieval.chunk_set_for_badge(BADGE, settings=strict)
+    assert "c2" not in {c["chunk_id"] for c in found}
 
 
-def test_a_page_found_by_two_topics_keeps_its_best_score(fake_doc_pages, settings):
+def test_reference_sections_are_not_question_material(fake_doc_chunks, settings):
     """
-    Intent: The set is walked in relevance order, so a page's position must reflect how
-        relevant it is at its strongest — a page central to one topic should not be
+    Intent: Replaces the page-level exclusion. Measured 2026-08-19, 3,318 of 7,162 stored
+        pages are parameter lists, CLI synopses and command references — and chunking them
+        does not make them teachable, it just makes more of them.
+    Success: Sections from reference, cli, api and command paths are excluded.
+    Feature: Question generation — reference sections are not walked.
+    """
+    seed_chunks(
+        ("c1", "https://x/guide/a.md", "Atlas Search indexes", "Atlas Search indexes."),
+        ("c2", "https://x/reference/command/b.md", "Atlas Search indexes", "Atlas Search indexes."),
+        ("c3", "https://x/cli/c.md", "Atlas Search indexes", "Atlas Search indexes."),
+    )
+    found = doc_retrieval.chunk_set_for_badge(BADGE, settings=settings)
+    assert {c["chunk_id"] for c in found} == {"c1"}
+
+
+def test_sections_already_written_from_are_not_walked_again(fake_doc_chunks, settings):
+    """
+    Intent: Replaces a test excluding whole pages. Excluding a page was too coarse once a
+        page is several sections: one question written from a page's opening would have made
+        the rest of that page unreachable forever, which is the reverse of what chunking is
+        for.
+    Success: An excluded section id is absent, and its page's other sections are not.
+    Feature: Question generation — a walk resumes section by section.
+    """
+    seed_chunks(
+        ("c1", "https://x/a.md", "Atlas Search indexes", "Atlas Search indexes."),
+        ("c2", "https://x/b.md", "Atlas Search indexes two", "Atlas Search indexes."),
+    )
+    found = doc_retrieval.chunk_set_for_badge(
+        BADGE, exclude_chunk_ids={"c1"}, settings=settings
+    )
+    assert {c["chunk_id"] for c in found} == {"c2"}
+
+
+def test_a_section_found_by_two_topics_keeps_its_best_score(fake_doc_chunks, settings):
+    """
+    Intent: The set is walked in relevance order, so a section's position must reflect how
+        relevant it is at its strongest — a section central to one topic should not be
         demoted because it also weakly matches another.
-    Success: A page matching two topic queries appears once, at its higher score.
-    Feature: Question generation — page scores are the best of their matches.
+    Success: A section matching two topic queries appears once.
+    Feature: Question generation — section scores are the best of their matches.
     """
-    doc_pages.upsert_pages([
-        page("Atlas Search indexes", "Atlas Search indexes aggregation.", "https://x/a.md"),
-    ])
-    found = doc_retrieval.page_set_for_badge(BADGE, settings=settings)
+    seed_chunks(
+        ("c1", "https://x/a.md", "Atlas Search indexes", "Atlas Search indexes aggregation."),
+    )
+    found = doc_retrieval.chunk_set_for_badge(BADGE, settings=settings)
     assert len(found) == 1
 
 
-def test_the_page_set_is_capped(fake_doc_pages, settings):
+def test_the_chunk_set_is_capped(fake_doc_chunks, settings):
     """
-    Intent: A badge like Query Optimization matches a large share of the corpus. An
-        uncapped set would make the coverage screen claim thousands of pages of material
-        that is only nominally relevant.
-    Success: The page set is no larger than the configured cap.
-    Feature: Question generation — a bounded page set.
+    Intent: Chunking multiplies the candidates — 3,844 pages become 18,421 sections — so the
+        cap matters more than it did, not less. Uncapped, the coverage screen would claim
+        thousands of sections of material that is only nominally relevant.
+    Success: The set is no larger than the configured cap.
+    Feature: Question generation — a bounded chunk set.
     """
-    doc_pages.upsert_pages([
-        page(f"Atlas Search indexes {n}", "Atlas Search indexes.", f"https://x/{n}.md")
+    seed_chunks(*[
+        (f"c{n}", f"https://x/{n}.md", "Atlas Search indexes", "Atlas Search indexes.")
         for n in range(12)
     ])
     small = replace(settings, doc_page_set_size=4)
-    assert len(doc_retrieval.page_set_for_badge(BADGE, settings=small)) == 4
+    assert len(doc_retrieval.chunk_set_for_badge(BADGE, settings=small)) == 4
 
 
-def test_an_unavailable_index_yields_no_page_set_rather_than_an_error(
-    fake_doc_pages, settings, monkeypatch, caplog
+def test_an_unavailable_index_yields_no_chunk_set_rather_than_an_error(
+    fake_doc_chunks, settings, monkeypatch, caplog
 ):
     """
     Intent: The Atlas Vector Search index lives outside this repository, so it can be
-        missing, renamed or still building. The coverage screen and the walk both call
-        this, and neither should break because of it.
-    Success: A failing search returns an empty page set and logs a warning.
-    Feature: Question generation — page-set resolution degrades rather than failing.
+        missing, renamed or still building — and it has to be recreated against the chunk
+        field for this change, which is exactly when it will be absent. The coverage screen
+        and the walk both call this, and neither should break.
+    Success: A failing search returns an empty set and logs a warning.
+    Feature: Question generation — chunk-set resolution degrades rather than failing.
     """
+    from app.repositories import doc_chunks
+
     def boom(*args, **kwargs):
         raise RuntimeError("index not found")
 
-    monkeypatch.setattr(doc_pages, "search_page_refs", boom)
-    assert doc_retrieval.page_set_for_badge(BADGE, settings=settings) == []
-    assert "Page set search failed" in caplog.text
+    monkeypatch.setattr(doc_chunks, "search_chunk_refs", boom)
+    assert doc_retrieval.chunk_set_for_badge(BADGE, settings=settings) == []
+    assert "Chunk set search failed" in caplog.text

@@ -86,18 +86,32 @@ def docs_page(request: Request):
 
 @router.get("/docs/search")
 def docs_search_page(request: Request, q: str | None = None):
-    """Semantic search across every stored page.
+    """Semantic search across every stored section.
 
     Corpus-wide on purpose: which of the 74 sources holds a topic is not something an
     author knows, so a per-source search would only work for someone who already knew
     where to look.
+
+    Sections rather than pages, matching what questions are written from — and a
+    section-level result says which part of a page matched, where a page-level one only
+    said that somewhere in 40 KB something did.
     """
+    from app.repositories import doc_chunks
+
     results: list[dict] = []
     storage_error: str | None = None
     query = (q or "").strip()
     if query:
         try:
-            results = doc_pages.search_pages(query, limit=SEARCH_RESULT_LIMIT)
+            settings = get_settings()
+            found = doc_chunks.search_chunks(
+                query, limit=SEARCH_RESULT_LIMIT, settings=settings
+            )
+            terms = [t.strip('"') for t in query.split() if t.strip('"')]
+            for chunk in found:
+                text = chunk.pop("text", "") or ""
+                chunk.pop("embed_text", None)
+                results.append({**chunk, "excerpt": doc_pages.excerpt(text, terms)})
         except PyMongoError as exc:
             storage_error = str(exc)
 

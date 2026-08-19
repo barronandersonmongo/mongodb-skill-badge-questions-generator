@@ -1011,9 +1011,9 @@ def test_a_run_reads_the_corpus_before_authoring(
         prompt.
     Feature: Question generation — end-to-end run reads the corpus.
     """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
     from app.repositories import doc_pages
 
-    fake_collection.docs.append({**BADGE, "status": "approved"})
     doc_pages.upsert_pages([{
         "url": "https://x/a.md",
         "source": "ix-1",
@@ -1036,9 +1036,9 @@ def test_a_run_reports_which_pages_it_wrote_from(
         researched.
     Feature: Question generation — the source material of a run is reported.
     """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
     from app.repositories import doc_pages
 
-    fake_collection.docs.append({**BADGE, "status": "approved"})
     doc_pages.upsert_pages([{
         "url": "https://x/a.md",
         "source": "ix-1",
@@ -1091,6 +1091,40 @@ PAGE = {
     "source": "ix-1",
     "text": "An Atlas Search index defines how fields are analysed.",
 }
+
+CHUNK = {
+    "chunk_id": "c1",
+    "url": "https://x/a.md",
+    "anchor": "atlas-search-indexes",
+    "source": "ix-1",
+    "page_title": "Atlas Search indexes",
+    "heading": "Atlas Search indexes",
+    "heading_path": ["Atlas Search"],
+    "heading_level": 2,
+    "ordinal": 0,
+    "text": "An Atlas Search index defines how fields are analysed.",
+    "embed_text": "Atlas Search indexes\n\nAn Atlas Search index defines how fields are analysed.",
+    "chars": 53,
+    "bytes": 53,
+}
+
+
+def seed_corpus(pages, settings):
+    """Store pages and the chunks derived from them, as a refresh does.
+
+    Chunked through the real splitter rather than with hand-written fixtures, so a walk
+    test exercises the same shape production produces — a chunk whose metadata the test
+    invented would let the walk pass while the refresh stored something else.
+    """
+    from app.repositories import doc_chunks, doc_pages
+    from app.services import doc_chunking
+
+    doc_pages.upsert_pages(pages)
+    for page in pages:
+        stored = doc_pages.page_by_url(page["url"])
+        doc_chunks.replace_page_chunks(
+            page["url"], doc_chunking.split_page(stored, settings=settings)
+        )
 
 
 def walk_run(questions=ONE_QUESTION) -> dict:
@@ -1185,10 +1219,8 @@ def test_every_question_cites_the_page_it_came_from(fake_client, fake_collection
         though the model returned none.
     Feature: Question generation — the source page is always recorded.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE])
+    seed_corpus([PAGE], walk_settings)
     fake_client(parsed_by_format=walk_run(GeneratedQuestions(questions=[make(source_urls=[])])))
     question_generation.generate_for_badge("atlas-search", settings=walk_settings)
     assert fake_questions.docs[0]["source_urls"] == ["https://x/a.md"]
@@ -1204,41 +1236,16 @@ def test_a_walk_stores_questions_page_by_page(
     Success: Questions from each page are stored, and the summary counts the pages walked.
     Feature: Question generation — a walk stores as it goes.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([
-        PAGE,
-        {**PAGE, "url": "https://x/b.md", "title": "Atlas Search analysers"},
-    ])
+    seed_corpus(
+        [PAGE, {**PAGE, "url": "https://x/b.md", "title": "Atlas Search analysers"}],
+        walk_settings,
+    )
     fake_client(parsed_by_format=walk_run())
     result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
     assert result["pages_done"] == 2
     assert result["inserted"] == 2
     assert len(fake_questions.docs) == 2
-
-
-def test_a_walk_skips_pages_it_has_already_written_from(
-    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
-):
-    """
-    Intent: Running a badge twice must cover new material, not re-mine the same pages.
-        This is the property that turns fifteen pages of source material into hundreds,
-        and without it a second run produces near-duplicates by construction.
-    Success: A page cited by an existing question is not walked again.
-    Feature: Question generation — a walk resumes where it stopped.
-    """
-    from app.repositories import doc_pages
-
-    fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
-    fake_questions.docs.append(
-        {"skill_badges": ["atlas-search"], "source_urls": ["https://x/a.md"]}
-    )
-    fake_client(parsed_by_format=walk_run())
-    result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
-    assert [p["url"] for p in result["source_pages"]] == ["https://x/b.md"]
-    assert result["pages_already_used"] == 1
 
 
 def test_a_walk_is_bounded_by_its_page_cap(
@@ -1251,12 +1258,8 @@ def test_a_walk_is_bounded_by_its_page_cap(
     Success: A walk reads no more pages than the cap allows.
     Feature: Question generation — a bounded walk.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([
-        {**PAGE, "url": f"https://x/{n}.md"} for n in range(6)
-    ])
+    seed_corpus([{**PAGE, "url": f"https://x/{n}.md"} for n in range(6)], walk_settings)
     fake_client(parsed_by_format=walk_run())
     result = question_generation.generate_for_badge(
         "atlas-search", max_pages=2, settings=walk_settings
@@ -1274,25 +1277,23 @@ def test_one_bad_page_does_not_end_the_walk(
     Success: A failing page is recorded with its reason and the walk continues.
     Feature: Question generation — a walk steps over a failing page.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
     fake_client(parsed_by_format=walk_run())
     calls = {"n": 0}
-    original = question_generation.questions_from_page
+    original = question_generation.questions_from_chunk
 
-    def flaky(page, *args, **kwargs):
+    def flaky(chunk, *args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("refused")
-        return original(page, *args, **kwargs)
+        return original(chunk, *args, **kwargs)
 
-    question_generation.questions_from_page = flaky
+    question_generation.questions_from_chunk = flaky
     try:
         result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
     finally:
-        question_generation.questions_from_page = original
+        question_generation.questions_from_chunk = original
     assert result["failure_count"] == 1
     assert "refused" in result["failures"][0]["error"]
     assert result["inserted"] == 1
@@ -1308,10 +1309,8 @@ def test_a_walk_reports_progress_page_by_page(
         question count.
     Feature: Question generation — a walk reports its progress.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
     fake_client(parsed_by_format=walk_run())
     seen = []
     question_generation.generate_for_badge(
@@ -1338,10 +1337,8 @@ def test_a_walk_can_be_stopped(
     Success: A walk asked to stop reports it stopped early and keeps its questions.
     Feature: Question generation — a walk can be stopped without losing work.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
     fake_client(parsed_by_format=walk_run())
     calls = {"n": 0}
 
@@ -1374,30 +1371,6 @@ def test_a_badge_with_no_documentation_falls_back_to_research(
     assert result["inserted"] == 1
 
 
-def test_a_badge_whose_pages_are_used_up_says_so(
-    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
-):
-    """
-    Intent: "No pages left" and "no pages ever" need different answers. A badge that has
-        been walked to exhaustion should not quietly research the web — the actionable
-        fact is that its material is spent, and the fix is a wider corpus, not another
-        run.
-    Success: A badge with every page already used reports exhaustion and writes nothing.
-    Feature: Question generation — exhausted material is reported, not worked around.
-    """
-    from app.repositories import doc_pages
-
-    fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE])
-    fake_questions.docs.append(
-        {"skill_badges": ["atlas-search"], "source_urls": ["https://x/a.md"]}
-    )
-    fake_client(parsed_by_format=walk_run())
-    result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
-    assert result["exhausted"] is True
-    assert result["inserted"] == 0
-
-
 def test_walking_an_unknown_badge_is_refused(fake_collection, fake_questions, walk_settings):
     """
     Intent: An unknown slug cannot be resolved to a page set, and questions filed under
@@ -1423,10 +1396,8 @@ def test_a_walk_reports_what_it_has_spent(
     Success: The run summary carries token counts, a call count and a dollar figure.
     Feature: Question generation — a walk accounts for its own cost.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
     client = fake_client(parsed_by_format=walk_run())
     client.messages.usage = {"input_tokens": 1000, "output_tokens": 500}
     result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
@@ -1445,10 +1416,8 @@ def test_progress_carries_the_cost_so_far_and_the_projection(
     Success: A progress snapshot mid-walk reports dollars spent and a projected total.
     Feature: Question generation — cost reported during the walk.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
     client = fake_client(parsed_by_format=walk_run())
     client.messages.usage = {"input_tokens": 1000, "output_tokens": 500}
     seen = []
@@ -1470,10 +1439,8 @@ def test_a_walk_names_the_page_it_is_reading(
     Success: A progress snapshot names the page currently being read.
     Feature: Question generation — the page being read is reported.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE])
+    seed_corpus([PAGE], walk_settings)
     fake_client(parsed_by_format=walk_run())
     seen = []
     question_generation.generate_for_badge(
@@ -1495,10 +1462,8 @@ def test_a_walk_reports_its_phase(
     Success: A walk reports resolving before writing, and done at the end.
     Feature: Question generation — the phase of a walk is reported.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE])
+    seed_corpus([PAGE], walk_settings)
     fake_client(parsed_by_format=walk_run())
     seen = []
     question_generation.generate_for_badge(
@@ -1520,10 +1485,8 @@ def test_a_stopped_walk_reports_the_stopped_phase(
     Success: A walk that was stopped ends in the stopped phase rather than done.
     Feature: Question generation — a stopped walk is distinguishable from a finished one.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
     fake_client(parsed_by_format=walk_run())
     result = question_generation.generate_for_badge(
         "atlas-search", settings=walk_settings, stop=lambda: True
@@ -1678,10 +1641,8 @@ def test_a_walk_reports_questions_per_minute(
         figure.
     Feature: Question generation — throughput reported in questions per minute.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
     fake_client(parsed_by_format=walk_run())
     seen = []
     result = question_generation.generate_for_badge(
@@ -1702,10 +1663,8 @@ def test_a_walk_reports_what_each_question_is_costing(
     Success: Progress and the finished run both report dollars per question.
     Feature: Question generation — cost per question while the walk runs.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
     client = fake_client(parsed_by_format=walk_run())
     client.messages.usage = {"input_tokens": 1000, "output_tokens": 500}
     seen = []
@@ -1778,10 +1737,8 @@ def test_the_level_asked_for_is_recorded_with_the_run(
     Success: The run summary reports the level that was requested.
     Feature: Run history — the requested skill level is recorded.
     """
-    from app.repositories import doc_pages
-
     fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([PAGE])
+    seed_corpus([PAGE], walk_settings)
     fake_client(parsed_by_format=walk_run())
     result = question_generation.generate_for_badge(
         "atlas-search", difficulty="intermediate", settings=walk_settings
@@ -1846,22 +1803,3 @@ def test_a_page_within_the_cap_is_sent_whole(fake_client, walk_settings):
     assert "cut short" not in prompt
 
 
-def test_a_run_reports_which_pages_were_cut(
-    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
-):
-    """
-    Intent: A page that contributed only its first few thousand characters produced questions
-        from a fraction of its material. Reported the same as a page read whole, a thin result
-        looks like thin documentation rather than a page the cap trimmed.
-    Success: The run's source pages record the size and whether the page was cut.
-    Feature: Run history — truncated source pages are identifiable.
-    """
-    from app.repositories import doc_pages
-
-    fake_collection.docs.append({**BADGE, "status": "approved"})
-    doc_pages.upsert_pages([{**PAGE, "text": "Atlas Search indexes. " + "x" * 5000}])
-    capped = replace(walk_settings, doc_context_page_chars=100)
-    fake_client(parsed_by_format=walk_run())
-    result = question_generation.generate_for_badge("atlas-search", settings=capped)
-    assert result["source_pages"][0]["truncated"] is True
-    assert result["source_pages"][0]["bytes"] > 100

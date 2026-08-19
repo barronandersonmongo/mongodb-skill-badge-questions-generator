@@ -154,6 +154,10 @@ class FakeCollection:
                     row[field] = max(values) if values else None
                 elif operator == "$min":
                     row[field] = min(values) if values else None
+                elif operator == "$addToSet":
+                    # Distinct values, order not guaranteed by MongoDB either. Used to
+                    # count how many pages a set of chunks spans.
+                    row[field] = list(dict.fromkeys(values))
                 else:
                     raise NotImplementedError(f"accumulator {operator} not faked")
             rows.append(row)
@@ -347,6 +351,15 @@ class FakeCollection:
             doc.pop(field, None)
         return doc != before
 
+    def _bulk_op_kind(self, op) -> str:
+        """Which write a bulk operation is, by class name.
+
+        pymongo's operation objects expose no common interface worth matching on, and
+        the alternative — importing each class to isinstance against — couples the fake
+        to pymongo's module layout for no gain.
+        """
+        return type(op).__name__
+
     def replace_one(self, query: dict, document: dict, upsert: bool = False):
         """Whole-document replacement, as a run record uses.
 
@@ -420,9 +433,25 @@ class FakeCollection:
         return FakeDeleteResult(0)
 
     def bulk_write(self, operations, ordered: bool = True) -> FakeBulkResult:
+        """UpdateOne, DeleteMany and InsertOne, which is what this program mixes.
+
+        Replacing a page's chunks is a DeleteMany followed by InsertOnes in one write,
+        so a page is never briefly chunkless; a fake that only understood UpdateOne
+        would let that pass while storing nothing.
+        """
         matched = modified = 0
         upserted: dict[int, Any] = {}
         for index, operation in enumerate(operations):
+            kind = self._bulk_op_kind(operation)
+            if kind == "DeleteMany":
+                self.delete_many(_bulk_filter(operation))
+                continue
+            if kind == "DeleteOne":
+                self.delete_one(_bulk_filter(operation))
+                continue
+            if kind == "InsertOne":
+                self.insert_many([_bulk_document(operation)])
+                continue
             query, update, upsert = _unpack_update_one(operation)
             existing = next((d for d in self.docs if self._matches(d, query)), None)
             if existing is not None:
@@ -431,6 +460,24 @@ class FakeCollection:
             elif upsert:
                 upserted[index] = self._insert(query, update)
         return FakeBulkResult(matched, modified, upserted)
+
+
+def _bulk_filter(operation) -> dict:
+    """The filter of a bulk delete, whatever pymongo calls the attribute this release."""
+    for name in ("_filter", "filter"):
+        found = getattr(operation, name, None)
+        if found is not None:
+            return found
+    raise NotImplementedError(f"cannot read the filter of {operation!r}")
+
+
+def _bulk_document(operation) -> dict:
+    """The document of a bulk insert, whatever pymongo calls the attribute."""
+    for name in ("_doc", "document"):
+        found = getattr(operation, name, None)
+        if found is not None:
+            return found
+    raise NotImplementedError(f"cannot read the document of {operation!r}")
 
 
 def _project_search_result(doc: dict, projection: dict | None, score: float) -> dict:

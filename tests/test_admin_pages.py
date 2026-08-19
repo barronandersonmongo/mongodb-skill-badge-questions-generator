@@ -845,3 +845,16 @@ def test_a_failed_fetch_is_explained_with_a_way_out(client, monkeypatch, fake_do
     assert 'data-fetch-error="true"' in body
     assert "403 Forbidden" in body
     assert "/admin/docs/page?url=" in body
+
+
+def test_the_corpus_screen_shows_how_it_is_chunked(client, fake_collection, fake_doc_pages):
+    """
+    Intent: Questions are written from sections, not whole pages, so how the corpus is cut is
+        part of what the corpus is. The band is a measured judgement and the screen is where
+        anyone would look to see what it produced.
+    Success: The corpus screen carries a section summary and a re-chunk control.
+    Feature: Documentation corpus screen — the chunking is visible and rebuildable.
+    """
+    body = client.get("/admin/docs").text
+    assert 'data-chunk-summary="true"' in body
+    assert 'id="rechunk-btn"' in body
