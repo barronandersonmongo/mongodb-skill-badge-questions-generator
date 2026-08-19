@@ -367,15 +367,42 @@ function element(tag, className, text) {
   return node;
 }
 
-function labelledRow(label, valueNode) {
-  const row = element("div", "compare-row");
-  row.append(element("span", "compare-label", label), valueNode);
-  return row;
+// The same three facts, in the same order and on the same grey ground, as the top of a
+// question on the questions screen. A comparison that laid a question out differently
+// from the screen the reader just came from would make them re-learn it here.
+function factsBlock(question) {
+  const list = element("dl", "question-head");
+
+  const rows = [["Question ID", element("span", "font-monospace", question.question_id)]];
+  if (question.created_at) {
+    rows.push(["Generated", element("span", null,
+      new Date(question.created_at).toLocaleString())]);
+  }
+  (question.source_urls || []).forEach((url) => {
+    // The one link in the report: a documentation page cannot lead back to where the
+    // reader already is, which a link to a question would.
+    const link = element("a", "question-source font-monospace", url);
+    link.href = "/admin/docs/render?url=" + encodeURIComponent(url);
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = url;
+    rows.push(["Source", link]);
+  });
+
+  rows.forEach(([label, valueNode]) => {
+    const row = document.createElement("div");
+    row.append(element("dt", null, label));
+    const value = element("dd");
+    value.append(valueNode);
+    row.append(value);
+    list.append(row);
+  });
+  return list;
 }
 
 function renderQuestion(question) {
   const wrapper = document.createElement("div");
-  wrapper.append(element("div", "compare-stem", question.stem));
+  wrapper.append(factsBlock(question), element("div", "compare-stem", question.stem));
 
   const options = element("ol", "question-options");
   options.type = "A";
@@ -387,7 +414,7 @@ function renderQuestion(question) {
     }
     item.append(document.createTextNode(option.text));
     if (option.rationale) {
-      item.append(element("div", "small text-body-secondary", option.rationale));
+      item.append(element("div", "small text-body-secondary fw-normal", option.rationale));
     }
     options.append(item);
   });
@@ -399,7 +426,7 @@ function renderQuestion(question) {
     wrapper.append(why);
   }
 
-  const tags = element("div", "mb-2");
+  const tags = document.createElement("div");
   if (question.difficulty) {
     tags.append(element("span", "tag tag-category me-1", question.difficulty));
   }
@@ -410,22 +437,6 @@ function renderQuestion(question) {
     tags.append(element("span", "tag tag-category me-1", name));
   });
   wrapper.append(tags);
-
-  wrapper.append(labelledRow("Question ID",
-    element("span", "font-monospace", question.question_id)));
-  if (question.created_at) {
-    wrapper.append(labelledRow("Generated",
-      element("span", null, new Date(question.created_at).toLocaleString())));
-  }
-  (question.source_urls || []).forEach((url) => {
-    // The one link kept in the report: a source is a documentation page, not a question,
-    // so following it cannot lead back to where the reader already is.
-    const link = element("a", "question-source font-monospace", url);
-    link.href = "/admin/docs/render?url=" + encodeURIComponent(url);
-    link.target = "_blank";
-    link.rel = "noopener";
-    wrapper.append(labelledRow("Source", link));
-  });
   return wrapper;
 }
 

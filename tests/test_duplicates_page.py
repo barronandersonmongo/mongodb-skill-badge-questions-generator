@@ -329,3 +329,47 @@ def test_the_comparison_is_wider_than_a_standard_dialog(client):
     rule = rule[: rule.index("}")]
     assert "1368px" in rule
     assert "vw" in rule
+
+
+def test_a_compared_question_is_laid_out_like_one_on_the_questions_screen(client):
+    """
+    Intent: A reader arrives at a comparison from the questions list, where a question opens
+        with its identifier, generated date and source on a grey ground. Laying the same
+        question out differently here makes them find those facts twice — and the comparison
+        is already asking them to hold two questions in mind at once.
+    Success: The comparison builds each question's facts as the same block the questions
+        screen uses, with the same labels in the same order.
+    Feature: Duplicates screen — a compared question looks like a listed one.
+    """
+    body = client.get(PAGE).text
+    script = body[body.index("function factsBlock"):body.index("function renderQuestion")]
+    assert 'element("dl", "question-head")' in script
+    assert script.index("Question ID") < script.index("Generated") < script.index("Source")
+
+
+def test_the_facts_come_before_the_question_in_a_comparison(client):
+    """
+    Intent: The facts are how a question is referred to, dated and checked, so they are read
+        before it — the same order as the questions screen, and the reason they moved there in
+        the first place.
+    Success: The facts block is appended before the stem.
+    Feature: Duplicates screen — facts precede the question.
+    """
+    body = client.get(PAGE).text
+    render = body[body.index("function renderQuestion"):body.index("async function fillCompareSide")]
+    assert "factsBlock(question), element(\"div\", \"compare-stem\"" in render
+
+
+def test_neither_column_can_be_widened_by_its_content(client):
+    """
+    Intent: One long option or one unbroken URL was floored at its own minimum width, which
+        widened its column past the dialog and made the comparison scroll sideways — hiding
+        half of the thing being compared.
+    Success: The columns are bounded below zero and long unbroken text is allowed to break.
+    Feature: Duplicates screen — the comparison fits the dialog.
+    """
+    css = client.get("/static/theme.css").text
+    grid = css[css.index(".compare-grid {"):]
+    assert "minmax(0, 1fr) minmax(0, 1fr)" in grid[: grid.index("}")]
+    side = css[css.index(".compare-side {"):]
+    assert "overflow-wrap" in side[: side.index("}")]

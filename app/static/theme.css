@@ -676,8 +676,19 @@ a:focus-visible,
    a question in. The divider is what stops the pair reading as one long question. */
 .compare-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, 1fr), not 1fr: a bare 1fr floors at the content's minimum size, so one
+     long option or one unbroken URL widened its column and the dialog scrolled
+     sideways. This is what "the content does not fit" was. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--s5);
+}
+
+.compare-side {
+  min-width: 0;
+  /* A stem or an option can contain a path, an operator or a long identifier with no
+     break in it. Breaking mid-word is worse than a scrollbar everywhere except here,
+     where a scrollbar hides half the comparison. */
+  overflow-wrap: anywhere;
 }
 
 .compare-side + .compare-side {
@@ -711,30 +722,17 @@ a:focus-visible,
 .compare-heading-drop { color: var(--danger); background: var(--danger-wash); }
 .compare-heading-keep { color: var(--forest); background: var(--forest-wash); }
 
+/* The facts block is the same object as on the questions screen, with a narrower label
+   column: at 7rem it took a fifth of a column that is itself half a dialog. */
+.compare-side .question-head {
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+}
+
 .compare-stem {
   font-size: 1rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   margin-bottom: var(--s3);
-}
-
-.compare-row {
-  display: flex;
-  gap: var(--s2);
-  font-size: 0.8125rem;
-  color: var(--ink-2);
-  min-width: 0;
-}
-
-.compare-label {
-  flex: none;
-  width: 6rem;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  padding-top: 0.1875rem;
 }
 
 /* ---------- tags ---------- */
