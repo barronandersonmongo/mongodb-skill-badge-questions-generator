@@ -318,11 +318,25 @@ def duplicates_page(request: Request):
     """
     state = run_state()
     result = state["last_result"]
+    badges: list[dict] = []
+    categories: list[str] = []
+    storage_error: str | None = None
+    try:
+        badges = skill_badges.list_badges()
+        categories = questions_repo.categories_in_use()
+    except PyMongoError as exc:
+        # The sweep's scope pickers need these. Without them the screen still works
+        # unscoped, so this is reported rather than fatal.
+        storage_error = str(exc)
+
     return templates.TemplateResponse(
         request,
         "duplicates.html",
         {
             "active_page": "duplicates",
+            "badges": badges,
+            "categories": categories,
+            "difficulties": ("foundational", "intermediate", "advanced"),
             # Only a sweep's result belongs here. A finished generation run leaves its
             # own result in the same slot, and it is reported on its own screen.
             "last_result": result
@@ -331,7 +345,7 @@ def duplicates_page(request: Request):
             "last_error": state["last_error"],
             "last_traceback": state["last_traceback"],
             "running": state["running"],
-            "storage_error": None,
+            "storage_error": storage_error,
         },
     )
 

@@ -587,6 +587,21 @@ a:focus-visible,
   margin-top: var(--s5);
 }
 
+/* The threshold slider. Set apart from the report it acts on, because it changes what
+   the report says rather than being part of it. */
+.threshold-control {
+  padding: var(--s3) var(--s4);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  max-width: 34rem;
+}
+
+.form-range {
+  width: 100%;
+  accent-color: var(--forest);
+}
+
 /* An export is read as much as it is downloaded, so it is set to be readable: a
    scroll region rather than a page the length of the collection. */
 .export-json {

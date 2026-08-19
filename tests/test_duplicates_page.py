@@ -34,6 +34,15 @@ def configured_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_storage(fake_collection, fake_questions):
+    """Both collections these screens read, in memory.
+
+    The screen loads the badge catalog and the categories in use for the sweep's scope
+    pickers; without these the request waits on a connection that cannot be made.
+    """
+
+
+@pytest.fixture(autouse=True)
 def reset_run_state():
     api_module._run_state.update(
         running=False, kind=None, last_result=None, last_error=None, last_traceback=None
@@ -187,7 +196,7 @@ def test_each_question_in_a_pair_is_named_by_its_identifier(client):
 # --- the screen exists so the report is not on the questions screen ---
 
 
-def test_the_questions_screen_does_not_show_a_sweep_report(client, fake_collection, fake_questions):
+def test_the_questions_screen_does_not_show_a_sweep_report(client):
     """
     Intent: Every entry in the report links to a question, and while the report sat on the
         questions screen those links led back to the page the report was on — a link that
@@ -201,7 +210,7 @@ def test_the_questions_screen_does_not_show_a_sweep_report(client, fake_collecti
     assert 'data-sweep-below="true"' not in body
 
 
-def test_the_questions_screen_leads_here(client, fake_collection, fake_questions):
+def test_the_questions_screen_leads_here(client):
     """
     Intent: Moving the report must not hide it. Finding duplicates is something an author
         thinks of while looking at questions, so the route to it starts there.
@@ -373,3 +382,146 @@ def test_neither_column_can_be_widened_by_its_content(client):
     assert "minmax(0, 1fr) minmax(0, 1fr)" in grid[: grid.index("}")]
     side = css[css.index(".compare-side {"):]
     assert "overflow-wrap" in side[: side.index("}")]
+
+
+# --- choosing the threshold ---
+
+
+def test_the_threshold_can_be_moved_over_the_report(client):
+    """
+    Intent: The threshold is a measured judgement, not a fact — 0.85 sits inside a gap
+        observed on one collection. A genuine duplicate scoring below it is exactly the thing
+        an operator needs to reach, and re-running a sweep to see it would be minutes of round
+        trips to learn something already in hand.
+    Success: The report carries a slider, starting at the configured threshold.
+    Feature: Duplicates screen — the threshold is adjustable.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    assert 'data-threshold="true"' in body
+    assert 'type="range"' in body
+    assert 'value="0.85"' in body
+
+
+def test_every_scored_pair_is_on_the_page_whatever_the_threshold(client):
+    """
+    Intent: Moving the threshold can only reach pairs that are already rendered. If the page
+        carried the flagged ones alone, lowering it would reveal nothing and the control would
+        be a lie.
+    Success: Pairs from both sides of the configured threshold are rendered as rows, each
+        carrying its score.
+    Feature: Duplicates screen — the whole scored set is on the page.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    assert body.count('data-pair="true"') == 2
+    assert 'data-score="0.980000"' in body
+    assert 'data-score="0.610000"' in body
+
+
+def test_a_pair_below_the_threshold_can_still_be_ticked(client):
+    """
+    Intent: The operator's judgement outranks the score — "I have read both of these and they
+        are the same question" is a better reason to delete than any number. A row that could
+        not be ticked would make the threshold the decider again, which is what moving
+        deletion out of the sweep was meant to stop.
+    Success: A pair below the threshold renders the same tickable row as one above it, unticked.
+    Feature: Duplicates screen — anything can be chosen, whatever it scored.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    below = body[body.index('data-below-list="true"'):]
+    assert 'class="form-check-input mt-1 flex-shrink-0 js-dupe"' in below
+    assert 'data-dupe-id="' + "z" * 32 + '"' in below
+
+
+def test_moving_the_threshold_runs_nothing(client):
+    """
+    Intent: The reranker has already scored every pair, so which side of a line one falls on is
+        arithmetic. Re-running the sweep for it would be minutes of round trips, and a sweep
+        that ran on every drag of a slider would be unusable.
+    Success: The threshold control re-partitions the rows already on the page and issues no
+        request.
+    Feature: Duplicates screen — adjusting the threshold costs nothing.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    handler = body[body.index("function applyThreshold"):body.index("thresholdInput.addEventListener")]
+    assert "fetch(" not in handler
+    assert "flaggedList" in handler and "belowList" in handler
+
+
+def test_the_configured_default_is_named_as_a_default(client):
+    """
+    Intent: A slider with no marked starting point invites the reader to treat wherever they
+        left it as the truth. 0.85 is calibrated — it sits inside a measured gap between
+        distinct questions and reworded copies — and that is worth saying next to a control
+        that can leave it.
+    Success: The screen states the configured threshold as the default.
+    Feature: Duplicates screen — the calibrated threshold is still visible.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    assert 'data-threshold-note="true"' in body
+    assert "configured default" in body
+
+
+# --- choosing what to sweep ---
+
+
+def test_the_screen_offers_the_three_scopes(client):
+    """
+    Intent: A sweep costs one round trip per question scanned. Without a way to narrow it, the
+        only sweep available on a bank of thousands is the expensive one, so it gets run once
+        and then never again — which is the same as not having it.
+    Success: The screen offers badge, category and skill level as scopes.
+    Feature: Duplicates screen — a sweep can be scoped.
+    """
+    body = client.get(PAGE).text
+    assert 'data-scope="skill_badge"' in body
+    assert 'data-scope="category"' in body
+    assert 'data-scope="difficulty"' in body
+
+
+def test_the_scope_is_read_when_the_sweep_starts(client):
+    """
+    Intent: The pickers can be changed after the page loads, and what the operator can see is
+        what they mean. A scope captured at load would silently sweep something else.
+    Success: The scope is collected inside the start handler and posted with the request.
+    Feature: Duplicates screen — the scope is read at the moment of starting.
+    """
+    body = client.get(PAGE).text
+    handler = body[body.index('document.getElementById("sweep-btn")'):]
+    handler = handler[: handler.index("pollStatus();")]
+    assert "[data-scope]" in handler
+    assert "JSON.stringify(scope)" in handler
+
+
+def test_a_scoped_report_says_so(client):
+    """
+    Intent: "No duplicates" means something very different about one badge than about the whole
+        bank. A report that did not name its scope would be read as covering everything, and
+        the reader would conclude the collection is clean.
+    Success: The report states the scope it covered.
+    Feature: Duplicates screen — the report names its scope.
+    """
+    result = sweep_result()
+    result["scope"] = {"skill_badge": "atlas-search", "category": None,
+                       "difficulty": "advanced"}
+    api_module._run_state["last_result"] = result
+    body = client.get(PAGE).text
+    assert 'data-scope-summary="true"' in body
+    assert "atlas-search" in body
+    assert "advanced level" in body
+
+
+def test_an_unscoped_report_says_that_too(client):
+    """
+    Intent: The absence of a scope is a fact about the report, not the absence of a fact. Left
+        blank it reads as an unfinished sentence, and the reader is left to assume.
+    Success: A report with no scope says it covered the whole collection.
+    Feature: Duplicates screen — an unscoped report is explicit.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    assert "across the whole collection" in body

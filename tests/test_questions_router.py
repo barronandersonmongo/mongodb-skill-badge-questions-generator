@@ -1121,3 +1121,56 @@ def test_the_sweep_reports_how_far_it_has_got(client, monkeypatch, fake_question
     assert reported["compared"] == 3 and reported["total"] == 12
     assert reported["percent"] == 25.0
     assert reported["eta_seconds"] is not None
+
+
+def test_the_sweeps_scope_reaches_the_service(client, monkeypatch, fake_questions):
+    """
+    Intent: The screen's pickers are only worth having if what they say arrives. A scope
+        accepted by the endpoint and dropped before the work would produce a report describing
+        something other than what was asked for, and nothing on screen would show it.
+    Success: The badge, category and level posted with a sweep are passed through.
+    Feature: Question duplicate sweep — the requested scope reaches the sweep.
+    """
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.question_duplicates.report",
+        lambda **kwargs: seen.append(kwargs) or {},
+    )
+    client.post(
+        API + "/duplicates/sweep",
+        json={"skill_badge": "atlas-search", "category": "search",
+              "difficulty": "advanced"},
+    )
+    assert seen[0]["skill_badge"] == "atlas-search"
+    assert seen[0]["category"] == "search"
+    assert seen[0]["difficulty"] == "advanced"
+
+
+def test_a_sweep_with_no_scope_covers_everything(client, monkeypatch, fake_questions):
+    """
+    Intent: The unscoped sweep is the useful thing to run once, and it is what the button does
+        with nothing chosen. A missing body must mean "everything" rather than an error.
+    Success: A sweep posted with no scope runs with every filter unset.
+    Feature: Question duplicate sweep — no scope means the whole collection.
+    """
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.question_duplicates.report",
+        lambda **kwargs: seen.append(kwargs) or {},
+    )
+    client.post(API + "/duplicates/sweep")
+    assert seen[0]["skill_badge"] is None
+    assert seen[0]["category"] is None
+    assert seen[0]["difficulty"] is None
+
+
+def test_an_unoffered_skill_level_is_refused(client, fake_questions):
+    """
+    Intent: The level is compared against a stored value, so a typo or a hand-edited request
+        would silently scan nothing and report no duplicates — the one conclusion that must
+        never be reached by accident.
+    Success: A level outside the three the program uses is rejected.
+    Feature: Question duplicate sweep — the scope is validated.
+    """
+    response = client.post(API + "/duplicates/sweep", json={"difficulty": "expert"})
+    assert response.status_code == 422

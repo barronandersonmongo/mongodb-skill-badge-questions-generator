@@ -701,6 +701,23 @@ money, the other only compares what is already stored — so the screen reports 
 its own words, hides the stats that belong to a walk, and offers no stop button, there
 being no seam to stop at.
 
+**The threshold is a control, not a constant.** 0.85 is where the slider starts and is
+labelled as the configured default, but every pair the reranker scored is on the page with
+its score, so moving the slider re-partitions what is already there and runs nothing — the
+scores are in hand and which side of a line one falls on is arithmetic. A pair below the
+threshold renders the same tickable row as one above it, because the operator's judgement
+outranks the number: "I have read both of these and they are the same question" is a better
+reason to delete than any score. Ticks follow the slider, and a tick set by hand stands
+until the slider moves again.
+
+**A sweep can be scoped** to a skill badge, a category, a skill level, or any combination.
+The cost is one round trip per question scanned, so without this the only sweep available on
+a bank of thousands is the expensive one — run once and then never again. A pair is only
+reported when both of its questions are inside the scope: comparing a subset against
+everything would flag pairs whose other half the operator cannot judge from where they are.
+The report echoes its scope, because "no duplicates" means something very different about
+one badge than about the whole bank.
+
 A pair is judged by reading both questions, so each one offers a **Compare** control that
 puts them side by side in full — options, badges, source and all. Links to the questions
 came first and were wrong: they asked the reader to hold one question in their head while

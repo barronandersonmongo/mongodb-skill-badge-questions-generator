@@ -50,8 +50,16 @@ def collection(monkeypatch):
         deleted: list[str] = []
         calls: list[dict] = []
 
-        def list_questions(*args, **kwargs):
-            return [d for d in docs if d["question_id"] not in deleted]
+        def list_questions(skill_badge=None, category=None, **kwargs):
+            # The real repository applies these in the query, so the double has to as
+            # well: a scoped sweep whose double ignored the scope would pass while the
+            # scope did nothing.
+            live = [d for d in docs if d["question_id"] not in deleted]
+            if skill_badge:
+                live = [d for d in live if skill_badge in (d.get("skill_badges") or [])]
+            if category:
+                live = [d for d in live if category in (d.get("categories") or [])]
+            return live
 
         def reranked(text, index_name, *, model, limit=5, exclude_question_id=None, **kw):
             calls.append(
@@ -406,3 +414,87 @@ def test_an_empty_collection_reports_a_finished_sweep(collection, settings):
     question_duplicates.find_pairs(settings=settings, progress=seen.append)
     assert seen == [{"phase": "comparing", "compared": 0, "total": 0,
                      "percent": 100.0, "pairs": 0, "errors": 0}]
+
+
+def test_a_sweep_can_be_scoped_to_one_badge(collection, settings):
+    """
+    Intent: A sweep costs one round trip per question scanned, so on a bank of thousands the
+        unscoped sweep is the thing you run once. Asking "are there duplicates in this badge"
+        should cost what that badge costs, not what the collection costs.
+    Success: Only questions filed under the badge are compared.
+    Feature: Question duplicate sweep — scoped to a skill badge.
+    """
+    docs = [
+        stored("a", "One?", skill_badges=["atlas-search"]),
+        stored("b", "Two?", skill_badges=["atlas-search"]),
+        stored("c", "Three?", skill_badges=["data-modeling"]),
+    ]
+    _, calls = collection(docs, {})
+
+    seen: list[dict] = []
+    question_duplicates.find_pairs(
+        settings=settings, skill_badge="atlas-search", progress=seen.append
+    )
+    assert seen[-1]["total"] == 2
+    assert {call["exclude"] for call in calls} == {"a", "b"}
+
+
+def test_a_sweep_can_be_scoped_to_a_skill_level(collection, settings):
+    """
+    Intent: Difficulty is the one scope not already a repository filter, so it is the one that
+        could quietly be ignored — a scope that is accepted and not applied is worse than one
+        that is refused, because the report then describes something else.
+    Success: Only questions at that level are compared.
+    Feature: Question duplicate sweep — scoped to a skill level.
+    """
+    docs = [
+        stored("a", "One?", difficulty="advanced"),
+        stored("b", "Two?", difficulty="advanced"),
+        stored("c", "Three?", difficulty="foundational"),
+    ]
+    _, calls = collection(docs, {})
+
+    seen: list[dict] = []
+    question_duplicates.find_pairs(
+        settings=settings, difficulty="advanced", progress=seen.append
+    )
+    assert seen[-1]["total"] == 2
+    assert {call["exclude"] for call in calls} == {"a", "b"}
+
+
+def test_a_scoped_sweep_only_reports_pairs_inside_the_scope(collection, settings):
+    """
+    Intent: A subset compared against the whole collection would flag pairs whose other half
+        is outside the scope the operator asked about — a duplicate they cannot judge from
+        where they are, and cannot act on without leaving it.
+    Success: A neighbour outside the scope produces no pair.
+    Feature: Question duplicate sweep — a scoped pair is scoped on both sides.
+    """
+    docs = [
+        stored("a", "One?", skill_badges=["atlas-search"]),
+        stored("outside", "One?", skill_badges=["data-modeling"]),
+    ]
+    collection(docs, {"a": [neighbour("outside", DUPLICATE_SCORE)]})
+
+    pairs, _ = question_duplicates.find_pairs(
+        settings=settings, skill_badge="atlas-search"
+    )
+    assert pairs == []
+
+
+def test_the_report_says_what_it_covered(collection, settings):
+    """
+    Intent: "No duplicates" means something very different about one badge than about the whole
+        bank. A report that did not name its scope would be read as covering everything.
+    Success: The report echoes the scope it was given.
+    Feature: Question duplicate sweep — the report states its scope.
+    """
+    collection([stored("a", "One?")], {})
+    result = question_duplicates.report(
+        settings=settings, skill_badge="atlas-search", difficulty="advanced"
+    )
+    assert result["scope"] == {
+        "skill_badge": "atlas-search",
+        "category": None,
+        "difficulty": "advanced",
+    }

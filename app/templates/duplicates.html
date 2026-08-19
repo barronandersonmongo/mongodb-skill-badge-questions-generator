@@ -15,6 +15,27 @@
       data-question-id="{{ value }}">{{ value[:8] }}</span>
 {% endmacro %}
 
+{% macro pair_row(pair, ticked) %}
+<li class="mb-2" data-pair="true" data-score="{{ "%.6f"|format(pair.rerank_score) }}">
+  <label class="d-flex gap-2">
+    <input type="checkbox" class="form-check-input mt-1 flex-shrink-0 js-dupe"
+           data-dupe-id="{{ pair.drop }}" {% if ticked %}checked{% endif %}>
+    <span>
+      <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
+      {{ compare_button(pair) }}
+      <span class="d-block">
+        Delete: {{ question_id(pair.drop) }}
+        <span class="fst-italic">{{ pair.drop_stem }}</span>
+      </span>
+      <span class="d-block text-body-secondary">
+        Keep: {{ question_id(pair.keep) }}
+        <span class="fst-italic">{{ pair.keep_stem }}</span>
+      </span>
+    </span>
+  </label>
+</li>
+{% endmacro %}
+
 {# Puts both questions of a pair on screen together, in full. #}
 {% macro compare_button(pair) %}
 <button type="button" class="btn btn-sm btn-outline-secondary ms-1"
@@ -24,9 +45,41 @@
 
 {% call ui.page_header(
     "Duplicates",
-    "Compares every stored question with its nearest neighbours and reports the pairs "
-    "worth looking at. Nothing is deleted by comparing — you choose from the report.") %}
+    "Compares stored questions with their nearest neighbours and reports the pairs worth "
+    "looking at. Nothing is deleted by comparing — you choose from the report.") %}
   <button class="btn btn-primary" id="sweep-btn" type="button">Find duplicates</button>
+{% endcall %}
+
+{# What to compare. A sweep costs one round trip per question scanned, so on a bank of
+   thousands the unscoped sweep is the thing you run once and these are what make it
+   worth running again. A pair is only reported when both of its questions are in the
+   scope: comparing a subset against everything would flag pairs an operator cannot act
+   on from the question they asked. #}
+{% call ui.filter_bar() %}
+  {% call ui.field("Skill badge", "scope-badge") %}
+    <select class="form-select" id="scope-badge" data-scope="skill_badge">
+      <option value="">Every badge</option>
+      {% for badge in badges %}
+      <option value="{{ badge.slug }}">{{ badge.name }}</option>
+      {% endfor %}
+    </select>
+  {% endcall %}
+  {% call ui.field("Category", "scope-category") %}
+    <select class="form-select" id="scope-category" data-scope="category">
+      <option value="">Every category</option>
+      {% for category in categories %}
+      <option value="{{ category }}">{{ category }}</option>
+      {% endfor %}
+    </select>
+  {% endcall %}
+  {% call ui.field("Skill level", "scope-difficulty") %}
+    <select class="form-select" id="scope-difficulty" data-scope="difficulty">
+      <option value="">Every level</option>
+      {% for level in difficulties %}
+      <option value="{{ level }}">{{ level }}</option>
+      {% endfor %}
+    </select>
+  {% endcall %}
 {% endcall %}
 
 <div id="run-alert" class="alert d-none" role="status"></div>
@@ -77,36 +130,59 @@
 <div class="alert alert-success" data-last-result="true">
   <strong>Last duplicate sweep.</strong>
   <div class="mt-1">
-    {{ last_result.compared }} pair(s) compared. Nothing was deleted — choose below.
+    {{ last_result.compared }} pair(s) compared
+    {%- set scope = last_result.scope or {} %}
+    {%- if scope.skill_badge or scope.category or scope.difficulty %}
+    <span data-scope-summary="true">
+      in
+      {%- if scope.skill_badge %} badge <span class="font-monospace">{{ scope.skill_badge }}</span>{% endif %}
+      {%- if scope.category %} category <span class="font-monospace">{{ scope.category }}</span>{% endif %}
+      {%- if scope.difficulty %} at {{ scope.difficulty }} level{% endif %}
+    </span>
+    {%- else %}
+    <span data-scope-summary="true">across the whole collection</span>
+    {%- endif %}.
+    Nothing was deleted — choose below.
   </div>
-  {% if last_result.flagged %}
-  <div class="mt-2" data-sweep-flagged="true">
-    <div class="small mb-2">
-      {{ last_result.flagged | length }} pair(s) scored
-      {{ "%.2f"|format(last_result.threshold) }} or above. The ticked question is the one
-      that would go; its pair is kept because it is filed under more badges, or is older.
-      Untick anything you judge to be a genuinely different question.
+  {# Every pair the sweep scored, in one place, so the threshold can be moved over them
+     without running anything again: the reranker already scored each pair, and which
+     side of a line a score falls on is arithmetic. The configured threshold is where
+     the slider starts, not a limit on it — a genuine duplicate that scored below it is
+     exactly what an operator needs to be able to reach. #}
+  {% if last_result.flagged or last_result.below_threshold %}
+  {% set pairs = (last_result.flagged + last_result.below_threshold)
+                 | sort(attribute="rerank_score", reverse=true) %}
+  <div class="threshold-control mt-3" data-threshold-control="true">
+    <label class="form-label mb-1" for="threshold">
+      Flag pairs scoring
+      <output class="fw-semibold font-monospace" id="threshold-value"
+              data-threshold-value="true">{{ "%.2f"|format(last_result.threshold) }}</output>
+      or above
+    </label>
+    <input type="range" class="form-range" id="threshold" data-threshold="true"
+           min="0.30" max="1" step="0.01"
+           value="{{ "%.2f"|format(last_result.threshold) }}"
+           data-configured="{{ "%.2f"|format(last_result.threshold) }}">
+    <div class="d-flex justify-content-between meta">
+      <span>0.30 — anything the reranker returned</span>
+      <span data-threshold-note="true">
+        {{ "%.2f"|format(last_result.threshold) }} is the configured default
+      </span>
+      <span>1.00</span>
     </div>
-    <ul class="list-unstyled small mb-2">
-      {% for pair in last_result.flagged %}
-      <li class="mb-2">
-        <label class="d-flex gap-2">
-          <input type="checkbox" class="form-check-input mt-1 flex-shrink-0 js-dupe"
-                 data-dupe-id="{{ pair.drop }}" checked>
-          <span>
-            <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
-            {{ compare_button(pair) }}
-            <span class="d-block">
-              Delete: {{ question_id(pair.drop) }}
-              <span class="fst-italic">{{ pair.drop_stem }}</span>
-            </span>
-            <span class="d-block text-body-secondary">
-              Keep: {{ question_id(pair.keep) }}
-              <span class="fst-italic">{{ pair.keep_stem }}</span>
-            </span>
-          </span>
-        </label>
-      </li>
+  </div>
+
+  <div class="mt-3" data-sweep-flagged="true">
+    <div class="small mb-2">
+      <span data-flagged-count="true">{{ last_result.flagged | length }}</span> pair(s)
+      at or above the threshold. The ticked question is the one that would go; its pair is
+      kept because it is filed under more badges, or is older. Untick anything you judge to
+      be a genuinely different question — and tick anything below the threshold you judge
+      to be a duplicate after all.
+    </div>
+    <ul class="list-unstyled small mb-2" data-flagged-list="true">
+      {% for pair in pairs if pair.rerank_score >= last_result.threshold %}
+      {{ pair_row(pair, ticked=true) }}
       {% endfor %}
     </ul>
     <button class="btn btn-sm btn-danger" id="delete-dupes-btn" type="button"
@@ -114,20 +190,18 @@
       Delete ticked questions
     </button>
   </div>
-  {% endif %}
-  {% if last_result.below_threshold %}
-  <details class="mt-2" data-sweep-below="true">
+
+  {# Collapsed, because below the threshold is the answer "probably not a duplicate" —
+     but every row here is the same row, tickable, so lowering the slider or ticking one
+     by hand needs nothing re-run. #}
+  <details class="mt-3" data-sweep-below="true">
     <summary class="small">
-      {{ last_result.below_threshold | length }} pair(s) below the threshold — not flagged
+      <span data-below-count="true">{{ last_result.below_threshold | length }}</span>
+      pair(s) below the threshold — not flagged
     </summary>
-    <ul class="small mb-0 mt-2">
-      {% for pair in last_result.below_threshold %}
-      <li class="mb-1">
-        {{ question_id(pair.drop) }} <span class="fst-italic">{{ pair.drop_stem }}</span>
-        vs {{ question_id(pair.keep) }} <span class="fst-italic">{{ pair.keep_stem }}</span>
-        <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
-        {{ compare_button(pair) }}
-      </li>
+    <ul class="list-unstyled small mb-0 mt-2" data-below-list="true">
+      {% for pair in pairs if pair.rerank_score < last_result.threshold %}
+      {{ pair_row(pair, ticked=false) }}
       {% endfor %}
     </ul>
   </details>
@@ -341,8 +415,18 @@ async function pollStatus() {
 
 // The sweep only reports, so there is nothing to confirm before running it.
 document.getElementById("sweep-btn").addEventListener("click", async () => {
+  // Read at the moment the sweep starts, not remembered from page load: the operator may
+  // have changed the pickers since, and what they can see is what they mean.
+  const scope = {};
+  document.querySelectorAll("[data-scope]").forEach((select) => {
+    if (select.value) scope[select.dataset.scope] = select.value;
+  });
   showAlert("info", "Comparing stored questions — nothing will be deleted…");
-  const response = await fetch(API + "/duplicates/sweep", {method: "POST"});
+  const response = await fetch(API + "/duplicates/sweep", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(scope),
+  });
   if (response.status === 409) {
     showAlert("warning", "A run is already in progress.");
     return;
@@ -353,6 +437,43 @@ document.getElementById("sweep-btn").addEventListener("click", async () => {
   }
   pollStatus();
 });
+
+// The threshold is a view control, not a sweep parameter: the reranker has already
+// scored every pair, so which side of a line each one falls on is arithmetic, and the
+// slider moves rows between the two lists without running anything again.
+const thresholdInput = document.querySelector("[data-threshold]");
+if (thresholdInput) {
+  const flaggedList = document.querySelector("[data-flagged-list]");
+  const belowList = document.querySelector("[data-below-list]");
+  const readout = document.querySelector("[data-threshold-value]");
+  const flaggedCount = document.querySelector("[data-flagged-count]");
+  const belowCount = document.querySelector("[data-below-count]");
+
+  // Rows are held sorted by score, so re-partitioning is a stable split rather than an
+  // ordering decision made twice.
+  const rows = Array.from(document.querySelectorAll("[data-pair]")).sort(
+    (a, b) => Number(b.dataset.score) - Number(a.dataset.score)
+  );
+
+  function applyThreshold() {
+    const threshold = Number(thresholdInput.value);
+    readout.textContent = threshold.toFixed(2);
+    let flagged = 0;
+    rows.forEach((row) => {
+      const above = Number(row.dataset.score) >= threshold;
+      (above ? flaggedList : belowList).append(row);
+      // The tick follows the threshold. A tick the operator set by hand is theirs until
+      // they move the slider again, at which point the slider is the more recent
+      // statement of what they mean.
+      row.querySelector(".js-dupe").checked = above;
+      if (above) flagged += 1;
+    });
+    flaggedCount.textContent = flagged;
+    belowCount.textContent = rows.length - flagged;
+  }
+
+  thresholdInput.addEventListener("input", applyThreshold);
+}
 
 // Both questions of a pair, side by side and in full. Built with the DOM rather than
 // innerHTML throughout: every string here is model-written text, and a question's own

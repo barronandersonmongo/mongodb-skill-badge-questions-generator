@@ -357,8 +357,24 @@ def list_questions(
     return questions.list_questions(skill_badge, category)
 
 
+class SweepRequest(BaseModel):
+    """What a sweep should cover.
+
+    All optional, and all defaulting to the whole collection: a sweep with no scope is
+    the useful thing to run once, and scoping is what makes it worth running again. The
+    cost is one round trip per question scanned, so this is the difference between a
+    question about one badge and a bill for the whole bank.
+    """
+
+    skill_badge: str | None = None
+    category: str | None = None
+    difficulty: Literal["foundational", "intermediate", "advanced"] | None = None
+
+
 @router.post("/duplicates/sweep")
-def sweep_duplicates(background: BackgroundTasks) -> dict:
+def sweep_duplicates(
+    background: BackgroundTasks, request: SweepRequest | None = None
+) -> dict:
     """Find duplicate questions already stored. Deletes nothing.
 
     Runs in the background like a generation run: the sweep is one vector search
@@ -372,7 +388,7 @@ def sweep_duplicates(background: BackgroundTasks) -> dict:
     """
     if _run_state["running"]:
         raise HTTPException(409, "A run is already in progress.")
-    background.add_task(_run_sweep)
+    background.add_task(_run_sweep, request or SweepRequest())
     return {"started": True}
 
 
@@ -400,7 +416,7 @@ def delete_duplicates(request: DeleteDuplicatesRequest) -> dict:
     return {"requested": len(request.question_ids), "deleted": deleted}
 
 
-def _run_sweep() -> None:
+def _run_sweep(request: SweepRequest) -> None:
     from app.services.question_duplicates import report
 
     _run_state.update(
@@ -413,7 +429,11 @@ def _run_sweep() -> None:
         progress=None,
         stop_requested=False,
     )
-    logger.info("Duplicate sweep started")
+    logger.info(
+        "Duplicate sweep started over %s",
+        request.skill_badge or request.category or request.difficulty
+        or "the whole collection",
+    )
 
     started = _run_state["started_at"]
 
@@ -435,7 +455,12 @@ def _run_sweep() -> None:
         }
 
     try:
-        _run_state["last_result"] = report(progress=progress)
+        _run_state["last_result"] = report(
+            progress=progress,
+            skill_badge=request.skill_badge,
+            category=request.category,
+            difficulty=request.difficulty,
+        )
         _record(_run_state["last_result"])
     except Exception as exc:  # surfaced to the page, not swallowed
         _run_state["last_error"] = str(exc)

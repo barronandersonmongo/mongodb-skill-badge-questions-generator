@@ -69,6 +69,9 @@ def find_pairs(
     *,
     settings: Settings | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
+    skill_badge: str | None = None,
+    category: str | None = None,
+    difficulty: str | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Every pair of stored questions the reranker scored, most similar first.
 
@@ -79,9 +82,19 @@ def find_pairs(
     is one round trip per stored question, and how many there are is known before the
     first one — so on a collection of thousands this is minutes of a bar that would
     otherwise sit at nothing, with no way to tell a slow sweep from a stuck one.
+
+    The filters scope the sweep to a subset, and scope it on both sides: a pair is only
+    reported when both of its questions are in the subset. Comparing a subset against
+    the whole collection would flag pairs the operator cannot act on from the screen
+    they asked the question on — and the cost of a sweep is one round trip per question
+    scanned, so scoping is the only way to ask a cheap question of a large bank.
     """
     settings = settings or get_settings()
-    stored = questions_repo.list_questions()
+    stored = questions_repo.list_questions(skill_badge, category)
+    if difficulty:
+        # Not a repository filter: difficulty is not indexed and is not used to narrow
+        # anything else, so it is applied here rather than growing the shared query.
+        stored = [q for q in stored if q.get("difficulty") == difficulty]
     by_id = {q["question_id"]: q for q in stored}
 
     seen: set[tuple[str, str]] = set()
@@ -153,6 +166,9 @@ def report(
     *,
     settings: Settings | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
+    skill_badge: str | None = None,
+    category: str | None = None,
+    difficulty: str | None = None,
 ) -> dict[str, Any]:
     """Duplicate candidates, scored, deleting nothing.
 
@@ -163,7 +179,13 @@ def report(
     reader has to redo.
     """
     settings = settings or get_settings()
-    pairs, errors = find_pairs(settings=settings, progress=progress)
+    pairs, errors = find_pairs(
+        settings=settings,
+        progress=progress,
+        skill_badge=skill_badge,
+        category=category,
+        difficulty=difficulty,
+    )
 
     flagged, below = [], []
     for pair in pairs:
@@ -173,7 +195,9 @@ def report(
             below.append(pair)
 
     logger.info(
-        "Duplicate sweep: %d pair(s) compared, %d flagged, %d below threshold, %d error(s)",
+        "Duplicate sweep of %s: %d pair(s) compared, %d flagged, %d below threshold, "
+        "%d error(s)",
+        skill_badge or category or difficulty or "the whole collection",
         len(pairs),
         len(flagged),
         len(below),
@@ -181,6 +205,14 @@ def report(
     )
     return {
         "source": "question-duplicate-sweep",
+        # Echoed back so the report says what it covered. A report that did not would be
+        # read as covering everything, and "no duplicates" means something very
+        # different about one badge than about the whole bank.
+        "scope": {
+            "skill_badge": skill_badge,
+            "category": category,
+            "difficulty": difficulty,
+        },
         "compared": len(pairs),
         "threshold": settings.question_rerank_delete_threshold,
         "flagged": flagged,
