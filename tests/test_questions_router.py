@@ -908,3 +908,60 @@ def test_an_unrecognised_skill_level_is_refused(client, fake_questions):
         json={"skill_badges": ["atlas-search"], "max_pages": 1, "difficulty": "expert"},
     )
     assert response.status_code == 422
+
+
+# --- answer positions ---
+
+
+def test_stored_options_can_be_reshuffled(client, fake_questions):
+    """
+    Intent: The first 125 questions were stored with the correct answer in position A every
+        time. They are otherwise fine, so they need repairing rather than deleting — and an
+        operator should not need a mongo shell to do it.
+    Success: The endpoint reshuffles stored questions and reports the resulting positions.
+    Feature: Question quality — existing questions can be repaired.
+    """
+    questions.insert_questions([make(f"Q{n}?") for n in range(40)])
+    response = client.post(API + "/shuffle-options", params={"seed": 5})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changed"] > 0
+    assert sum(body["positions"].values()) == 40
+
+
+def test_the_answer_positions_are_reportable(client, fake_questions):
+    """
+    Intent: This failure was invisible until someone read the questions. A count per position is
+        the check that catches it recurring — an even spread is healthy, and everything in one
+        position means the shuffle has stopped running.
+    Success: The endpoint reports how many correct answers sit in each position.
+    Feature: Question quality — answer positions are measurable.
+    """
+    questions.insert_questions([make("Only?")])
+    positions = client.get(API + "/answer-positions").json()
+    assert sum(positions.values()) == 1
+    assert set(positions) >= {"A", "B", "C", "D"}
+
+
+def test_a_multi_badge_run_says_which_badge_it_is_on(client, monkeypatch, fake_questions):
+    """
+    Intent: A multi-badge run is several walks in sequence, each with its own 0-100%, so the bar
+        reaches the end and starts again. With nothing saying why, that reads as the run having
+        restarted — which is exactly how it was reported.
+    Success: Progress carries the badge's position and the total.
+    Feature: Question generation — multi-badge progress is legible.
+    """
+    seen: list[dict] = []
+
+    def record(slug, **kwargs):
+        kwargs["progress"]({"phase": "writing", "pages_done": 1, "badge_name": slug})
+        return {"skill_badge": slug, "inserted": 1, "pages_done": 1, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["atlas-search", "aggregation", "indexing"], "max_pages": 1},
+    )
+    state = client.get(API + "/generate/status").json()
+    assert state["progress"]["badge_count"] == 3
+    assert state["progress"]["badge_index"] == 3

@@ -97,14 +97,26 @@ def _run_generation(request: GenerateRequest) -> None:
         ", ".join(request.skill_badges),
     )
 
+    # A multi-badge run is several walks in sequence, each with its own 0-100%. Without
+    # this the bar reaches the end and starts again with nothing to say why, which reads
+    # as the run having restarted.
+    badge_count = len(request.skill_badges)
+    position = {"index": 0}
+
     def progress(state: dict) -> None:
         # Written straight onto the run state, so the polling endpoint reports the
         # walk as it happens rather than only when it ends.
-        _run_state["progress"] = state
+        _run_state["progress"] = {
+            **state,
+            "badge_index": position["index"] + 1,
+            "badge_count": badge_count,
+            "badges_done": position["index"],
+        }
 
     try:
         results = []
-        for slug in request.skill_badges:
+        for index, slug in enumerate(request.skill_badges):
+            position["index"] = index
             results.append(
                 generate_for_badge(
                     slug,
@@ -418,6 +430,35 @@ def search_questions(
         raise HTTPException(
             503, f"Vector search is unavailable ({exc}). Is the index built?"
         ) from exc
+
+
+@router.post("/shuffle-options")
+def shuffle_options(seed: int | None = None) -> dict:
+    """Re-order the options of every stored question, and report the result.
+
+    For questions written before the order was randomised: the first 125 this program
+    produced all had the correct answer in position A, which makes them useless as a
+    quiz — a candidate always answering A scores 100%.
+    """
+    result = questions.shuffle_stored_options(seed)
+    result["positions"] = questions.correct_answer_positions()
+    logger.info(
+        "Shuffled stored options: %d changed, %d unchanged; positions now %s",
+        result["changed"],
+        result["unchanged"],
+        result["positions"],
+    )
+    return result
+
+
+@router.get("/answer-positions")
+def answer_positions() -> dict:
+    """Where the correct answer sits across the collection.
+
+    The check that catches this failing again: an even spread is healthy, and anything
+    approaching a single position means the shuffle is not running.
+    """
+    return questions.correct_answer_positions()
 
 
 @router.post("/drop-status")

@@ -133,7 +133,52 @@ def chunk_set_for_badge(
                 }
 
     ranked = sorted(best.values(), key=lambda c: c["score"], reverse=True)
-    return ranked[: settings.doc_page_set_size]
+    return _spread_across_pages(ranked, settings)[: settings.doc_page_set_size]
+
+
+def _spread_across_pages(
+    ranked: list[dict[str, Any]], settings: Settings
+) -> list[dict[str, Any]]:
+    """Reorder a ranked set so consecutive sections come from different pages.
+
+    Measured on the live corpus: the 25 sections a Vector Search Fundamentals run walked
+    came from six pages, and 85 of that badge's 252 sections were hard-split slices of
+    one 1.7 MB page — the same code sample repeated in a dozen languages under an
+    identical heading. Twenty of those 25 sections produced no question at all, while a
+    badge whose sections spread across 24 pages produced 72.
+
+    So a page's sections are taken in rounds: the best section from every page, then the
+    second best from every page. Pure relevance order is not enough, because one page
+    that scores well throughout crowds out every other page in the badge.
+
+    This is the same fairness the old page-level retrieval applied across topic queries.
+    It was not carried over when the unit became a section, and this is what that cost.
+    """
+    by_page: dict[str, list[dict[str, Any]]] = {}
+    for chunk in ranked:
+        by_page.setdefault(chunk.get("url") or "", []).append(chunk)
+
+    # Pages in order of their best section, so the strongest page still leads.
+    pages = sorted(by_page.values(), key=lambda group: group[0]["score"], reverse=True)
+    limit = settings.doc_sections_per_page
+    spread: list[dict[str, Any]] = []
+    depth = 0
+    while True:
+        took = False
+        for group in pages:
+            if depth < min(len(group), limit):
+                spread.append(group[depth])
+                took = True
+        if not took:
+            break
+        depth += 1
+
+    # Anything held back by the per-page limit is appended rather than dropped: it is
+    # still this badge's material, and a badge with few pages would otherwise resolve to
+    # almost nothing.
+    taken = {id(chunk) for chunk in spread}
+    spread.extend(chunk for chunk in ranked if id(chunk) not in taken)
+    return spread
 
 
 def pages_for_badges(

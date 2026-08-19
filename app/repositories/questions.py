@@ -292,6 +292,52 @@ def source_chunk_ids_for_badge(slug: str) -> set[str]:
     }
 
 
+def shuffle_stored_options(seed: int | None = None) -> dict[str, int]:
+    """Re-order the options of every stored question.
+
+    For questions written before the order was randomised — the first 125 all had the
+    correct answer in position A, which makes them unusable as a quiz. Returns how many
+    were changed and how many were already varied.
+
+    A question whose correct option happens to shuffle back to where it started is not
+    counted as changed, so running this twice reports honestly rather than claiming to
+    have fixed something again.
+    """
+    import random
+
+    rng = random.Random(seed)
+    changed = unchanged = 0
+    for doc in collection().find({}, {"_id": True, "options": True}):
+        options = doc.get("options") or []
+        if len(options) < 2:
+            unchanged += 1
+            continue
+        before = [bool(o.get("is_correct")) for o in options]
+        rng.shuffle(options)
+        after = [bool(o.get("is_correct")) for o in options]
+        collection().update_one({"_id": doc["_id"]}, {"$set": {"options": options}})
+        if before == after:
+            unchanged += 1
+        else:
+            changed += 1
+    return {"changed": changed, "unchanged": unchanged}
+
+
+def correct_answer_positions() -> dict[str, int]:
+    """How often the correct answer sits in each position, across the collection.
+
+    The check that catches the failure this exists to fix: an even spread is healthy and
+    anything approaching a single position means the shuffle is not running.
+    """
+    counts = {"A": 0, "B": 0, "C": 0, "D": 0, "other": 0}
+    labels = ["A", "B", "C", "D"]
+    for doc in collection().find({}, {"_id": False, "options": True}):
+        for index, option in enumerate(doc.get("options") or []):
+            if option.get("is_correct"):
+                counts[labels[index] if index < len(labels) else "other"] += 1
+    return counts
+
+
 def counts_by_badge() -> dict[str, int]:
     """How many questions each badge has, for the coverage screen.
 

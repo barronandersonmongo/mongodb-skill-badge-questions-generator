@@ -1803,3 +1803,79 @@ def test_a_page_within_the_cap_is_sent_whole(fake_client, walk_settings):
     assert "cut short" not in prompt
 
 
+
+
+# --- where the correct answer sits ---
+
+
+def test_the_correct_answer_does_not_always_come_first(walk_settings):
+    """
+    Intent: Measured on the first 125 questions this program produced: the correct answer was
+        option A in every single one. A candidate who always answers A scores 100%, so the
+        entire bank is worthless as a quiz. The cause is structural — a model filling four
+        options into a schema writes the right one first — so it is fixed here rather than
+        asked for in the prompt.
+    Success: Across many questions the correct answer lands in every position.
+    Feature: Question quality — the correct answer's position is randomised.
+    """
+    import random
+
+    questions = [make() for _ in range(200)]
+    question_generation.randomise_option_order(questions, random.Random(7))
+    positions = {
+        next(i for i, o in enumerate(q.options) if o.is_correct) for q in questions
+    }
+    assert positions == {0, 1, 2, 3}
+
+
+def test_shuffling_keeps_each_option_with_its_own_rationale(walk_settings):
+    """
+    Intent: Each option carries the misconception it catches. If the shuffle moved text and
+        rationale independently, every distractor would be explained by the wrong reasoning —
+        a subtler failure than the one being fixed, and harder to notice.
+    Success: After shuffling, every option still has the rationale and correctness it started
+        with.
+    Feature: Question quality — shuffling moves whole options.
+    """
+    import random
+
+    question = make()
+    before = {(o.text, o.rationale, o.is_correct) for o in question.options}
+    question_generation.randomise_option_order([question], random.Random(3))
+    assert {(o.text, o.rationale, o.is_correct) for o in question.options} == before
+
+
+def test_shuffling_keeps_exactly_one_correct_answer(walk_settings):
+    """
+    Intent: The format check runs after the shuffle, so a shuffle that lost or duplicated the
+        correct flag would turn good questions into rejected ones — and a run would report
+        questions discarded for a reason that had nothing to do with the model.
+    Success: Every shuffled question still has exactly one correct option, and four options.
+    Feature: Question quality — shuffling preserves the format.
+    """
+    import random
+
+    questions = [make() for _ in range(50)]
+    question_generation.randomise_option_order(questions, random.Random(11))
+    assert all(len(q.options) == 4 for q in questions)
+    assert all(sum(1 for o in q.options if o.is_correct) == 1 for q in questions)
+
+
+def test_a_walk_stores_questions_with_shuffled_options(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, fake_doc_chunks, walk_settings
+):
+    """
+    Intent: A shuffle that exists but is not wired into the walk fixes nothing — which is
+        exactly how the first 125 questions were stored with the answer always first.
+    Success: The walk applies the shuffle before storing.
+    Feature: Question generation — stored questions have randomised option order.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE], walk_settings)
+    fake_client(parsed_by_format=walk_run(GeneratedQuestions(questions=[make() for _ in range(40)])))
+    question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    positions = {
+        next(i for i, o in enumerate(doc["options"]) if o["is_correct"])
+        for doc in fake_questions.docs
+    }
+    assert len(positions) > 1

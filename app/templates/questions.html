@@ -52,7 +52,7 @@
            id="progress-bar" data-progress-bar="true" style="width: 0%;">0%</div>
     </div>
     <div class="row row-cols-2 row-cols-md-4 g-2 small mb-2" data-progress-stats="true">
-      <div><div class="text-body-secondary">Pages</div><div data-stat="pages">—</div></div>
+      <div><div class="text-body-secondary">Sections</div><div data-stat="pages">—</div></div>
       <div><div class="text-body-secondary">Questions</div><div data-stat="questions">—</div></div>
       <div><div class="text-body-secondary">Rate</div><div data-stat="rate">—</div></div>
       <div><div class="text-body-secondary">Per page</div><div data-stat="per-page">—</div></div>
@@ -652,7 +652,7 @@ const stopButton = document.getElementById("stop-run-btn");
 
 const PHASES = {
   resolving: "Working out which documentation this badge is about…",
-  writing: "Reading pages and writing questions…",
+  writing: "Reading sections and writing questions…",
   stopped: "Stopped",
   done: "Finished",
 };
@@ -726,10 +726,15 @@ function showProgress(p) {
   bar.textContent = known ? p.percent.toFixed(1) + "%" : "";
   bar.classList.toggle("bg-secondary", !known);
 
-  panel.querySelector("[data-headline]").textContent = known
-    ? p.pages_done + " / " + p.pages_total + " pages" +
+  // A multi-badge run walks each badge in turn, so the bar restarts per badge. Saying
+  // which badge of how many is what stops that reading as the run having started over.
+  const ofBadges = p.badge_count > 1
+    ? " · badge " + p.badge_index + " of " + p.badge_count
+    : "";
+  panel.querySelector("[data-headline]").textContent = (known
+    ? p.pages_done + " / " + p.pages_total + " sections" +
       (p.badge_name ? " · " + p.badge_name : "")
-    : (p.badge_name || "");
+    : (p.badge_name || "")) + ofBadges;
 
   setStat("pages", p.pages_total ? p.pages_done + " of " + p.pages_total : String(p.pages_done || 0));
   setStat("questions", String(p.inserted || 0)

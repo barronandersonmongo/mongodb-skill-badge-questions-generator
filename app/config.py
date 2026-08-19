@@ -88,6 +88,12 @@ class Settings:
     chunk_heading_depth: int = 3
     chunk_floor_chars: int = 1_500
     chunk_ceiling_chars: int = 8_000
+    # How many sections of one page may lead a badge's set before other pages get a
+    # turn. Measured on the live corpus: without this, a Vector Search Fundamentals run
+    # walked 25 sections drawn from six pages — 85 of the badge's 252 sections were
+    # hard-split slices of one 1.7 MB page, the same code sample in a dozen languages —
+    # and produced 5 questions where a badge spread over 24 pages produced 72.
+    doc_sections_per_page: int = 3
     # A page is not compared against the whole corpus: Atlas narrows to this many
     # approximate neighbours before scoring them exactly. Roughly 10x the result cap,
     # which is the usual recommendation for recall at this corpus size.

@@ -408,3 +408,63 @@ def test_an_unavailable_index_yields_no_chunk_set_rather_than_an_error(
     monkeypatch.setattr(doc_chunks, "search_chunk_refs", boom)
     assert doc_retrieval.chunk_set_for_badge(BADGE, settings=settings) == []
     assert "Chunk set search failed" in caplog.text
+
+
+def test_one_page_does_not_crowd_out_the_others(fake_doc_chunks, settings):
+    """
+    Intent: Measured on the live corpus: the 25 sections a Vector Search Fundamentals run
+        walked came from six pages, because 85 of that badge's 252 sections were hard-split
+        slices of one 1.7 MB page — the same code sample in a dozen languages under one
+        heading. Twenty of those 25 produced no question, while a badge spread over 24 pages
+        produced 72. Pure relevance order is not enough when one page scores well throughout.
+    Success: The head of the set draws from several pages rather than one.
+    Feature: Question generation — a badge's sections are spread across pages.
+    """
+    from app.repositories import doc_chunks
+
+    # One page with many strong sections, and two others with one each.
+    doc_chunks.replace_page_chunks("https://x/big.md", [
+        {
+            "chunk_id": f"big{n}", "url": "https://x/big.md", "source": "ix-1",
+            "page_title": "Atlas Search", "heading": "Atlas Search indexes",
+            "heading_path": [], "ordinal": n,
+            "text": "Atlas Search indexes.", "embed_text": "Atlas Search indexes",
+            "chars": 20, "bytes": 20,
+        }
+        for n in range(10)
+    ])
+    for name in ("one", "two"):
+        doc_chunks.replace_page_chunks(f"https://x/{name}.md", [{
+            "chunk_id": name, "url": f"https://x/{name}.md", "source": "ix-1",
+            "page_title": "Atlas Search", "heading": "Atlas Search indexes",
+            "heading_path": [], "ordinal": 0,
+            "text": "Atlas Search indexes.", "embed_text": "Atlas Search indexes",
+            "chars": 20, "bytes": 20,
+        }])
+    found = doc_retrieval.chunk_set_for_badge(BADGE, settings=settings)
+    heads = {c["url"] for c in found[:3]}
+    assert len(heads) == 3, [c["chunk_id"] for c in found[:3]]
+
+
+def test_a_held_back_section_is_still_offered_later(fake_doc_chunks, settings):
+    """
+    Intent: The per-page limit reorders the set, it does not shrink it. A badge whose material
+        is genuinely concentrated in a few pages would otherwise resolve to almost nothing, and
+        report itself exhausted while sections sat unused.
+    Success: Every section still appears in the set, just later.
+    Feature: Question generation — spreading reorders rather than discards.
+    """
+    from app.repositories import doc_chunks
+
+    doc_chunks.replace_page_chunks("https://x/big.md", [
+        {
+            "chunk_id": f"big{n}", "url": "https://x/big.md", "source": "ix-1",
+            "page_title": "Atlas Search", "heading": "Atlas Search indexes",
+            "heading_path": [], "ordinal": n,
+            "text": "Atlas Search indexes.", "embed_text": "Atlas Search indexes",
+            "chars": 20, "bytes": 20,
+        }
+        for n in range(8)
+    ])
+    found = doc_retrieval.chunk_set_for_badge(BADGE, settings=settings)
+    assert len(found) == 8
