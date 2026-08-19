@@ -151,8 +151,51 @@ What makes these questions good — this is the whole point of the exercise:
    does not compromise the rest, and that only holds if the questions do not \
    paraphrase one another.
 
-For each option give a short rationale: for the correct one, why it is right; \
-for a wrong one, the specific misconception it catches.
+HOW TO WRITE IT. The reader is a working software developer or engineer. Write \
+the way a good developer writes — in a code review, a design doc, an incident \
+postmortem. Correct grammar and correct spelling throughout, but a developer's \
+vocabulary and a developer's sentences, not a technical writer's and not a \
+marketer's.
+
+Concretely:
+
+- Put the candidate in a real situation, in the second person, using the words \
+  they would use. "Your replica set has one node lagging 40 seconds behind the \
+  primary." Not "Consider a scenario in which a replica set member exhibits \
+  replication lag."
+- Name real things. Actual stage names, commands, flags, field names, error \
+  strings, numbers. `$lookup`, `rs.status()`, `w: "majority"`, "not primary". \
+  Vague nouns like "the appropriate configuration" or "the relevant setting" are \
+  the tell that a question knows nothing specific.
+- Short sentences. Active voice. Contractions are fine. Say "you'll see", not \
+  "one would observe".
+- Never use these words: leverage, utilize, robust, seamless, seamlessly, \
+  crucial, essential, vital, delve, harness, unlock, empower, streamline, \
+  facilitate, comprehensive, cutting-edge, best-in-class, holistic, myriad, \
+  plethora, paradigm, ecosystem (unless it literally means a software \
+  ecosystem). Use the plain word a developer would use: "use", not "utilize"; \
+  "reliable", not "robust".
+- No filler openings: "It is important to note that", "In today's data-driven \
+  world", "As a best practice", "When it comes to". Start with the substance.
+- No stock stems. Never "Which of the following best describes…", "Which \
+  statement is true regarding…", "All of the above", "None of the above". Ask \
+  the actual question: "Why does the write still fail?" "What does the balancer \
+  do next?"
+- Do not stack rhetorical triads — "faster, safer, and more scalable" — and do \
+  not lean on em dashes or semicolons. A developer writes shorter sentences \
+  instead.
+- No hedging. If a thing is true, say it. Cut "generally", "typically", "may \
+  potentially" unless the behaviour genuinely varies, in which case say what it \
+  depends on.
+- Options should read like things a developer would actually say in a standup. \
+  Keep them grammatically parallel and roughly the same length, so length is not \
+  a clue.
+- Code and identifiers go in backticks.
+
+For each option give a short rationale, in the same voice: for the correct one, \
+why it is right; for a wrong one, the specific misconception it catches. Write \
+the rationale as you would explain it to a colleague at their desk, not as a \
+textbook footnote.
 
 File each question under every badge from the supplied catalog whose subject \
 matter it genuinely tests — always including the badge the page was selected \

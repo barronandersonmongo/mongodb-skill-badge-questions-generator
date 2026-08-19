@@ -341,12 +341,20 @@ refuses, truncates, or has vanished from the corpus is recorded with its reason 
 stepped over — one bad page says nothing about the next. A walk can also be stopped,
 and keeps what it has written.
 
-**The status panel.** The same shape as the documentation refresh, because a walk is
-the same kind of job: a phase, a progress bar, and the numbers behind it. Pages done
-of how many, questions written, pages per minute, actual questions per page, elapsed,
-time remaining, and the name of the page currently being read — that last one is what
-lets an author notice a walk spending its budget on material that does not belong to
-the badge.
+**The status panel — one window, not two.** The same shape as the documentation
+refresh, because a walk is the same kind of job: a phase, a progress bar, and the
+numbers behind it. The run's message sits inside the panel and the panel takes the
+colour it would have carried, rather than sitting in a separate alert above it — two
+windows for one run meant two elapsed times, and the one on the panel was stale
+between polls. Elapsed now ticks in the browser against the server's start time, so it
+advances every second instead of jumping when a poll answers; the server's figure is
+still used for a run the browser never watched, since a page opened afterwards has no
+start time to count from.
+
+The panel carries: pages done of how many, questions written, pages per
+minute, actual questions per page, elapsed, time remaining, and the name of the page
+currently being read — that last one is what lets an author notice a walk spending its
+budget on material that does not belong to the badge.
 
 The bar shows no percentage while the badge is still being resolved to its page set.
 The walk genuinely does not know how much work there is yet, and inventing a number
@@ -389,6 +397,27 @@ counts and how many pages it has left to walk. Few questions and many pages left
 means run it again; few questions and no pages left means the material is spent.
 Resolving every badge's page set is dozens of vector searches, so the panel is
 fetched on demand rather than rendered with the screen.
+
+**How the questions read.** The audience is working software developers, and a
+question phrased like a technical writer's abstract announces that nobody who does the
+job wrote it. "Write naturally" does not fix that on its own, because the
+machine-written register comes from a specific and recognisable vocabulary — so the
+prompt names it and bans it: no *leverage*, *utilize*, *robust*, *seamless*,
+*crucial*, *delve*, *harness*, *streamline*, *comprehensive*; no "It is important to
+note that"; no "Which of the following best describes…" or "All of the above".
+
+What replaces it is specificity. A question puts the candidate in a real situation in
+the second person — "your replica set has one node lagging 40 seconds behind the
+primary" — and names actual stage names, commands, flags, field names and error
+strings. That is not only a style rule: a question that says "the appropriate
+configuration" instead of the actual flag is a question that tests nothing. Short
+sentences, active voice, contractions allowed, no stacked rhetorical triads, no
+hedging, options kept grammatically parallel and roughly equal in length so length is
+not a clue. The same voice applies to the option rationales, which is where textbook
+prose otherwise creeps back in.
+
+Grammar and spelling are held to normal standards throughout — the goal is a
+developer's vocabulary and sentence shapes, not informality for its own sake.
 
 **Questions must be independent, not merely distinct.** The bank is meant to be
 large enough that leaking the answers to a full quiz does not compromise the

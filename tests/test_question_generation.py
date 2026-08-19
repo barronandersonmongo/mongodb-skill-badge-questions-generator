@@ -1530,3 +1530,73 @@ def test_a_stopped_walk_reports_the_stopped_phase(
     )
     assert result["phase"] == "stopped"
     assert result["stopped_early"] is True
+
+
+# --- how the questions read ---
+
+
+def test_the_author_is_told_who_the_reader_is(fake_client, walk_settings):
+    """
+    Intent: Questions that read as machine-written are not usable as they stand — the
+        audience is working software developers, and a question phrased like a technical
+        writer's abstract signals that nobody who does the job wrote it. The audience has
+        to be stated, not implied.
+    Success: The page-authoring prompt names software developers and engineers as the
+        reader.
+    Feature: Question quality — written for a developer audience.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    assert "software developer" in system
+    assert "engineer" in system
+
+
+def test_the_author_is_given_the_words_not_to_use(fake_client, walk_settings):
+    """
+    Intent: "Write naturally" does not change anything on its own; the machine-written
+        register comes from a specific and recognisable vocabulary. Naming the words is
+        what makes the instruction actionable rather than aspirational.
+    Success: The prompt bans the vocabulary that marks the register, and the stock stems
+        that go with it.
+    Feature: Question quality — the machine-written register is named and excluded.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    for word in ("leverage", "utilize", "seamless", "crucial", "delve"):
+        assert word in system
+    assert "Which of the following best describes" in system
+
+
+def test_the_author_is_told_to_be_specific(fake_client, walk_settings):
+    """
+    Intent: The surest sign a question was not written by someone who does the work is
+        that it names nothing — "the appropriate configuration" instead of the actual flag.
+        Specificity is both what makes a question read as human and what makes it test
+        anything.
+    Success: The prompt requires real stage names, commands, flags and errors, and a
+        second-person situation.
+    Feature: Question quality — concrete situations over abstract ones.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    assert "second person" in system
+    assert "Name real things" in system
+    assert "the appropriate configuration" in system
+
+
+def test_the_rationales_are_held_to_the_same_voice(fake_client, walk_settings):
+    """
+    Intent: The rationale is what a reviewer reads when deciding whether a question is
+        sound, and what an author reads when deciding whether a distractor is fair. Left
+        out of the style rules it reverts to textbook prose, and the question reads as
+        machine-written even when the stem does not.
+    Success: The prompt applies the same voice to option rationales.
+    Feature: Question quality — rationales in the same voice as the question.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    assert "rationale" in system and "same voice" in system

@@ -41,10 +41,11 @@
 
 <div class="card mb-3 d-none" id="progress-panel" data-progress-panel="true">
   <div class="card-body py-3">
-    <div class="d-flex justify-content-between align-items-baseline mb-2">
+    <div class="d-flex justify-content-between align-items-baseline mb-1">
       <span class="fw-semibold" data-phase="true">Starting…</span>
       <span class="font-monospace small" data-headline="true"></span>
     </div>
+    <div class="small mb-2" data-status-line="true"></div>
     <div class="progress mb-2" role="progressbar" style="height: 1.25rem;">
       <div class="progress-bar progress-bar-striped progress-bar-animated"
            id="progress-bar" data-progress-bar="true" style="width: 0%;">0%</div>
@@ -54,7 +55,7 @@
       <div><div class="text-body-secondary">Questions</div><div data-stat="questions">—</div></div>
       <div><div class="text-body-secondary">Rate</div><div data-stat="rate">—</div></div>
       <div><div class="text-body-secondary">Per page</div><div data-stat="per-page">—</div></div>
-      <div><div class="text-body-secondary">Elapsed</div><div data-stat="elapsed">—</div></div>
+      <div><div class="text-body-secondary">Elapsed</div><div class="font-monospace" data-stat="elapsed">—</div></div>
       <div><div class="text-body-secondary">Remaining</div><div data-stat="eta">—</div></div>
       <div><div class="text-body-secondary">Spent</div><div data-stat="spent">—</div></div>
       <div><div class="text-body-secondary">Projected</div><div data-stat="projected">—</div></div>
@@ -600,6 +601,27 @@ function setStat(name, value) {
   if (cell) cell.textContent = value;
 }
 
+// The panel is the run's only status window: the message that used to sit in a
+// separate alert above it now sits inside, and the panel takes the colour that alert
+// carried. Two windows for one run meant two elapsed times, one of them stale.
+function setPanelState(kind, message) {
+  panel.classList.remove("d-none", "border-info", "border-success", "border-danger");
+  if (kind) panel.classList.add("border-" + kind, "border-2");
+  const line = panel.querySelector("[data-status-line]");
+  if (line) line.textContent = message || "";
+}
+
+// Elapsed ticks in the browser against the server's start time, so it advances every
+// second instead of jumping whenever a poll happens to answer.
+function startPanelClock() {
+  const tick = () => {
+    const running = elapsedSinceStart();
+    setStat("elapsed", running === null ? "—" : formatElapsed(running));
+  };
+  tick();
+  if (elapsedTimer === null) elapsedTimer = setInterval(tick, 1000);
+}
+
 function showProgress(p) {
   if (!p) return;
   panel.classList.remove("d-none");
@@ -624,7 +646,11 @@ function showProgress(p) {
   setStat("rate", p.pages_per_minute ? p.pages_per_minute.toFixed(1) + "/min" : "—");
   setStat("per-page", p.questions_per_page_actual === null || p.questions_per_page_actual === undefined
     ? "—" : p.questions_per_page_actual.toFixed(1));
-  setStat("elapsed", formatDuration(p.elapsed_seconds));
+  if (elapsedTimer === null) {
+    // Only when the browser is not ticking — a page opened after the run finished has
+    // no start time to count from, and the server's figure is the honest one.
+    setStat("elapsed", formatDuration(p.elapsed_seconds));
+  }
   setStat("eta", p.phase === "done" || p.phase === "stopped" ? "—" : formatDuration(p.eta_seconds));
 
   const cost = p.cost || {};
@@ -651,16 +677,20 @@ async function pollStatus() {
   showProgress(state.progress);
   if (state.running) {
     stopButton.classList.remove("d-none");
-    showAlert("info", "Writing questions — you can leave this page open…", {timed: true});
+    alertBox.classList.add("d-none");
+    setPanelState("info", "Writing questions — you can leave this page open and come back.");
+    startPanelClock();
     setTimeout(pollStatus, 2000);
     return;
   }
   stopButton.classList.add("d-none");
+  stopElapsed();
   bar.classList.remove("progress-bar-animated");
   // The finished run carries the final figures, which the last progress snapshot may
   // predate.
   if (state.last_result) showProgress(state.last_result);
   if (state.last_error) {
+    setPanelState("danger", "Run failed: " + state.last_error);
     showAlert("danger", "Run failed: " + state.last_error);
     if (state.last_traceback) {
       const details = document.createElement("details");
@@ -681,7 +711,9 @@ async function pollStatus() {
     ? elapsedSinceStart(state.finished_at * 1000)
     : elapsedSinceStart();
   const took = duration === null ? "" : " Took " + formatElapsed(duration) + ".";
-  showAlert("success", "Run finished." + took + " Reloading…");
+  if (duration !== null) setStat("elapsed", formatElapsed(duration));
+  alertBox.classList.add("d-none");
+  setPanelState("success", "Run finished." + took + " Reloading…");
   window.location.reload();
 }
 
