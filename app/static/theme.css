@@ -36,6 +36,7 @@
   --surface-sunken: #fafbfb;
   --line: #eceeef;
   --line-strong: #dfe3e5;
+  --wash: #eaedef;
 
   --ink: #10242f;
   --ink-2: #4c5c66;
@@ -479,8 +480,12 @@ a:focus-visible,
   grid-template-columns: 7rem minmax(0, 1fr);
   gap: 0.125rem var(--s3);
   margin: 0 0 var(--s4);
-  padding-bottom: var(--s3);
-  border-bottom: 1px solid var(--line);
+  /* A grey block rather than a rule: these are the question's own facts, and
+     enclosing them says so in a way a line underneath does not. Grey because none
+     of it is the question — the accent is reserved for what matters more. */
+  padding: var(--s3) var(--s4);
+  background: var(--wash);
+  border-radius: var(--r-md);
   font-size: 0.8125rem;
 }
 
@@ -536,6 +541,33 @@ a:focus-visible,
   font-weight: 600;
   letter-spacing: -0.01em;
   margin-bottom: var(--s3);
+}
+
+/* The four options. The correct one is washed in the accent colour as well as set
+   bold: a reviewer scanning a long list is looking for one thing per question, and
+   weight alone makes them read the whole option to find it. The wash is the same
+   green the theme already uses for success, so it needs no learning — and it is
+   pale enough that the rationale beneath stays readable. */
+.question-options {
+  margin: 0 0 var(--s3);
+  padding-left: 1.5rem;
+}
+
+.question-options > li {
+  padding: 0.1875rem var(--s2);
+  margin-bottom: 0.125rem;
+  border-radius: var(--r-sm);
+}
+
+.question-options > li[data-correct] {
+  background: var(--forest-wash);
+}
+
+/* Colour is not the only signal — this marker is, and it survives a greyscale
+   screenshot and colour-blindness both. */
+.question-options > li[data-correct]::marker {
+  color: var(--forest);
+  font-weight: 700;
 }
 
 /* ---------- notices ---------- */
@@ -624,6 +656,11 @@ a:focus-visible,
 
 /* Bootstrap's own badges, wherever a template still uses one, are given the same
    pill shape so they cannot look like a different species of chip. */
+.badge.text-bg-success {
+  background: var(--forest) !important;
+  color: #fff !important;
+}
+
 .badge {
   font-size: 0.75rem;
   font-weight: 500;

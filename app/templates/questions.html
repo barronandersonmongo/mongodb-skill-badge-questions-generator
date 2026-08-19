@@ -414,7 +414,7 @@
                   title="Similarity to your search">{{ "%.3f"|format(question.score) }}</span>
             {% endif %}
           </div>
-          <ol class="mb-2" type="A">
+          <ol class="question-options" type="A">
             {% for option in question.options %}
             <li class="{% if option.is_correct %}fw-semibold{% endif %}"
                 {% if option.is_correct %}data-correct="true"{% endif %}>

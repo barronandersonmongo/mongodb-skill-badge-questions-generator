@@ -188,7 +188,10 @@ Surfaces are separated by elevation and whitespace rather than by hairline borde
 MongoDB forest green appears only where something is the primary action or the current
 screen. Colour means one thing each — forest for a primary action and for a skill badge,
 spring green for focus, red for destructive, a warm neutral for a topic area, and nothing else is a chip
-at all.
+at all. The same green, at its palest, is the ground under the correct option in a question,
+so "this is the right answer" and "this succeeded" are one colour rather than two; grey is
+the ground under a question's identifier, date and source, because none of that is the
+question.
 
 ### 3. One shell, with authoring separated from curation
 

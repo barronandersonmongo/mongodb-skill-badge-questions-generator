@@ -225,3 +225,33 @@ def test_no_template_hand_rolls_a_page_header(client):
         if "justify-content-between align-items-start mb-3" in path.read_text()
     ]
     assert offenders == []
+
+
+def test_a_questions_facts_are_set_apart_from_the_question(client):
+    """
+    Intent: A question's identifier, date and source are about the question rather than part
+        of it. Run together with the stem in the same white space they read as the first
+        lines of the question itself.
+    Success: The theme gives the facts block its own grey ground.
+    Feature: Shared look — a question's facts are visually a separate block.
+    """
+    css = client.get("/static/theme.css").text
+    rule = css[css.index(".question-head {"):]
+    rule = rule[: rule.index("}")]
+    assert "background: var(--wash)" in rule
+
+
+def test_the_correct_option_is_marked_by_more_than_weight(client):
+    """
+    Intent: A reviewer scans a long list looking for one thing per question — which option is
+        the right one. Bold alone means reading each option to find it, and bold is also what
+        the stem uses, so the two compete.
+    Success: The correct option carries a background of its own, in the accent colour the
+        theme already uses for success, and a distinguishing marker so the signal is not
+        colour alone.
+    Feature: Shared look — the correct option stands out at a glance.
+    """
+    css = client.get("/static/theme.css").text
+    rule = css[css.index("li[data-correct] {"):]
+    assert "var(--forest-wash)" in rule[: rule.index("}")]
+    assert "li[data-correct]::marker" in css
