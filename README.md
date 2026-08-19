@@ -178,6 +178,19 @@ Tests therefore assert on **markup** — an element, a class, a `data-` attribut
 on a bare word, because the templates ship JavaScript containing the same labels they
 render. Where no stable hook exists, add a `data-` attribute rather than matching prose.
 
+The look is not decided per template. Every screen is built from the macros in
+`app/templates/_ui.html` — `page_header`, `filter_bar`, `field`, `panel`, `empty_state`
+and the tag macros — and every colour, type size and control size comes from
+`app/static/theme.css`, which works by overriding Bootstrap's own CSS variables and so is
+always loaded after it. This is a constraint, not a convenience: when each template laid
+out its own header the screens drifted apart, ending up with two different heading sizes,
+control sizes mixed inside one row, and five tag colours on a single line. Colour now
+means one thing each — MongoDB forest green for a primary action, spring green for focus
+and success, red for anything destructive, gold for a skill badge, green for a topic area,
+flat grey for anything that is only an identifier. `tests/test_theme.py` holds the screens
+to it, including a test that fails if a template hand-rolls a page header instead of
+calling the macro.
+
 ### 3. Long work runs in the background and is timed on the server
 
 Anything that calls a model or crawls a site runs as a background task with its own run

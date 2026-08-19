@@ -4,34 +4,32 @@
 {% block title %}Skill badges — Skill Badge Questions{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-start mb-3">
-  <div>
-    <h1 class="h3 mb-1">Skill badges</h1>
-    <p class="text-body-secondary mb-0">
-      Claude researches MongoDB's published badge catalog. Everything it finds
-      <strong>Sync from catalog</strong> reads the published badge collection
-      directly — that is the authoritative list. <strong>Research with Claude</strong>
-      searches the web instead, for finding what the collection may not list yet.
-      Either way, badges arrive as <strong>candidates</strong> for you to approve or
-      retire.
-    </p>
-  </div>
-  <div class="text-nowrap">
-    <button class="btn btn-primary" id="sync-catalog-btn" type="button">
-      Sync from catalog
-    </button>
-    <button class="btn btn-outline-secondary" id="scan-duplicates-btn" type="button">
-      Find duplicates
-    </button>
-    <button class="btn btn-outline-secondary" id="normalise-slugs-btn" type="button">
-      Normalise slugs
-    </button>
-    <button class="btn btn-outline-secondary" id="discover-btn" type="button"
-            data-bs-toggle="modal" data-bs-target="#discover-modal">
-      Research with Claude
-    </button>
-  </div>
-</div>
+{% import "_ui.html" as ui %}
+
+{# The old lede opened with a sentence that trailed off mid-thought
+   ("Everything it finds") and then explained two buttons that now say what they
+   do. What is left is the part an author cannot infer from the screen: that
+   nothing here is trusted until it is approved. #}
+{% call ui.page_header(
+    "Skill badges",
+    "The catalog questions are scoped by. Sync reads MongoDB's published collection, "
+    "which is authoritative; research finds what that collection may not list yet. "
+    "Either way badges arrive as candidates — approve the ones worth writing against "
+    "and retire the rest.") %}
+  <button class="btn btn-primary" id="sync-catalog-btn" type="button">
+    Sync from catalog
+  </button>
+  <button class="btn btn-outline-secondary" id="discover-btn" type="button"
+          data-bs-toggle="modal" data-bs-target="#discover-modal">
+    Research with Claude
+  </button>
+  <button class="btn btn-outline-secondary" id="normalise-slugs-btn" type="button">
+    Normalise slugs
+  </button>
+  <button class="btn btn-outline-danger" id="scan-duplicates-btn" type="button">
+    Find duplicates
+  </button>
+{% endcall %}
 
 <div id="run-alert" class="alert d-none" role="status"></div>
 

@@ -4,39 +4,36 @@
 {% block title %}Questions — Skill Badge Questions{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-start mb-3">
-  <div>
-    <h1 class="h3 mb-1">Questions</h1>
-    <p class="text-body-secondary mb-0">
-      Review the questions already written, or generate new ones. A generation run
-      is scoped to the skill badge(s) you pick — the badge decides what is in
-      subject matter. New questions arrive as <strong>drafts</strong> for you to
-      approve or reject.
-    </p>
-  </div>
-  <div class="text-nowrap">
-    <button class="btn btn-primary" id="generate-btn" type="button"
-            data-bs-toggle="modal" data-bs-target="#generate-modal"
-            {% if not badges %}disabled{% endif %}>
-      Generate questions
-    </button>
-    <button class="btn btn-outline-secondary" id="coverage-btn" type="button"
-            data-bs-toggle="modal" data-bs-target="#coverage-modal">
-      Coverage
-    </button>
-    <button class="btn btn-outline-secondary" id="history-btn" type="button"
-            data-bs-toggle="modal" data-bs-target="#history-modal">
-      Run history
-    </button>
-    <button class="btn btn-outline-secondary" id="sweep-btn" type="button">
-      Find duplicates
-    </button>
-    <a class="btn btn-outline-secondary" id="export-btn" target="_blank" rel="noopener"
-       href="{{ api }}?{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
-      Export JSON
-    </a>
-  </div>
-</div>
+{% import "_ui.html" as ui %}
+
+{% call ui.page_header(
+    "Questions",
+    "Review what has been written, or generate more. A run is scoped to the skill "
+    "badge(s) you pick — the badge decides what is in subject matter. New questions "
+    "arrive as drafts for you to approve or reject.") %}
+  <button class="btn btn-primary" id="generate-btn" type="button"
+          data-bs-toggle="modal" data-bs-target="#generate-modal"
+          {% if not badges %}disabled{% endif %}>
+    Generate questions
+  </button>
+  <button class="btn btn-outline-secondary" id="coverage-btn" type="button"
+          data-bs-toggle="modal" data-bs-target="#coverage-modal">
+    Coverage
+  </button>
+  <button class="btn btn-outline-secondary" id="history-btn" type="button"
+          data-bs-toggle="modal" data-bs-target="#history-modal">
+    Run history
+  </button>
+  <a class="btn btn-outline-secondary" id="export-btn" target="_blank" rel="noopener"
+     href="{{ api }}?{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
+    Export JSON
+  </a>
+  {# Placed apart from the four above, and coloured for what it leads to: the
+     other actions only read or add, while this one proposes deletions. #}
+  <button class="btn btn-outline-danger" id="sweep-btn" type="button">
+    Find duplicates
+  </button>
+{% endcall %}
 
 <div id="run-alert" class="alert d-none" role="status"></div>
 
@@ -279,24 +276,23 @@
 </div>
 {% endif %}
 
-<div class="row g-2 align-items-end mb-2">
-  <div class="col-auto">
-    <label class="form-label small mb-1" for="search">Search by meaning</label>
+{% call ui.filter_bar() %}
+  <div>
+    <label class="form-label" for="search">Search by meaning</label>
     <form method="get" action="/" class="d-flex gap-1" data-search-form="true">
-      <input class="form-control form-control-sm" type="search" id="search" name="q"
+      <input class="form-control" type="search" id="search" name="q"
              value="{{ query }}" style="min-width: 22rem;"
-             placeholder="e.g. joining data from another collection — or paste an identifier">
+             placeholder="e.g. joining data from another collection — or an identifier">
       {% if badge_filter %}<input type="hidden" name="skill_badge" value="{{ badge_filter }}">{% endif %}
       {% if category_filter %}<input type="hidden" name="category" value="{{ category_filter }}">{% endif %}
-      <button class="btn btn-sm btn-outline-primary" type="submit">Search</button>
+      <button class="btn btn-outline-primary" type="submit">Search</button>
       {% if query %}
-      <a class="btn btn-sm btn-outline-secondary" href="/" data-clear-search="true">Clear</a>
+      <a class="btn btn-outline-secondary" href="/" data-clear-search="true">Clear</a>
       {% endif %}
     </form>
   </div>
-  <div class="col-auto">
-    <label class="form-label small mb-1" for="badge-filter">Skill badge</label>
-    <select class="form-select form-select-sm" id="badge-filter" data-filter="skill_badge">
+  {% call ui.field("Skill badge", "badge-filter") %}
+    <select class="form-select" id="badge-filter" data-filter="skill_badge">
       <option value="">All badges</option>
       {% for badge in badges %}
       <option value="{{ badge.slug }}" {% if badge_filter == badge.slug %}selected{% endif %}>
@@ -304,10 +300,9 @@
       </option>
       {% endfor %}
     </select>
-  </div>
-  <div class="col-auto">
-    <label class="form-label small mb-1" for="category-filter">Category</label>
-    <select class="form-select form-select-sm" id="category-filter" data-filter="category">
+  {% endcall %}
+  {% call ui.field("Category", "category-filter") %}
+    <select class="form-select" id="category-filter" data-filter="category">
       <option value="">All categories</option>
       {% for category in categories %}
       <option value="{{ category }}" {% if category_filter == category %}selected{% endif %}>
@@ -315,8 +310,8 @@
       </option>
       {% endfor %}
     </select>
-  </div>
-</div>
+  {% endcall %}
+{% endcall %}
 
 {% if search_error == "no-such-identifier" %}
 <div class="alert alert-warning" data-no-such-id="true">
@@ -394,22 +389,13 @@
                label. Badge tags link to the badge's definition — a slug is not
                self-explanatory, and checking what it covers should not mean hunting
                through the admin screen for it. #}
-            {% for slug in question.skill_badges %}
-            <a class="badge text-warning-emphasis bg-warning-subtle border border-warning-subtle text-decoration-none"
-               href="/admin/skill-badges#badge-{{ slug }}"
-               title="Skill badge: {{ slug }} — open its definition"
-               data-badge-tag="{{ slug }}">{{ slug }}</a>
-            {% endfor %}
-            {% for category in question.categories %}
-            <span class="badge text-success-emphasis bg-success-subtle border border-success-subtle"
-                  title="Topic area: {{ category }}"
-                  data-category-tag="{{ category }}">{{ category }}</span>
-            {% endfor %}
+            {% for slug in question.skill_badges %}{{ ui.badge_tag(slug) }}{% endfor %}
+            {% for category in question.categories %}{{ ui.category_tag(category) }}{% endfor %}
             {# The identifier this program keys on, and what every endpoint takes. Shown
                because it is how one question gets referred to in a message or a ticket,
                and because pasting it back into the search box finds it again. Click to
                copy: 32 hex characters is not something anyone should retype. #}
-            <button type="button" class="badge text-body-secondary bg-body-secondary border font-monospace ms-1"
+            <button type="button" class="tag tag-meta ms-1"
                     data-copy-id="{{ question.question_id }}"
                     title="{{ question.question_id }} — click to copy">
               {{ question.question_id[:8] }}
@@ -418,7 +404,7 @@
             {# When it was written. The list is newest first, so this is what tells an
                author which questions came out of the run they just watched — and, once a
                prompt has been changed, which side of that change a question is from. #}
-            <span class="small text-body-secondary ms-1" data-created-at="true"
+            <span class="meta ms-1" data-created-at="true"
                   title="{{ question.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}">
               {{ question.created_at.strftime("%d %b %Y, %H:%M UTC") }}
             </span>
@@ -446,7 +432,7 @@
       </div>
     </div>
     {% else %}
-    <div class="list-group-item text-center text-body-secondary py-5" data-empty="true">
+    <div class="list-group-item empty-state" data-empty="true">
       {% if query %}
         Nothing close to “{{ query }}” in the collection.
       {% elif badge_filter or category_filter %}
@@ -459,9 +445,9 @@
   </div>
 </div>
 
-<p class="text-body-secondary small mt-3 mb-0">
-  Stored in <span class="font-monospace">{{ database }}.{{ collection }}</span>.
+<p class="meta mt-3 mb-0">
   <strong>Export JSON</strong> returns exactly the questions matching the filters above.
+  Stored in <span class="font-monospace">{{ database }}.{{ collection }}</span>.
 </p>
 
 <div class="modal fade" id="delete-modal" tabindex="-1" aria-hidden="true">

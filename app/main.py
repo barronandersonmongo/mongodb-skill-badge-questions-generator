@@ -9,8 +9,10 @@ reach the service. It separates the two kinds of work.
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.logging_config import configure_logging, log_file_path
 from app.routers import (
@@ -44,6 +46,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="MongoDB Skill Badge Questions Generator", lifespan=lifespan)
+
+# The theme is one stylesheet served from disk rather than inline in the base
+# template, so a browser caches it across screens and the look is defined in one
+# place. Everything else still comes from a CDN; there is no build step.
+app.mount(
+    "/static",
+    StaticFiles(directory=str(Path(__file__).parent / "static")),
+    name="static",
+)
 app.include_router(pages.router)
 app.include_router(questions.router)
 app.include_router(admin_pages.router)

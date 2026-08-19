@@ -3,6 +3,7 @@
 {% block title %}{{ page.title if page else "Documentation page" }}{% endblock %}
 
 {% block content %}
+{% import "_ui.html" as ui %}
 {% if storage_error %}
 <div class="alert alert-danger">
   <strong>Cannot reach MongoDB.</strong>
@@ -50,25 +51,25 @@
 </div>
 {% endif %}
 
-<div class="d-flex justify-content-between align-items-start mb-3">
-  <div>
-    <h1 class="h4 mb-1" data-page-title="true">{{ page.title }}</h1>
-    <p class="text-body-secondary small mb-0">
-      <a href="{{ page.url }}" target="_blank" rel="noopener" class="font-monospace"
-         data-source-link="true">{{ page.url }}</a>
-    </p>
-    <p class="text-body-secondary small mb-0">
-      {{ (page.bytes / 1024) | round(1) }} KB
-      {% if page.fetched_at %}·
-        {{ "fetched just now" if live else "fetched" }}
-        {{ page.fetched_at.strftime("%Y-%m-%d %H:%M UTC") }}{% endif %}
-    </p>
-  </div>
-  <div class="btn-group btn-group-sm" role="group">
+{# Rendered and Markdown are two views of one thing, not two actions, so they stay a
+   segmented group rather than becoming separate toolbar buttons. #}
+{% call ui.page_header(page.title, title_hook="page-title") %}
+  <div class="btn-group" role="group" aria-label="View as">
     <button class="btn btn-outline-secondary active" id="view-rendered" type="button">Rendered</button>
     <button class="btn btn-outline-secondary" id="view-raw" type="button">Markdown</button>
   </div>
-</div>
+{% endcall %}
+
+<p class="meta mb-3">
+  <a href="{{ page.url }}" target="_blank" rel="noopener" class="font-monospace"
+     data-source-link="true">{{ page.url }}</a>
+  <span class="d-block">
+    {{ (page.bytes / 1024) | round(1) }} KB
+    {% if page.fetched_at %}·
+      {{ "fetched just now" if live else "fetched" }}
+      {{ page.fetched_at.strftime("%Y-%m-%d %H:%M UTC") }}{% endif %}
+  </span>
+</p>
 
 <div class="card">
   <div class="card-body">

@@ -4,36 +4,39 @@
 {% block title %}Documentation — Skill Badge Questions{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-start mb-3">
+{% import "_ui.html" as ui %}
+
+{% call ui.page_header(
+    "Documentation corpus",
+    "The stored copy of MongoDB's documentation that questions are written from, so a "
+    "run reads the database rather than fetching the web. A full crawl is around "
+    "10,000 pages; usually you want only the sources a badge draws on.") %}
+  <button class="btn btn-primary" id="refresh-btn" type="button">
+    Refresh documentation
+  </button>
+  <button class="btn btn-outline-primary" id="fill-btn" type="button"
+          title="Fetch only pages the corpus is missing. Removes nothing.">
+    Fill gaps
+  </button>
+  <button class="btn btn-outline-primary" id="rechunk-btn" type="button"
+          title="Re-split every stored page into sections. Fetches nothing.">
+    Re-chunk
+  </button>
+{% endcall %}
+
+{# Searching the corpus is not one of the actions above — it reads, and it leads to
+   a different screen — so it sits with the filters rather than in the toolbar. #}
+{% call ui.filter_bar() %}
   <div>
-    <h1 class="h3 mb-1">Documentation corpus</h1>
-    <p class="text-body-secondary mb-0">
-      A stored copy of MongoDB's documentation, so question authoring reads its source
-      material from the database instead of fetching the web mid-run. Refresh it
-      whenever you like — a full crawl is around 10,000 pages, so most of the time you
-      want just the sources a badge draws on.
-    </p>
-  </div>
-  <div class="text-nowrap">
-    <form method="get" action="/admin/docs/search" class="d-inline-flex gap-1 me-2"
+    <label class="form-label" for="corpus-search">Search the stored pages</label>
+    <form method="get" action="/admin/docs/search" class="d-flex gap-1"
           data-corpus-search="true">
-      <input class="form-control form-control-sm" type="search" name="q"
-             placeholder="search all pages" style="min-width: 16rem;">
-      <button class="btn btn-sm btn-outline-primary" type="submit">Search</button>
+      <input class="form-control" type="search" name="q" id="corpus-search"
+             placeholder="e.g. change streams" style="min-width: 20rem;">
+      <button class="btn btn-outline-primary" type="submit">Search</button>
     </form>
-    <button class="btn btn-outline-primary" id="fill-btn" type="button"
-            title="Fetch only pages the corpus is missing. Removes nothing.">
-      Fill gaps
-    </button>
-    <button class="btn btn-outline-primary" id="rechunk-btn" type="button"
-            title="Re-split every stored page into sections. Fetches nothing.">
-      Re-chunk
-    </button>
-    <button class="btn btn-primary" id="refresh-btn" type="button">
-      Refresh documentation
-    </button>
   </div>
-</div>
+{% endcall %}
 
 <div id="run-alert" class="alert d-none" role="status"></div>
 

@@ -1175,8 +1175,12 @@ def test_badge_and_category_tags_are_coloured_differently(
     """
     seed_question(skill_badges=["atlas-search"], categories=["search"])
     body = client.get(PAGE).text
-    assert "bg-warning-subtle" in body
-    assert "bg-success-subtle" in body
+    # The two colour treatments now come from the theme's tag classes rather than
+    # Bootstrap's subtle-background utilities. The requirement recorded above is
+    # unchanged — the two kinds of tag must carry different colour classes — only
+    # where those classes are defined has moved.
+    assert "tag-badge" in body
+    assert "tag-category" in body
 
 
 def test_a_tags_kind_is_also_stated_in_words(client, fake_collection, fake_questions):
@@ -1216,8 +1220,8 @@ def test_category_tags_are_not_links(client, fake_collection, fake_questions):
     """
     seed_question(skill_badges=["atlas-search"], categories=["search"])
     body = client.get(PAGE).text
-    category_tag = body[body.index('data-category-tag="search"') - 260:]
-    assert "<a" not in category_tag[: category_tag.index("data-category-tag") + 30]
+    start = body.rindex("<", 0, body.index('data-category-tag="search"'))
+    assert not body[start:].startswith("<a")
 
 
 def test_a_citation_links_to_the_rendered_page(client, fake_collection, fake_questions):

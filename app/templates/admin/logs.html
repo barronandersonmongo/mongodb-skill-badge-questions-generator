@@ -4,30 +4,31 @@
 {% block title %}Logs — Skill Badge Questions{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-start mb-3">
-  <div>
-    <h1 class="h3 mb-1">Logs</h1>
-    <p class="text-body-secondary mb-0">
-      The tail of the current log file. The log rotates at
-      {{ max_megabytes }} MB and keeps {{ total_files }} files; only the most
-      recent is shown here.
-    </p>
-  </div>
-  <div class="text-nowrap">
-    <label for="lines" class="form-label small mb-0">Lines</label>
-    <select class="form-select form-select-sm d-inline-block w-auto" id="lines">
+{% import "_ui.html" as ui %}
+
+{% call ui.page_header(
+    "Logs",
+    "The tail of the current log file. It rotates at " ~ max_megabytes ~ " MB and keeps "
+    ~ total_files ~ " files; only the most recent is shown here.") %}
+  <button class="btn btn-outline-secondary" id="refresh-btn" type="button">Refresh</button>
+{% endcall %}
+
+{# How much to show and whether to keep showing it are settings on the view, not
+   actions on the log, so they sit with the filters. #}
+{% call ui.filter_bar() %}
+  {% call ui.field("Lines", "lines") %}
+    <select class="form-select w-auto" id="lines">
       <option value="100">100</option>
       <option value="500" selected>500</option>
       <option value="2000">2000</option>
       <option value="10000">10000</option>
     </select>
-    <button class="btn btn-outline-secondary btn-sm" id="refresh-btn" type="button">Refresh</button>
-    <div class="form-check form-check-inline ms-2">
-      <input class="form-check-input" type="checkbox" id="follow">
-      <label class="form-check-label small" for="follow">Follow</label>
-    </div>
+  {% endcall %}
+  <div class="form-check mb-1">
+    <input class="form-check-input" type="checkbox" id="follow">
+    <label class="form-check-label" for="follow">Follow</label>
   </div>
-</div>
+{% endcall %}
 
 <div id="log-alert" class="alert d-none" role="status"></div>
 

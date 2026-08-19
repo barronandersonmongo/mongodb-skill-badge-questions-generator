@@ -8,39 +8,43 @@
         rel="stylesheet"
         integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
         crossorigin="anonymous">
+  {# Loaded after Bootstrap, and only ever after it: the theme works by
+     overriding Bootstrap's own variables, so the order is what makes it apply. #}
+  <link href="/static/theme.css" rel="stylesheet">
 </head>
 <body class="bg-body-tertiary">
-<nav class="navbar navbar-expand-lg bg-dark border-bottom" data-bs-theme="dark">
+{# The questions screen is the work this tool exists for, so it is the root and
+   the brand links to it. The three screens that curate what questions are written
+   from are labelled as the admin area once, as a group, rather than each link
+   carrying its own repeated pill — crossing into curation work is a single
+   boundary, not three separate facts. Each link still declares itself as admin in
+   the markup, since that is what tells a reader of one link where it leads. #}
+<nav class="navbar navbar-expand-lg app-nav" data-bs-theme="dark">
   <div class="container-fluid">
     <a class="navbar-brand" href="/">Skill Badge Questions</a>
-    <ul class="navbar-nav me-auto">
+    <ul class="navbar-nav me-auto align-items-lg-center">
       <li class="nav-item">
         <a class="nav-link {% if active_page == 'questions' %}active{% endif %}"
            href="/">Questions</a>
       </li>
+      <li class="nav-divider d-none d-lg-block" aria-hidden="true"></li>
+      <li class="nav-item"><span class="nav-group-label" id="admin-area-label">Admin</span></li>
       <li class="nav-item">
         <a class="nav-link {% if active_page == 'skill_badges' %}active{% endif %}"
-           href="/admin/skill-badges">
-          Skill badges
-          <span class="badge text-bg-secondary fw-normal" data-admin-area="true">admin</span>
-        </a>
+           href="/admin/skill-badges"
+           data-admin-area="true" aria-describedby="admin-area-label">Skill badges</a>
       </li>
       <li class="nav-item">
         <a class="nav-link {% if active_page == 'docs' %}active{% endif %}"
-           href="/admin/docs">
-          Documentation
-          <span class="badge text-bg-secondary fw-normal" data-admin-area="true">admin</span>
-        </a>
+           href="/admin/docs"
+           data-admin-area="true" aria-describedby="admin-area-label">Documentation</a>
       </li>
       <li class="nav-item">
         <a class="nav-link {% if active_page == 'logs' %}active{% endif %}"
-           href="/admin/logs">
-          Logs
-          <span class="badge text-bg-secondary fw-normal" data-admin-area="true">admin</span>
-        </a>
+           href="/admin/logs"
+           data-admin-area="true" aria-describedby="admin-area-label">Logs</a>
       </li>
     </ul>
-    <span class="navbar-text small">Internal authoring tool</span>
   </div>
 </nav>
 

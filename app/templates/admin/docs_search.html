@@ -3,6 +3,8 @@
 {% block title %}Search documentation{% endblock %}
 
 {% block content %}
+{% import "_ui.html" as ui %}
+
 <nav aria-label="breadcrumb">
   <ol class="breadcrumb small" data-breadcrumb="true">
     <li class="breadcrumb-item"><a href="/admin/docs">Documentation corpus</a></li>
@@ -10,13 +12,12 @@
   </ol>
 </nav>
 
-<h1 class="h4 mb-1">Search the documentation</h1>
-<p class="text-body-secondary small">
-  Every stored section, not one source — the documentation for a topic is often not under
-  the index you would expect it to be, and a section-level result says which part of a
-  page matched rather than just which page. Search is semantic: describe what you are
-  looking for, in your own words, rather than guessing the wording the page uses.
-</p>
+{% call ui.page_header(
+    "Search the documentation",
+    "Every stored section, across all sources — a topic is often not under the index you "
+    "would expect, and a section-level result says which part of a page matched. Search "
+    "is semantic: describe what you want in your own words rather than guessing the "
+    "page's wording.") %}{% endcall %}
 
 <form method="get" action="/admin/docs/search" class="d-flex gap-1 mb-3"
       data-search-form="true">
@@ -38,7 +39,7 @@
 {% endif %}
 
 {% if query and not storage_error %}
-<p class="text-body-secondary small" data-result-count="true">
+<p class="meta" data-result-count="true">
   {{ results | length }} result(s){% if results | length == limit %} (capped — refine the
   query to narrow it){% endif %}.
 </p>
