@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+
+{% block title %}Material — Skill Badge Questions{% endblock %}
+
+{% block content %}
+{% import "_ui.html" as ui %}
+
+{% call ui.page_header(
+    "Material per badge",
+    "How much documentation each badge still has to draw on, and how concentrated it is. "
+    "Articles is the number that predicts saturation: a walk takes one section per article "
+    "before it takes a second from any of them, so a badge with 252 sections across 25 "
+    "articles has about 25 sections' worth of new material and 227 helpings of what it "
+    "already read.") %}
+  <button class="btn btn-primary" id="load-btn" type="button" data-load="true">
+    Measure
+  </button>
+{% endcall %}
+
+{% if storage_error %}
+<div class="alert alert-danger">
+  <strong>Cannot reach MongoDB.</strong>
+  <div class="small font-monospace mt-1">{{ storage_error }}</div>
+</div>
+{% endif %}
+
+{# Two kinds of filter, kept apart on purpose. The first narrows the documentation — the
+   sections a badge resolves to — and is what answers "how much of this badge is actually
+   about Voyage AI". The other two narrow the questions already written. Merging them
+   into one row would invite reading one number as if it were filtered by the other. #}
+<div class="row g-4">
+  <div class="col-12 col-lg-6">
+    <div class="panel h-100">
+      <div class="panel-header"><span class="section-title">Narrow the documentation</span></div>
+      <div class="panel-body">
+        {% call ui.filter_bar() %}
+          {% call ui.field("Skill badge", "filter-badge") %}
+            <select class="form-select" id="filter-badge" data-filter="skill_badge">
+              <option value="">Every badge — slower</option>
+              {% for badge in badges %}
+              <option value="{{ badge.slug }}">{{ badge.name }}</option>
+              {% endfor %}
+            </select>
+          {% endcall %}
+          {% call ui.field("Sections about", "filter-contains") %}
+            <input class="form-control" id="filter-contains" data-filter="contains"
+                   type="search" placeholder="e.g. voyage" style="min-width: 12rem;">
+          {% endcall %}
+        {% endcall %}
+        <div class="form-text mb-0">
+          Matched against each section's heading, its article's title and the URL — not
+          the body, because a body mentions everything it relates to. Sections and
+          articles below count only what matches.
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-lg-6">
+    <div class="panel h-100">
+      <div class="panel-header"><span class="section-title">Narrow the questions</span></div>
+      <div class="panel-body">
+        {% call ui.filter_bar() %}
+          {% call ui.field("Category", "filter-category") %}
+            <select class="form-select" id="filter-category" data-filter="category">
+              <option value="">Every category</option>
+              {% for category in categories %}
+              <option value="{{ category }}">{{ category }}</option>
+              {% endfor %}
+            </select>
+          {% endcall %}
+          {% call ui.field("Skill level", "filter-difficulty") %}
+            <select class="form-select" id="filter-difficulty" data-filter="difficulty">
+              <option value="">Every level</option>
+              {% for level in difficulties %}
+              <option value="{{ level }}">{{ level }}</option>
+              {% endfor %}
+            </select>
+          {% endcall %}
+        {% endcall %}
+        <div class="form-text mb-0">
+          These narrow the <strong>Questions</strong> column only. What documentation a
+          badge resolves to does not depend on how its questions are tagged.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel mt-4">
+  <div class="panel-body" id="material-body" data-material-body="true">
+    <p class="text-body-secondary mb-0">
+      <strong>Measure</strong> resolves each badge's section set. That is dozens of vector
+      searches per badge — a few seconds for one, tens of seconds for all 34 — so it is
+      not done until asked for.
+    </p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = "/api/admin/material";
+const target = document.getElementById("material-body");
+const loadButton = document.getElementById("load-btn");
+
+function cell(row, value, className) {
+  const td = document.createElement("td");
+  if (className) td.className = className;
+  td.textContent = value === null || value === undefined ? "—" : value;
+  row.append(td);
+  return td;
+}
+
+// What the row means, in a word. The verdict is the point of the screen: three numbers
+// side by side do not say "this badge is done" unless the reader knows which one to
+// read, and that is the whole thing that made the section count misleading.
+function verdict(row) {
+  if (row.error) return ["unknown", "text-body-secondary"];
+  if (!row.articles) return ["exhausted", "text-danger"];
+  if (row.articles <= 5) return ["nearly exhausted", "text-danger"];
+  if (row.sections_per_article >= 3) return ["concentrated", "text-warning-emphasis"];
+  return ["spread", "text-success"];
+}
+
+async function load() {
+  const params = new URLSearchParams();
+  document.querySelectorAll("[data-filter]").forEach((control) => {
+    if (control.value) params.set(control.dataset.filter, control.value);
+  });
+  loadButton.disabled = true;
+  loadButton.textContent = "Measuring…";
+  target.replaceChildren(
+    Object.assign(document.createElement("p"), {
+      className: "text-body-secondary mb-0",
+      textContent: "Resolving each badge's sections — this takes a few seconds.",
+    })
+  );
+  const response = await fetch(API + "?" + params.toString());
+  loadButton.disabled = false;
+  loadButton.textContent = "Measure";
+  if (!response.ok) {
+    target.textContent = "Could not measure (HTTP " + response.status + ").";
+    return;
+  }
+  const rows = await response.json();
+  target.replaceChildren();
+  if (rows.length === 0) {
+    target.textContent = "No badges match that filter.";
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.className = "table align-middle mb-0";
+  table.dataset.materialTable = "true";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  [
+    ["Skill badge", ""],
+    ["Questions", "text-end"],
+    ["Articles left", "text-end"],
+    ["Sections left", "text-end"],
+    ["Sections per article", "text-end"],
+    ["Biggest article", "text-end"],
+    ["Articles written from", "text-end"],
+    ["Saturation", ""],
+  ].forEach(([label, className]) => {
+    const th = document.createElement("th");
+    th.textContent = label;
+    th.className = className;
+    headRow.append(th);
+  });
+  head.append(headRow);
+
+  const body = document.createElement("tbody");
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    tr.dataset.badgeRow = row.skill_badge;
+    const name = document.createElement("td");
+    const link = document.createElement("a");
+    link.href = "/?skill_badge=" + encodeURIComponent(row.skill_badge);
+    link.textContent = row.name || row.skill_badge;
+    name.append(link);
+    tr.append(name);
+    cell(tr, row.questions, "text-end");
+    // Articles first, and set in bold: it is the ceiling on new material, and putting
+    // the section count first is what made 252 read as plenty.
+    cell(tr, row.articles, "text-end fw-semibold");
+    cell(tr, row.sections, "text-end");
+    cell(tr, row.sections_per_article, "text-end");
+    const biggest = cell(tr, row.largest_article, "text-end");
+    if (row.largest_article_url) biggest.title = row.largest_article_url;
+    cell(tr, row.articles_used, "text-end");
+    const [word, className] = verdict(row);
+    const saturation = cell(tr, word, className);
+    if (row.error) saturation.title = row.error;
+    body.append(tr);
+  });
+  table.append(head, body);
+  target.className = "table-responsive";
+  target.append(table);
+}
+
+loadButton.addEventListener("click", load);
+// Changing a filter does not measure again on its own: the measurement is expensive
+// enough that starting one must be a decision.
+</script>
+{% endblock %}

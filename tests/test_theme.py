@@ -142,8 +142,10 @@ def test_the_admin_area_is_labelled_once_rather_than_per_link(client):
     """
     body = client.get("/").text
     nav = body[body.index("<nav"):body.index("</nav>")]
+    section = nav[nav.index('class="nav-section"'):]
     assert nav.count("nav-group-label") == 1
-    assert nav.count('data-admin-area="true"') == 3
+    assert section.count("nav-link") == section.count('data-admin-area="true"')
+    assert 'data-admin-area="true"' not in nav[: nav.index('class="nav-section"')]
 
 
 @pytest.mark.parametrize("screen", SCREENS)
@@ -174,7 +176,7 @@ def test_authoring_and_curation_are_not_peers_in_the_navigation(client):
     nav = body[body.index("<nav"):body.index("</nav>")]
     section = nav[nav.index('class="nav-section"'):]
     assert 'href="/"' not in section
-    assert section.count('data-admin-area="true"') == 3
+    assert section.count('data-admin-area="true"') == section.count("nav-link")
     assert nav.count("nav-group-label") == 1
 
 

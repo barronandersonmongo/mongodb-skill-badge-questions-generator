@@ -18,6 +18,7 @@ from app.logging_config import configure_logging, log_file_path
 from app.routers import (
     admin_docs,
     admin_logs,
+    admin_material,
     admin_pages,
     admin_skill_badges,
     pages,
@@ -61,6 +62,7 @@ app.include_router(admin_pages.router)
 app.include_router(admin_skill_badges.router)
 app.include_router(admin_logs.router)
 app.include_router(admin_docs.router)
+app.include_router(admin_material.router)
 
 
 @app.get("/healthz")

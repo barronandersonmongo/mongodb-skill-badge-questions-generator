@@ -605,6 +605,31 @@ The pager carries the filters, the search and the size, so the view stays an add
 can be shared. **Export JSON is not paged** — it returns every question matching the
 filters, which is what anyone asking for an export means.
 
+### Saturation, and why sections are not the measure
+
+`/admin/material` answers the question the coverage screen raises: whether a badge is
+about to run out of material worth writing from. The section count does not answer it. A
+walk takes one section per article before it takes a second from any of them, so the
+**distinct article count** is the ceiling on new material — measured on the live corpus,
+Vector Search Fundamentals resolves to 252 sections across 25 articles, 85 of them slices
+of one page, so it has about 25 sections' worth of fresh material and 227 helpings of what
+it already read. The screen therefore reports articles left, sections left, sections per
+article, the biggest single article's share, and how many articles have been written from —
+and orders badges by how few articles they have left rather than how few sections.
+
+Two kinds of filter, kept apart because they act on different things. **Sections about**
+narrows the documentation, matching a topic against each section's heading, its article's
+title and the URL — not its body, since a body mentions everything it relates to. That is
+what answers "this badge looks healthy at 25 articles, but how much of it is about Voyage
+AI" — the answer on the live corpus being 3. **Category** and **skill level** narrow the
+questions already written, and change no documentation figure: the corpus is not tagged the
+way questions are, and a screen that implied otherwise would report two numbers that cannot
+both be true.
+
+Measuring is opt-in. Resolving one badge's sections is dozens of vector searches and all of
+them is tens of seconds, so it happens when asked for and never on a page load or a filter
+change.
+
 ### No review workflow
 
 A question that passes the format check is stored and usable. There is no draft state, no

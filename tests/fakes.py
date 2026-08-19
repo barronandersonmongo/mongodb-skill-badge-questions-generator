@@ -88,8 +88,13 @@ class FakeCollection:
         starting with $group is a summary over the collection, used by the
         documentation corpus screen to count pages per source; one starting with
         $unwind fans an array field out before grouping, which is how questions are
-        counted per badge — a question filed under three badges counts for each.
+        counted per badge — a question filed under three badges counts for each. A
+        leading $match narrows first, which is how those per-badge counts are taken
+        under a category or skill-level filter.
         """
+        if pipeline and "$match" in pipeline[0]:
+            kept = [d for d in self.docs if self._matches(d, pipeline[0]["$match"])]
+            return FakeCollection(kept).aggregate(pipeline[1:])
         if pipeline and "$unwind" in pipeline[0]:
             docs = self._unwound(pipeline[0]["$unwind"], self.docs)
             return self._aggregate_group(pipeline[1:], docs=docs)

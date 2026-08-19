@@ -72,6 +72,13 @@
              href="/admin/docs"
              data-admin-area="true" aria-describedby="admin-area-label">Documentation</a>
         </li>
+        {# Where the corpus is about to run out for a badge. A question about the
+           material rather than about any question in it, so it is admin work. #}
+        <li class="nav-item">
+          <a class="nav-link {% if active_page == 'material' %}active{% endif %}"
+             href="/admin/material"
+             data-admin-area="true" aria-describedby="admin-area-label">Material</a>
+        </li>
         <li class="nav-item">
           <a class="nav-link {% if active_page == 'logs' %}active{% endif %}"
              href="/admin/logs"
