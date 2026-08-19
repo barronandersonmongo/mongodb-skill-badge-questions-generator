@@ -10,8 +10,10 @@ The list is rendered server-side so it is readable without JavaScript; JS only
 drives the generate button's polling, the review buttons and the filter menus.
 """
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Request
 from fastapi.templating import Jinja2Templates
@@ -364,6 +366,77 @@ def runs_page(request: Request):
             "active_page": "runs",
             "runs": history,
             "totals": totals,
+            "storage_error": storage_error,
+        },
+    )
+
+
+@router.get("/coverage")
+def coverage_page(request: Request):
+    """Which badges are thin, and whether there is material left to fix that.
+
+    Its own screen rather than a dialog on the questions list: it is the answer to
+    "what should I run next", which is a question asked before looking at questions
+    rather than while looking at them, and its rows lead into the list.
+    """
+    return templates.TemplateResponse(
+        request, "coverage.html", {"active_page": "coverage"}
+    )
+
+
+@router.get("/export")
+def export_page(
+    request: Request,
+    skill_badge: str | None = None,
+    category: str | None = None,
+):
+    """The questions matching the filters, as JSON, shown and offered as a download.
+
+    It was a link in the questions screen's toolbar, scoped to whatever that screen
+    happened to be filtered to — so what you exported depended on a filter you may
+    have set minutes earlier and scrolled past. Here the scope is the screen's own,
+    and stated.
+
+    The JSON is rendered on the page as well as downloadable: pasting it somewhere is
+    the usual thing to do with it, and a file that has to be opened to be read is a
+    step in the way.
+    """
+    payload = "[]"
+    badges: list[dict] = []
+    categories: list[str] = []
+    count = 0
+    storage_error: str | None = None
+    try:
+        # No limit: an export filtered to one page of results would be a surprising
+        # thing to hand someone.
+        stored = questions_repo.list_questions(skill_badge, category)
+        count = len(stored)
+        payload = json.dumps(stored, indent=2, default=str)
+        badges = skill_badges.list_badges()
+        categories = questions_repo.categories_in_use()
+    except PyMongoError as exc:
+        storage_error = str(exc)
+
+    settings = get_settings()
+    query = urlencode(
+        {k: v for k, v in (("skill_badge", skill_badge), ("category", category)) if v}
+    )
+    return templates.TemplateResponse(
+        request,
+        "export.html",
+        {
+            "active_page": "export",
+            "payload": payload,
+            "count": count,
+            "badges": badges,
+            "categories": categories,
+            "badge_filter": skill_badge or "",
+            "category_filter": category or "",
+            # The download hits the API rather than re-rendering here, so the file is
+            # the same bytes any other caller of that endpoint gets.
+            "api": "/api/questions" + ("?" + query if query else ""),
+            "database": settings.database,
+            "collection": settings.questions_collection,
             "storage_error": storage_error,
         },
     )

@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}Export — Skill Badge Questions{% endblock %}
+
+{% block content %}
+{% import "_ui.html" as ui %}
+
+{% call ui.page_header(
+    "Export",
+    "Questions as JSON, filtered the same way the list is. This is the whole of what "
+    "matches — never one page of it.") %}
+  <button class="btn btn-primary" id="copy-btn" type="button" data-copy-json="true">
+    Copy to clipboard
+  </button>
+  <a class="btn btn-outline-secondary" id="download-btn" data-download="true"
+     href="{{ api }}" download="skill-badge-questions.json">Download</a>
+{% endcall %}
+
+{% if storage_error %}
+<div class="alert alert-danger">
+  <strong>Cannot reach MongoDB.</strong>
+  <div class="small font-monospace mt-1">{{ storage_error }}</div>
+</div>
+{% endif %}
+
+{# The same two filters as the list, on their own here: this screen used to be a link
+   whose scope was whatever the list happened to be showing, which meant the export you
+   got depended on a filter you may have set minutes earlier and scrolled past. #}
+{% call ui.filter_bar() %}
+  {% call ui.field("Skill badge", "badge-filter") %}
+    <select class="form-select" id="badge-filter" data-filter="skill_badge">
+      <option value="">All badges</option>
+      {% for badge in badges %}
+      <option value="{{ badge.slug }}" {% if badge_filter == badge.slug %}selected{% endif %}>
+        {{ badge.name }}
+      </option>
+      {% endfor %}
+    </select>
+  {% endcall %}
+  {% call ui.field("Category", "category-filter") %}
+    <select class="form-select" id="category-filter" data-filter="category">
+      <option value="">All categories</option>
+      {% for category in categories %}
+      <option value="{{ category }}" {% if category_filter == category %}selected{% endif %}>
+        {{ category }}
+      </option>
+      {% endfor %}
+    </select>
+  {% endcall %}
+{% endcall %}
+
+<p class="meta" data-export-count="true">
+  {{ count }} question{{ "" if count == 1 else "s" }} in this export.
+</p>
+
+<div class="panel">
+  <div class="panel-header">
+    <span class="section-title">JSON</span>
+    <span class="meta font-monospace">{{ database }}.{{ collection }}</span>
+  </div>
+  {# Shown, not just offered as a download. Pasting it somewhere is the usual thing to
+     do with it, and a file that has to be opened to be read is a step in the way. #}
+  <pre class="export-json mb-0" data-export-json="true">{{ payload }}</pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Filters are links in effect, as on the questions screen: changing one reloads with it
+// applied, so the export being looked at is always the URL.
+document.querySelectorAll("[data-filter]").forEach((select) => {
+  select.addEventListener("change", () => {
+    const url = new URL(window.location.href);
+    if (select.value) {
+      url.searchParams.set(select.dataset.filter, select.value);
+    } else {
+      url.searchParams.delete(select.dataset.filter);
+    }
+    window.location.assign(url.toString());
+  });
+});
+
+const copyButton = document.getElementById("copy-btn");
+copyButton.addEventListener("click", async () => {
+  const json = document.querySelector("[data-export-json]").textContent;
+  const label = copyButton.textContent;
+  try {
+    await navigator.clipboard.writeText(json);
+    copyButton.textContent = "Copied";
+  } catch {
+    // Clipboard access is refused outside a secure context; selecting the text is the
+    // fallback, so it can still be copied by hand.
+    const range = document.createRange();
+    range.selectNodeContents(document.querySelector("[data-export-json]"));
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    copyButton.textContent = "Selected — press Ctrl/Cmd+C";
+  }
+  setTimeout(() => { copyButton.textContent = label; }, 2000);
+});
+</script>
+{% endblock %}

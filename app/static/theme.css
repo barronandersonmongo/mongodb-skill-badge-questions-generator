@@ -587,6 +587,20 @@ a:focus-visible,
   margin-top: var(--s5);
 }
 
+/* An export is read as much as it is downloaded, so it is set to be readable: a
+   scroll region rather than a page the length of the collection. */
+.export-json {
+  max-height: 60vh;
+  overflow: auto;
+  padding: var(--s4);
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: var(--surface-sunken);
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+}
+
 /* ---------- notices ---------- */
 
 /* Alerts were the loudest thing on every screen. They are now a tinted panel

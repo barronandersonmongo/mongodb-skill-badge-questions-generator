@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% set api = "/api/questions" %}
+
+{% block title %}Coverage — Skill Badge Questions{% endblock %}
+
+{% block content %}
+{% import "_ui.html" as ui %}
+
+{% call ui.page_header(
+    "Coverage",
+    "Thinnest badges first. Pages left is how much documentation resolves to a badge and "
+    "has not been written from yet — few questions and many pages left means another run "
+    "is worth doing, while no pages left means the badge has exhausted its material and "
+    "the corpus needs widening instead.") %}{% endcall %}
+
+<div class="panel">
+  {# Fetched after the page paints rather than rendered with it. Resolving every badge's
+     page set is dozens of vector searches — seconds to tens of seconds — and a screen
+     that shows nothing at all until they finish reads as broken. This is the one list
+     in the program not rendered server-side, and this is why. #}
+  <div class="panel-body" id="coverage-body" data-coverage-body="true">
+    <p class="text-body-secondary mb-0">
+      Working out what each badge's documentation covers — this takes a few seconds.
+    </p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const API = "{{ api }}";
+
+(async () => {
+  const target = document.getElementById("coverage-body");
+  const response = await fetch(API + "/coverage");
+  if (!response.ok) {
+    target.textContent = "Could not load coverage (HTTP " + response.status + ").";
+    return;
+  }
+  const rows = await response.json();
+  target.textContent = "";
+  if (rows.length === 0) {
+    target.className = "empty-state";
+    target.dataset.empty = "true";
+    target.textContent = "No skill badges yet, so there is nothing to cover.";
+    return;
+  }
+  target.className = "table-responsive";
+  const table = document.createElement("table");
+  table.className = "table align-middle mb-0";
+  table.dataset.coverageTable = "true";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  ["Skill badge", "Questions", "Pages left"].forEach((label, i) => {
+    const th = document.createElement("th");
+    th.textContent = label;
+    if (i > 0) th.className = "text-end";
+    headRow.append(th);
+  });
+  head.append(headRow);
+  const tbody = document.createElement("tbody");
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    const link = document.createElement("a");
+    // The badge's name leads to its questions, because "this badge is thin" is only
+    // useful next to what it already has.
+    link.href = "/?skill_badge=" + encodeURIComponent(row.skill_badge);
+    link.textContent = row.name || row.skill_badge;
+    name.append(link);
+    tr.append(name);
+    const total = document.createElement("td");
+    total.className = "text-end";
+    total.textContent = row.total;
+    tr.append(total);
+    const left = document.createElement("td");
+    left.className = "text-end";
+    left.textContent = row.pages_available === null ? "—" : row.pages_available;
+    tr.append(left);
+    tbody.append(tr);
+  });
+  table.append(head, tbody);
+  target.append(table);
+})();
+</script>
+{% endblock %}

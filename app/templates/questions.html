@@ -37,14 +37,6 @@ per_page={{ pagination.per_page }}&
           {% if not badges %}disabled{% endif %}>
     Generate questions
   </button>
-  <button class="btn btn-outline-secondary" id="coverage-btn" type="button"
-          data-bs-toggle="modal" data-bs-target="#coverage-modal">
-    Coverage
-  </button>
-  <a class="btn btn-outline-secondary" id="export-btn" target="_blank" rel="noopener"
-     href="{{ api }}?{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
-    Export JSON
-  </a>
 {% endcall %}
 
 <div id="run-alert" class="alert d-none" role="status"></div>
@@ -461,11 +453,11 @@ per_page={{ pagination.per_page }}&
 {% endif %}
 
 <p class="meta mt-3 mb-0">
-  {# Said here because the export is the one thing on this screen that is not paged, and
-     a screen that shows 50 of 3,000 invites the assumption that its export would too. #}
-  <strong>Export JSON</strong> returns every question matching the filters above, not
-  only this page.
   Stored in <span class="font-monospace">{{ database }}.{{ collection }}</span>.
+  {# Said here because the export is the one thing that is not paged, and a screen
+     showing 50 of 3,000 invites the assumption that its export would match. #}
+  <a href="/export">Export</a> returns every question matching the filters above, not
+  only this page.
 </p>
 
 <div class="modal fade" id="delete-modal" tabindex="-1" aria-hidden="true">
@@ -491,29 +483,6 @@ per_page={{ pagination.per_page }}&
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
         <button type="button" class="btn btn-danger" id="confirm-delete" disabled
                 data-confirm-delete="true">Delete permanently</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="modal fade" id="coverage-modal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-lg modal-dialog-scrollable">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h2 class="modal-title h5">Coverage by skill badge</h2>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <p class="small text-body-secondary">
-          Thinnest badges first. <strong>Pages left</strong> is how much documentation
-          resolves to the badge and has not been written from yet — a badge with few
-          questions and many pages left needs another run, while one with no pages left
-          has exhausted its material.
-        </p>
-        <div id="coverage-body" class="small text-body-secondary">Loading…</div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
       </div>
     </div>
   </div>
@@ -912,57 +881,6 @@ if (dismissButton) {
     await fetch(API + "/generate/dismiss", {method: "POST"});
   });
 }
-
-// Coverage is fetched when the panel opens, not rendered with the page: resolving
-// every badge's page set is dozens of vector searches, far too slow to sit in the
-// path of an ordinary page load.
-let coverageLoaded = false;
-document.getElementById("coverage-modal").addEventListener("show.bs.modal", async () => {
-  if (coverageLoaded) return;
-  const target = document.getElementById("coverage-body");
-  const response = await fetch(API + "/coverage");
-  if (!response.ok) {
-    target.textContent = "Could not load coverage (HTTP " + response.status + ").";
-    return;
-  }
-  const rows = await response.json();
-  coverageLoaded = true;
-  target.textContent = "";
-  const table = document.createElement("table");
-  table.className = "table table-sm align-middle mb-0";
-  const head = document.createElement("thead");
-  const headRow = document.createElement("tr");
-  ["Skill badge", "Questions", "Pages left"].forEach((label, i) => {
-    const th = document.createElement("th");
-    th.textContent = label;
-    if (i > 0) th.className = "text-end";
-    headRow.append(th);
-  });
-  head.append(headRow);
-  const tbody = document.createElement("tbody");
-  rows.forEach((row) => {
-    const tr = document.createElement("tr");
-    const name = document.createElement("td");
-    const link = document.createElement("a");
-    link.href = "?skill_badge=" + encodeURIComponent(row.skill_badge);
-    link.textContent = row.name || row.skill_badge;
-    name.append(link);
-    tr.append(name);
-    [row.total].forEach((value) => {
-      const td = document.createElement("td");
-      td.className = "text-end";
-      td.textContent = value;
-      tr.append(td);
-    });
-    const left = document.createElement("td");
-    left.className = "text-end";
-    left.textContent = row.pages_available === null ? "—" : row.pages_available;
-    tr.append(left);
-    tbody.append(tr);
-  });
-  table.append(head, tbody);
-  target.append(table);
-});
 
 stopButton.addEventListener("click", async () => {
   stopButton.disabled = true;

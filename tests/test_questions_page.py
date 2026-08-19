@@ -300,21 +300,6 @@ def test_the_filter_menus_offer_the_badges_and_categories_in_use(
 # --- exporting ---
 
 
-def test_the_export_link_carries_the_current_filters(client, fake_collection, fake_questions):
-    """
-    Intent: Export is a stated requirement, and the author expects to get what they are
-        looking at. An export link that ignored the filters would quietly hand over the
-        whole collection.
-    Success: Under a badge filter, the export link requests that filter from the API.
-    Feature: Question export — exports what is on screen.
-    """
-    seed_badge()
-    seed_question()
-    body = client.get(PAGE, params={"skill_badge": "atlas-search"}).text
-    assert 'id="export-btn"' in body
-    assert "/api/questions?skill_badge=atlas-search" in body
-
-
 # --- generating ---
 
 
@@ -671,20 +656,6 @@ def test_a_run_that_fell_back_to_the_web_says_so(client, fake_collection, fake_q
 
 
 # --- the page walk on screen ---
-
-
-def test_the_screen_offers_the_coverage_panel(client, fake_collection, fake_questions):
-    """
-    Intent: Coverage is proportional to how much documentation a badge has, so some badges
-        come out thin. That is only a workflow rather than a defect if the author can see
-        which ones — otherwise the imbalance is invisible until someone builds a quiz.
-    Success: The screen offers a coverage panel.
-    Feature: Question coverage — reachable from the authoring screen.
-    """
-    seed_badge()
-    body = client.get(PAGE).text
-    assert 'id="coverage-btn"' in body
-    assert 'id="coverage-modal"' in body
 
 
 def test_a_walk_reports_the_pages_it_wrote_from_and_what_is_left(

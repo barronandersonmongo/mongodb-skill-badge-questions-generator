@@ -629,6 +629,17 @@ Total spend cannot be compared between runs because it depends on how much was w
 per question says whether a prompt or effort change paid for itself. Both are absent rather
 than zero until there is something to divide by.
 
+Coverage and export have screens too, for the same reason. **Coverage** answers "what
+should I run next", which is asked before looking at questions rather than while looking at
+them, and its rows link into the filtered list. It is the one list here not rendered
+server-side: resolving every badge's page set is dozens of vector searches, and a screen
+that shows nothing until they finish reads as broken rather than as slow, so it paints and
+then fills. **Export** was a toolbar link scoped to whatever the list happened to be
+filtered to — meaning what you got depended on a filter you may have set minutes earlier
+and scrolled past. It now carries its own filters, states how many questions are in it, and
+shows the JSON on the page as well as offering the download, because pasting it somewhere
+is the usual thing to do with it.
+
 The history has its own screen at `/runs`, server-rendered like every other list. It was a
 dialog on the questions screen, filled in by JavaScript when it opened — which made the one
 lasting record of what has been spent the least reachable thing here: it could not be linked

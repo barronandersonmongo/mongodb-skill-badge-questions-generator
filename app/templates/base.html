@@ -41,11 +41,21 @@
         <a class="nav-link {% if active_page == 'duplicates' %}active{% endif %}"
            href="/duplicates">Duplicates</a>
       </li>
+      {# Where the bank is thin, and what it would take to fix that. Asked before
+         looking at questions rather than while looking at them. #}
+      <li class="nav-item">
+        <a class="nav-link {% if active_page == 'coverage' %}active{% endif %}"
+           href="/coverage">Coverage</a>
+      </li>
       {# What the bank has cost to build. A record of this screen's own work, so it sits
          with it rather than behind a dialog on it. #}
       <li class="nav-item">
         <a class="nav-link {% if active_page == 'runs' %}active{% endif %}"
            href="/runs">Run history</a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link {% if active_page == 'export' %}active{% endif %}"
+           href="/export">Export</a>
       </li>
     </ul>
 
