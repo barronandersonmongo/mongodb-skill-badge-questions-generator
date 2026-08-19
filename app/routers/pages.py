@@ -111,6 +111,13 @@ def _search(
     vector search cannot be told "only this badge" without changing which matches it
     considers, and an author expects the same matches however they then narrow them.
     """
+    # An identifier is looked up exactly rather than embedded and compared: a hex string
+    # has no meaning to embed, so a semantic search for one returns whatever happens to
+    # be nearest, which reads as "that question does not exist".
+    if questions_repo.looks_like_an_identifier(query):
+        found = questions_repo.find_by_identifier(query)
+        return found, None if found else "no-such-identifier"
+
     settings = get_settings()
     try:
         matches = questions_repo.similar_by_embedding_text(
@@ -155,6 +162,7 @@ def _render(
             "badge_filter": skill_badge or "",
             "category_filter": category or "",
             "query": query,
+            "is_identifier_query": questions_repo.looks_like_an_identifier(query),
             "badges": badges,
             "categories": categories,
             "difficulty_styles": DIFFICULTY_STYLES,

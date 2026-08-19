@@ -1277,3 +1277,65 @@ def test_the_watch_counts_only_the_current_view(client, fake_collection, fake_qu
     seed_question()
     body = client.get(PAGE, params={"skill_badge": "atlas-search"}).text
     assert 'skill_badge: "atlas-search"' in body
+
+
+# --- identifiers on screen ---
+
+
+def test_a_question_shows_its_identifier(client, fake_collection, fake_questions):
+    """
+    Intent: An author refers to one question in a message or a ticket, and the only way to do
+        that is by identifier — so it has to be on the card. Shortened and click-to-copy,
+        because 32 hex characters is not something anyone should retype.
+    Success: The card carries a copyable identifier chip.
+    Feature: Question review screen — questions show their identifier.
+    """
+    question_id = seed_question()
+    body = client.get(PAGE).text
+    assert 'data-copy-id="' + question_id + '"' in body
+    assert question_id[:8] in body
+
+
+def test_pasting_an_identifier_finds_that_question(client, fake_collection, fake_questions):
+    """
+    Intent: One box serves both purposes — paste an id to find one question, type a phrase to
+        find several. A hex string has no meaning to embed, so semantically searching for one
+        returns whatever happens to be nearest, which reads as "that question does not exist".
+    Success: Searching for an identifier returns exactly that question, and says it was looked
+        up rather than searched for.
+    Feature: Question search — identifiers are looked up exactly.
+    """
+    question_id = seed_question("Which stage filters documents?")
+    seed_question("Something else entirely?")
+    body = client.get(PAGE, params={"q": question_id}).text
+    assert "Which stage filters documents?" in body
+    assert "Something else entirely?" not in body
+    assert 'data-id-summary="true"' in body
+
+
+def test_an_unknown_identifier_says_so_plainly(client, fake_collection, fake_questions):
+    """
+    Intent: An identifier that finds nothing means something specific — deleted, or from
+        another collection — and that is more useful than an empty result reading as "we have
+        nothing on that". It also tells the reader their paste was understood as an id.
+    Success: An identifier-shaped query with no match explains itself.
+    Feature: Question search — an unknown identifier is explained.
+    """
+    seed_question()
+    body = client.get(PAGE, params={"q": "a" * 32}).text
+    assert 'data-no-such-id="true"' in body
+    assert "No question with that identifier" in body
+
+
+def test_a_phrase_is_still_searched_semantically(client, fake_collection, fake_questions):
+    """
+    Intent: The identifier check must not swallow ordinary searches — a query is only treated
+        as an id when its shape says so. Otherwise a search for a hex-looking phrase would
+        silently return nothing.
+    Success: A worded query is reported as a similarity search, not an identifier lookup.
+    Feature: Question search — phrases are still searched by meaning.
+    """
+    seed_question("Which stage filters documents?")
+    body = client.get(PAGE, params={"q": "stage filters documents"}).text
+    assert 'data-search-summary="true"' in body
+    assert 'data-id-summary="true"' not in body

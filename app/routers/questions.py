@@ -463,6 +463,24 @@ def shuffle_options(seed: int | None = None) -> dict:
     return result
 
 
+@router.get("/by-id/{identifier}")
+def get_question(identifier: str) -> dict:
+    """One question, by either identifier.
+
+    `question_id` is what this program keys on; MongoDB's `_id` is projected out of every
+    listing, so it is the one an author only sees in Atlas or Compass — which is exactly
+    when they want the question it belongs to. Both are accepted so a value pasted from
+    either place resolves, rather than the caller needing to know which kind they hold.
+
+    Not `/{identifier}` — that would shadow every named route added later under this
+    prefix, and the shadowing would only show up as a 422 on the route that lost.
+    """
+    found = questions.find_by_identifier(identifier)
+    if not found:
+        raise HTTPException(404, f"No question with identifier {identifier!r}.")
+    return found[0]
+
+
 @router.get("/answer-positions")
 def answer_positions() -> dict:
     """Where the correct answer sits across the collection.

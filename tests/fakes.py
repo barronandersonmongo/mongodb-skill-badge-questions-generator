@@ -12,6 +12,8 @@ bulk_write path breaks on pymongo's newer add_update() signature.
 import re
 from typing import Any
 
+from bson import ObjectId
+
 
 class FakeCursor:
     def __init__(self, docs: list[dict[str, Any]]):
@@ -63,7 +65,6 @@ class FakeCollection:
         self.docs: list[dict[str, Any]] = [dict(d) for d in (docs or [])]
         self.indexes: list[dict[str, Any]] = []
         self.search_indexes: list[dict[str, Any]] = []
-        self._next_id = 1
 
     # --- search indexes ---
     def list_search_indexes(self):
@@ -372,8 +373,7 @@ class FakeCollection:
                 return FakeUpdateResult(1, 1)
         if not upsert:
             return FakeUpdateResult(0, 0)
-        self.docs.append({"_id": self._next_id, **document})
-        self._next_id += 1
+        self.docs.append({"_id": ObjectId(), **document})
         return FakeUpdateResult(0, 0)
 
     def update_many(self, query: dict, update: dict) -> "FakeUpdateResult":
@@ -404,17 +404,18 @@ class FakeCollection:
         # Operator expressions in the filter (e.g. {"$ne": True}) are match
         # conditions, not values to store — mirror MongoDB and drop them.
         seed = {k: v for k, v in query.items() if not isinstance(v, dict)}
-        doc = {"_id": self._next_id, **seed}
-        self._next_id += 1
+        doc = {"_id": ObjectId(), **seed}
         self._apply_update(doc, update, inserting=True)
         self.docs.append(doc)
         return doc["_id"]
 
+    # `_id` is an ObjectId, as MongoDB assigns — not a counter. A fake handing out
+    # integers let lookup-by-ObjectId pass its tests while failing against a real
+    # collection, because str(1) is not a parseable ObjectId.
     def insert_many(self, docs: list[dict]) -> list[Any]:
         ids = []
         for doc in docs:
-            stored = {"_id": self._next_id, **doc}
-            self._next_id += 1
+            stored = {"_id": ObjectId(), **doc}
             self.docs.append(stored)
             ids.append(stored["_id"])
         return ids

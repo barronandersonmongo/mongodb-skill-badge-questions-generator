@@ -526,6 +526,25 @@ is filtered by, so a hallucinated slug would make a question unfindable under an
 while looking correctly tagged. Unknown slugs are dropped; a question left with none falls
 back to the badge the run was scoped to.
 
+### Identifiers
+
+A question has two, for different reasons. `question_id` is what this program keys on and
+what every endpoint takes; MongoDB's `_id` is projected out of every listing, so it is the
+one an author only ever sees in Atlas or Compass — which is exactly when they want the
+question it belongs to.
+
+So both are accepted everywhere a question is looked up: `question_id` is shown on the card
+(shortened, click to copy), and the search box takes either. A query is treated as an
+identifier by **shape** — 32 hex characters for a `question_id`, 24 for an ObjectId,
+neither of which anyone types as a search — and looked up exactly rather than embedded,
+because a hex string has no meaning to embed and a semantic search for one returns whatever
+happens to be nearest, which reads as "that question does not exist". An identifier that
+matches nothing says so, and says it was understood as an identifier.
+
+The API route is `/api/questions/by-id/{identifier}` rather than `/{identifier}`: the
+latter would capture every named route added under the prefix later, and the collision
+would surface as a puzzling 422 on whichever route lost.
+
 ### No review workflow
 
 A question that passes the format check is stored and usable. There is no draft state, no
@@ -664,6 +683,7 @@ Questions, under `/api/questions`:
 | `POST` | `/generate/dismiss` | Clear the last run's notice |
 | `GET` | `` | List / export, filtered by `skill_badge` and `category` |
 | `GET` | `/count?skill_badge=&category=` | How many match — polled during a run |
+| `GET` | `/by-id/{identifier}` | One question, by `question_id` or ObjectId |
 | `GET` | `/search?q=&limit=` | Questions ranked by similarity |
 | `GET` | `/coverage` | Per-badge counts and sections left |
 | `GET` | `/runs`, `/runs/{id}` | Run history, and one run in full |

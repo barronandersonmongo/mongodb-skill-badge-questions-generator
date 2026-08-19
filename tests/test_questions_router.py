@@ -992,3 +992,45 @@ def test_the_count_honours_the_screens_filters(client, fake_questions):
         make("Two?", skill_badges=["aggregation"]),
     ])
     assert client.get(API + "/count", params={"skill_badge": "atlas-search"}).json() == {"count": 1}
+
+
+def test_a_question_is_fetchable_by_either_identifier(client, fake_questions):
+    """
+    Intent: The program keys on question_id and Atlas shows ObjectId, so a caller holding one
+        should not have to know which it is. An endpoint accepting only one of them makes the
+        identifier on screen and the identifier in Atlas do different things.
+    Success: Both identifiers fetch the same question.
+    Feature: Question lookup — reachable by either identifier over the API.
+    """
+    question_id = questions.insert_questions([make("One?")])["question_ids"][0]
+    object_id = str(fake_questions.docs[0]["_id"])
+    by_question_id = client.get(f"{API}/by-id/{question_id}")
+    by_object_id = client.get(f"{API}/by-id/{object_id}")
+    assert by_question_id.status_code == 200 and by_object_id.status_code == 200
+    assert by_question_id.json()["stem"] == by_object_id.json()["stem"] == "One?"
+
+
+def test_an_unknown_identifier_is_a_404(client, fake_questions):
+    """
+    Intent: A 200 with an empty body would read as "this question has no content" rather than
+        "there is no such question", and a link to a deleted question is a normal thing to
+        follow.
+    Success: An unknown identifier is a 404.
+    Feature: Question lookup — an unknown identifier is reported as missing.
+    """
+    assert client.get(f"{API}/by-id/{'a' * 32}").status_code == 404
+
+
+def test_the_lookup_route_does_not_shadow_the_named_ones(
+    client, fake_questions, fake_collection, fake_doc_chunks
+):
+    """
+    Intent: Mounting the lookup at /{identifier} would capture every named route added under
+        this prefix later — and the shadowing would surface as a puzzling 422 on whichever
+        route lost, not as an obvious conflict.
+    Success: The named routes still answer with the lookup route registered.
+    Feature: Question lookup — the route does not collide with named endpoints.
+    """
+    assert client.get(API + "/coverage").status_code == 200
+    assert client.get(API + "/answer-positions").status_code == 200
+    assert client.get(API + "/count").status_code == 200

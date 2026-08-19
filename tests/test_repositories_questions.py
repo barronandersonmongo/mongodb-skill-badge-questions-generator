@@ -521,3 +521,65 @@ def test_stripping_the_legacy_field_twice_changes_nothing(fake_questions):
     fake_questions.docs.append({"question_id": "a", "status": "draft"})
     questions.drop_status_field()
     assert questions.drop_status_field() == 0
+
+
+# --- finding one question by its identifier ---
+
+
+def test_a_question_is_findable_by_the_id_the_program_keys_on(fake_questions):
+    """
+    Intent: An author refers to one question in a message or a ticket by its identifier, and
+        needs to get back to it afterwards. `question_id` is what every endpoint takes, so it
+        is the one that has to resolve.
+    Success: Looking up a question_id returns that question.
+    Feature: Question lookup — by question_id.
+    """
+    ids = questions.insert_questions([make("One?"), make("Two?")])["question_ids"]
+    found = questions.find_by_identifier(ids[0])
+    assert len(found) == 1 and found[0]["question_id"] == ids[0]
+
+
+def test_a_question_is_findable_by_the_id_atlas_shows(fake_questions):
+    """
+    Intent: MongoDB's `_id` is projected out of every listing, so it is the identifier an
+        author only ever sees in Atlas or Compass — which is exactly the moment they want the
+        question it belongs to. Accepting only the program's own id would mean knowing which
+        kind of identifier you are holding before you can use it.
+    Success: Looking up a document's ObjectId returns that question.
+    Feature: Question lookup — by MongoDB's ObjectId.
+    """
+    questions.insert_questions([make("One?")])
+    object_id = fake_questions.docs[0]["_id"]
+    found = questions.find_by_identifier(str(object_id))
+    assert len(found) == 1 and found[0]["stem"] == "One?"
+
+
+def test_a_malformed_identifier_finds_nothing_rather_than_raising(fake_questions):
+    """
+    Intent: A search box is exactly where malformed input arrives — a truncated paste, a
+        stray quote. Constructing an ObjectId from a non-ObjectId raises, and a 500 on a
+        mistyped search is a worse answer than "nothing found".
+    Success: An unparseable identifier returns no results and does not raise.
+    Feature: Question lookup — malformed identifiers are handled.
+    """
+    assert questions.find_by_identifier("not-an-id") == []
+    assert questions.find_by_identifier("") == []
+    assert questions.find_by_identifier("zzzzzzzzzzzzzzzzzzzzzzzz") == []
+
+
+def test_an_identifier_is_told_apart_from_a_search_phrase(fake_questions):
+    """
+    Intent: One box serves both purposes — paste an id to find one question, type a phrase to
+        find several — because making the reader pick the right box first is friction for no
+        gain. Both identifiers are hex of a fixed length, and neither is anything a person
+        would type as a search.
+    Success: Identifier-shaped values are recognised and ordinary phrases are not.
+    Feature: Question lookup — identifiers are recognised by shape.
+    """
+    assert questions.looks_like_an_identifier("a" * 32) is True
+    assert questions.looks_like_an_identifier("a" * 24) is True
+    assert questions.looks_like_an_identifier("joining collections") is False
+    assert questions.looks_like_an_identifier("a" * 20) is False
+    # Hex-looking but the wrong length: a partial paste must not be treated as an id, or
+    # the reader gets "no such question" for something that was never a question id.
+    assert questions.looks_like_an_identifier("abc123") is False

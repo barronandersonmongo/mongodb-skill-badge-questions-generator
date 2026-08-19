@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from bson import ObjectId
+from bson.errors import InvalidId
 from pymongo import ASCENDING, DESCENDING
 from pymongo.collection import Collection
 
@@ -274,6 +276,48 @@ def delete_questions(question_ids: list[str]) -> int:
     return (
         collection().delete_many({"question_id": {"$in": question_ids}}).deleted_count
     )
+
+
+def find_by_identifier(value: str) -> list[dict[str, Any]]:
+    """One question looked up by either identifier, or none.
+
+    Two exist, for different reasons. `question_id` is what this program keys on and
+    what every endpoint takes; `_id` is MongoDB's, projected out of every listing and
+    therefore the one an author only ever sees in Atlas or Compass — which is exactly
+    when they want to find the question it belongs to.
+
+    Accepting both means a value pasted from either place works, rather than the reader
+    having to know which kind of identifier they are holding. Returned as a list so a
+    caller can treat it like any other result set.
+    """
+    value = (value or "").strip()
+    if not value:
+        return []
+
+    found = collection().find_one({"question_id": value}, LIST_PROJECTION)
+    if found:
+        return [found]
+
+    # An ObjectId is 24 hex characters. Constructing one from anything else raises, and
+    # a search box is exactly where malformed input arrives, so this never guesses.
+    try:
+        found = collection().find_one({"_id": ObjectId(value)}, LIST_PROJECTION)
+    except (InvalidId, TypeError):
+        return []
+    return [found] if found else []
+
+
+def looks_like_an_identifier(value: str) -> bool:
+    """Whether this query is an identifier rather than words to search for.
+
+    Checked by shape so the search box can serve both purposes: an author pastes an id
+    to find one question and types a phrase to find several, and having to choose the
+    right box first is friction for no gain. Both identifiers are hex — 32 characters
+    for a `question_id`, 24 for an ObjectId — and neither is anything a person would
+    type as a search.
+    """
+    value = (value or "").strip()
+    return len(value) in (24, 32) and all(c in "0123456789abcdefABCDEF" for c in value)
 
 
 def count_questions(skill_badge: str | None = None, category: str | None = None) -> int:

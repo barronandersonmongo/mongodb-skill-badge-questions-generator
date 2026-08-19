@@ -285,7 +285,7 @@
     <form method="get" action="/" class="d-flex gap-1" data-search-form="true">
       <input class="form-control form-control-sm" type="search" id="search" name="q"
              value="{{ query }}" style="min-width: 22rem;"
-             placeholder="e.g. joining data from another collection">
+             placeholder="e.g. joining data from another collection — or paste an identifier">
       {% if badge_filter %}<input type="hidden" name="skill_badge" value="{{ badge_filter }}">{% endif %}
       {% if category_filter %}<input type="hidden" name="category" value="{{ category_filter }}">{% endif %}
       <button class="btn btn-sm btn-outline-primary" type="submit">Search</button>
@@ -318,13 +318,25 @@
   </div>
 </div>
 
-{% if search_error %}
+{% if search_error == "no-such-identifier" %}
+<div class="alert alert-warning" data-no-such-id="true">
+  <strong>No question with that identifier.</strong>
+  <span class="font-monospace">{{ query }}</span> looks like an identifier, so it was
+  looked up exactly rather than searched for. Either it has been deleted, or it belongs
+  to a different collection.
+</div>
+{% elif search_error %}
 <div class="alert alert-warning" data-search-error="true">
   <strong>Vector search is unavailable.</strong>
   A newly created index takes a few minutes to build and becomes queryable on its
   own; until then this search cannot run.
   <div class="small font-monospace mt-1">{{ search_error }}</div>
 </div>
+{% elif query and is_identifier_query %}
+<p class="text-body-secondary small mb-2" data-id-summary="true">
+  Looked up by identifier <span class="font-monospace">{{ query }}</span>, not searched
+  for.
+</p>
 {% elif query %}
 <p class="text-body-secondary small mb-2" data-search-summary="true">
   Ranked by similarity to <strong>{{ query }}</strong> — closest first. Filters below
@@ -393,6 +405,15 @@
                   title="Topic area: {{ category }}"
                   data-category-tag="{{ category }}">{{ category }}</span>
             {% endfor %}
+            {# The identifier this program keys on, and what every endpoint takes. Shown
+               because it is how one question gets referred to in a message or a ticket,
+               and because pasting it back into the search box finds it again. Click to
+               copy: 32 hex characters is not something anyone should retype. #}
+            <button type="button" class="badge text-body-secondary bg-body-secondary border font-monospace ms-1"
+                    data-copy-id="{{ question.question_id }}"
+                    title="{{ question.question_id }} — click to copy">
+              {{ question.question_id[:8] }}
+            </button>
             {% if question.created_at %}
             {# When it was written. The list is newest first, so this is what tells an
                author which questions came out of the run they just watched — and, once a
@@ -1016,6 +1037,24 @@ stopButton.addEventListener("click", async () => {
     stopButton.disabled = false;
     stopButton.textContent = "Stop after this page";
   }
+});
+
+// Copying an identifier, so it can be pasted into a message, a ticket, or back into the
+// search box. The chip briefly says so rather than opening a dialog for a trivial action.
+document.querySelectorAll("[data-copy-id]").forEach((chip) => {
+  chip.addEventListener("click", async () => {
+    const id = chip.dataset.copyId;
+    const shown = chip.textContent;
+    try {
+      await navigator.clipboard.writeText(id);
+      chip.textContent = "copied";
+    } catch {
+      // Clipboard access is refused outside a secure context; selecting the full id is
+      // the fallback, so it can still be copied by hand.
+      chip.textContent = id;
+    }
+    setTimeout(() => { chip.textContent = shown; }, 1200);
+  });
 });
 
 document.getElementById("start-run").addEventListener("click", async () => {
