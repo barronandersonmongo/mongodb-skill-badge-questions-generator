@@ -965,3 +965,30 @@ def test_a_multi_badge_run_says_which_badge_it_is_on(client, monkeypatch, fake_q
     state = client.get(API + "/generate/status").json()
     assert state["progress"]["badge_count"] == 3
     assert state["progress"]["badge_index"] == 3
+
+
+def test_the_question_count_is_cheap_to_poll(client, fake_questions):
+    """
+    Intent: The screen polls this every couple of seconds while a run is going, and the answer
+        is usually "no change". Fetching every question to discover that would make watching a
+        run more expensive than the run.
+    Success: The endpoint returns just a count.
+    Feature: Question review screen — a countable collection.
+    """
+    questions.insert_questions([make("One?"), make("Two?")])
+    assert client.get(API + "/count").json() == {"count": 2}
+
+
+def test_the_count_honours_the_screens_filters(client, fake_questions):
+    """
+    Intent: The screen polls the count for the view it is showing. An unfiltered count would
+        reload a badge-filtered list every time any badge gained a question, which is most of
+        the time during a multi-badge run.
+    Success: Filtering by badge narrows the count.
+    Feature: Question review screen — the count matches the view.
+    """
+    questions.insert_questions([
+        make("One?", skill_badges=["atlas-search"]),
+        make("Two?", skill_badges=["aggregation"]),
+    ])
+    assert client.get(API + "/count", params={"skill_badge": "atlas-search"}).json() == {"count": 1}

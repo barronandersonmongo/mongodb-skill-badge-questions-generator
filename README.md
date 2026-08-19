@@ -647,6 +647,22 @@ parsed hostname rather than by prefix, since `https://www.mongodb.com.evil.examp
 starts with the right string and is not the right host. The check is enforced in the
 fetcher as well as the route, so a future caller cannot bypass it by forgetting.
 
+**Questions show when they were written**, from the `created_at` they have always
+carried. The list is newest first, but without a time an author cannot tell which
+questions came out of the run they just watched, or — once a prompt has changed — which
+side of that change a question is from. That comparison is the point of keeping run
+history, and it needs to be visible on the question itself.
+
+**New questions appear as they are stored.** A walk stores section by section over many
+minutes, so a list left alone goes stale while its reader watches it being filled — the
+questions exist in the database and not on the screen. While a run is going the screen
+polls `/api/questions/count` and reloads when it grows. Reloaded rather than patched in
+place, because the question card is a Jinja template and rebuilding it in JavaScript would
+be a second copy of it to keep in step. The count is scoped to the filters on screen, so a
+badge-filtered list does not reload every time some other badge gains a question, and the
+reload is skipped while a dialog is open or the tab is hidden — pulling the page out from
+under someone reading a delete confirmation is worse than a slightly stale list.
+
 **Reading a question's tags.** Three kinds of tag sit together on each question, so they
 are told apart by colour as well as by position: a solid chip for the difficulty, gold
 for the skill badges the question is filed under — the badge artwork is gold, so the

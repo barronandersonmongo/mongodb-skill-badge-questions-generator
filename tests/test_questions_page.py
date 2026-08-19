@@ -1233,3 +1233,47 @@ def test_a_citation_links_to_the_rendered_page(client, fake_collection, fake_que
     assert "/admin/docs/render?url=" in body
     # The reader still sees the canonical URL: it is what identifies the page.
     assert "https://www.mongodb.com/docs/manual/replication.md" in body
+
+
+# --- when a question was written ---
+
+
+def test_a_question_shows_when_it_was_written(client, fake_collection, fake_questions):
+    """
+    Intent: The list is newest first, but without a time an author cannot tell which questions
+        came out of the run they just watched — and once a prompt has been changed, cannot tell
+        which side of that change a question is from. That is the comparison the whole run
+        history exists to support, and it needs to be visible on the question itself.
+    Success: The question card shows its creation time.
+    Feature: Question review screen — questions show when they were written.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    assert 'data-created-at="true"' in body
+
+
+def test_the_screen_watches_for_newly_written_questions(client, fake_collection, fake_questions):
+    """
+    Intent: A walk stores questions section by section over many minutes, so a list left alone
+        goes stale while its reader watches it being filled — the questions exist in the
+        database and not on the screen.
+    Success: The page polls the count endpoint and reloads when it grows.
+    Feature: Question review screen — new questions appear as they are stored.
+    """
+    body = client.get(PAGE).text
+    assert "showNewQuestions" in body
+    assert '/count' in body
+
+
+def test_the_watch_counts_only_the_current_view(client, fake_collection, fake_questions):
+    """
+    Intent: The screen reloads when its count grows. Counting the whole collection would reload
+        a badge-filtered list whenever any other badge gained a question — during a multi-badge
+        run, constantly, and each time showing the reader the same list they already had.
+    Success: The polled count carries the screen's badge filter.
+    Feature: Question review screen — the watch matches the filtered view.
+    """
+    seed_badge()
+    seed_question()
+    body = client.get(PAGE, params={"skill_badge": "atlas-search"}).text
+    assert 'skill_badge: "atlas-search"' in body

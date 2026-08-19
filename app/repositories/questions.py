@@ -276,6 +276,20 @@ def delete_questions(question_ids: list[str]) -> int:
     )
 
 
+def count_questions(skill_badge: str | None = None, category: str | None = None) -> int:
+    """How many questions match the filters. Counted, not fetched.
+
+    Polled while a run is going to notice new questions arriving, so it must stay cheap:
+    fetching every question to learn that nothing changed is the thing this avoids.
+    """
+    query: dict[str, Any] = {}
+    if skill_badge:
+        query["skill_badges"] = skill_badge
+    if category:
+        query["categories"] = category
+    return collection().count_documents(query)
+
+
 def source_chunk_ids_for_badge(slug: str) -> set[str]:
     """Every documentation section this badge already has questions from.
 

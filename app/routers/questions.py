@@ -259,6 +259,18 @@ def get_run(run_id: str) -> dict:
     return run
 
 
+@router.get("/count")
+def question_count(skill_badge: str | None = None, category: str | None = None) -> dict:
+    """How many questions are stored. Cheap enough to poll.
+
+    The screen polls this while a run is going: a walk stores section by section over many
+    minutes, so a list left alone goes stale while its reader watches it being filled.
+    A count rather than the questions themselves, because the answer is usually "no
+    change" and fetching every question to discover that would be wasteful.
+    """
+    return {"count": questions.count_questions(skill_badge, category)}
+
+
 @router.get("/coverage")
 def coverage() -> list[dict]:
     """Per-badge question counts, plus how much documentation each badge still has.

@@ -393,6 +393,15 @@
                   title="Topic area: {{ category }}"
                   data-category-tag="{{ category }}">{{ category }}</span>
             {% endfor %}
+            {% if question.created_at %}
+            {# When it was written. The list is newest first, so this is what tells an
+               author which questions came out of the run they just watched — and, once a
+               prompt has been changed, which side of that change a question is from. #}
+            <span class="small text-body-secondary ms-1" data-created-at="true"
+                  title="{{ question.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}">
+              {{ question.created_at.strftime("%d %b %Y, %H:%M UTC") }}
+            </span>
+            {% endif %}
           </div>
           {% if question.source_urls %}
           <div class="mt-2">
@@ -769,6 +778,37 @@ function showProgress(p) {
         : "—"));
 }
 
+// A walk stores questions section by section over many minutes, so the list a reader is
+// looking at goes stale while they watch it being filled. The count is polled and the page
+// reloaded when it grows — reloaded rather than patched in JS, because the question card is
+// a Jinja template and rebuilding it here would be a second copy of it to keep in step.
+let knownQuestionCount = null;
+
+// Counted for the view on screen, not the whole collection: an unfiltered count would
+// reload a badge-filtered list whenever any other badge gained a question, which during a
+// multi-badge run is most of the time.
+const COUNT_QUERY = new URLSearchParams(
+  Object.entries({
+    skill_badge: "{{ badge_filter }}",
+    category: "{{ category_filter }}",
+  }).filter(([, value]) => value)
+).toString();
+
+async function showNewQuestions() {
+  const response = await fetch(API + "/count" + (COUNT_QUERY ? "?" + COUNT_QUERY : ""));
+  if (!response.ok) return;
+  const {count} = await response.json();
+  if (knownQuestionCount === null) {
+    knownQuestionCount = count;
+    return;
+  }
+  if (count <= knownQuestionCount) return;
+  // Not while a dialog is open or the tab is hidden: pulling the page out from under
+  // someone reading a delete confirmation is worse than a slightly stale list.
+  if (document.querySelector(".modal.show") || document.hidden) return;
+  window.location.reload();
+}
+
 async function pollStatus() {
   const response = await fetch(API + "/generate/status");
   const state = await response.json();
@@ -779,6 +819,7 @@ async function pollStatus() {
     alertBox.classList.add("d-none");
     setPanelState("info", "Writing questions — you can leave this page open and come back.");
     startPanelClock();
+    await showNewQuestions();
     setTimeout(pollStatus, 2000);
     return;
   }
