@@ -352,7 +352,58 @@
     <div class="list-group-item py-3" data-question-id="{{ question.question_id }}">
       <div class="d-flex justify-content-between align-items-start gap-3">
         <div class="flex-grow-1">
-          <div class="fw-semibold mb-2" data-stem="true">
+          {# What this question is, before what it asks: which question it is, when it
+             was written, and what it was written from. Each is labelled, because none
+             of the three says what it is on its own — a hex string, a date and a URL
+             are all unlabelled facts otherwise. They sit above the stem rather than
+             below the options because they are how an author refers to, dates and
+             checks a question, and a long question would push them out of sight. #}
+          <dl class="question-head">
+            <div>
+              {# "Question ID", not "serial number": these are random hex identifiers,
+                 not a counter, so nothing can be read from their order. #}
+              <dt>Question ID</dt>
+              <dd>
+                <button type="button" class="tag tag-meta"
+                        data-copy-id="{{ question.question_id }}"
+                        title="{{ question.question_id }} — click to copy">
+                  {{ question.question_id[:8] }}
+                </button>
+              </dd>
+            </div>
+            {% if question.created_at %}
+            <div>
+              {# The list is newest first, so this is what tells an author which
+                 questions came out of the run they just watched — and, once a prompt has
+                 been changed, which side of that change a question is from. #}
+              <dt>Generated</dt>
+              <dd>
+                <span data-created-at="true"
+                      title="{{ question.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}">
+                  {{ question.created_at.strftime("%d %b %Y, %H:%M UTC") }}
+                </span>
+              </dd>
+            </div>
+            {% endif %}
+            {% if question.source_urls %}
+            <div>
+              {# The visible text is the canonical URL, because that is what identifies
+                 the page. The link goes through our renderer: MongoDB serves these as
+                 raw Markdown, which a browser shows as unformatted text. #}
+              <dt>Source</dt>
+              <dd>
+                {% for url in question.source_urls %}
+                <a href="/admin/docs/render?url={{ url | urlencode }}"
+                   target="_blank" rel="noopener"
+                   title="Open {{ url }}, rendered"
+                   class="question-source font-monospace"
+                   data-source-url="{{ url }}">{{ url }}</a>
+                {% endfor %}
+              </dd>
+            </div>
+            {% endif %}
+          </dl>
+          <div class="question-stem" data-stem="true">
             {{ question.stem }}
             {% if question.get("score") is not none %}
             <span class="badge text-bg-info" data-score="true"
@@ -382,48 +433,15 @@
             <span class="badge text-bg-{{ difficulty_styles.get(question.difficulty, 'secondary') }}"
                   data-difficulty="true">{{ question.difficulty }}</span>
             {# Three kinds of tag sit side by side, so they are told apart by colour as
-               well as by order: a solid chip for difficulty, gold for the badges a
-               question is filed under — the badge artwork is gold, so the association
-               is already made — and green for the topic areas it exercises. The
-               title carries the same distinction in words, since colour alone is not a
-               label. Badge tags link to the badge's definition — a slug is not
-               self-explanatory, and checking what it covers should not mean hunting
-               through the admin screen for it. #}
+               well as by order: a solid chip for difficulty, the accent colour for the
+               badges a question is filed under, and a warm neutral for the topic areas
+               it exercises. The title carries the same distinction in words, since
+               colour alone is not a label. Badge tags link to the badge's definition — a
+               slug is not self-explanatory, and checking what it covers should not mean
+               hunting through the admin screen for it. #}
             {% for slug in question.skill_badges %}{{ ui.badge_tag(slug) }}{% endfor %}
             {% for category in question.categories %}{{ ui.category_tag(category) }}{% endfor %}
-            {# The identifier this program keys on, and what every endpoint takes. Shown
-               because it is how one question gets referred to in a message or a ticket,
-               and because pasting it back into the search box finds it again. Click to
-               copy: 32 hex characters is not something anyone should retype. #}
-            <button type="button" class="tag tag-meta ms-1"
-                    data-copy-id="{{ question.question_id }}"
-                    title="{{ question.question_id }} — click to copy">
-              {{ question.question_id[:8] }}
-            </button>
-            {% if question.created_at %}
-            {# When it was written. The list is newest first, so this is what tells an
-               author which questions came out of the run they just watched — and, once a
-               prompt has been changed, which side of that change a question is from. #}
-            <span class="meta ms-1" data-created-at="true"
-                  title="{{ question.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}">
-              {{ question.created_at.strftime("%d %b %Y, %H:%M UTC") }}
-            </span>
-            {% endif %}
           </div>
-          {% if question.source_urls %}
-          <div class="mt-2">
-            {# The visible text is the canonical URL, because that is what identifies
-               the page. The link goes through our renderer: MongoDB serves these as raw
-               Markdown, which a browser shows as unformatted text. #}
-            {% for url in question.source_urls %}
-            <a href="/admin/docs/render?url={{ url | urlencode }}"
-               target="_blank" rel="noopener"
-               title="Open {{ url }}, rendered"
-               class="d-block small text-truncate font-monospace"
-               data-source-url="{{ url }}" style="max-width: 32rem;">{{ url }}</a>
-            {% endfor %}
-          </div>
-          {% endif %}
         </div>
         <div class="text-end text-nowrap">
           <button class="btn btn-sm btn-outline-danger js-delete" data-delete="true"

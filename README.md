@@ -561,7 +561,10 @@ one an author only ever sees in Atlas or Compass — which is exactly when they 
 question it belongs to.
 
 So both are accepted everywhere a question is looked up: `question_id` is shown on the card
-(shortened, click to copy), and the search box takes either. A query is treated as an
+(shortened, click to copy) at the top of it, labelled, above the question's generated date
+and its source link — the three facts about a question that an author refers to, dates and
+checks it by, read before the question rather than after its options. The search box takes
+either. A query is treated as an
 identifier by **shape** — 32 hex characters for a `question_id`, 24 for an ObjectId,
 neither of which anyone types as a search — and looked up exactly rather than embedded,
 because a hex string has no meaning to embed and a semantic search for one returns whatever

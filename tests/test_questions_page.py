@@ -1343,3 +1343,57 @@ def test_a_phrase_is_still_searched_semantically(client, fake_collection, fake_q
     body = client.get(PAGE, params={"q": "stage filters documents"}).text
     assert 'data-search-summary="true"' in body
     assert 'data-id-summary="true"' not in body
+
+
+# --- a question's own facts, above the question ---
+
+
+def test_the_identifier_date_and_source_sit_above_the_stem(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Which question this is, when it was written, and what it was written from are
+        how an author refers to, dates and checks a question — they are read before the
+        question, not after it. Below the options they were also out of sight on any
+        question long enough to need scrolling.
+    Success: All three render above the stem, in that order.
+    Feature: Question review screen — a question's facts are stated before the question.
+    """
+    seed_question(source_urls=["https://www.mongodb.com/docs/manual/aggregation.md"])
+    body = client.get(PAGE).text
+    head = body.index("question-head")
+    assert head < body.index('data-stem="true"')
+    assert head < body.index("data-copy-id=") < body.index('data-created-at="true"') \
+        < body.index("data-source-url=")
+
+
+def test_each_of_those_facts_is_labelled(client, fake_collection, fake_questions):
+    """
+    Intent: A hex string, a date and a URL say nothing about what they are on their own,
+        and the identifier in particular was previously an unlabelled grey chip in a row
+        of tags — indistinguishable from a category to anyone who had not been told.
+    Success: Each of the three carries a label naming what it is.
+    Feature: Question review screen — the facts above a question are named.
+    """
+    seed_question(source_urls=["https://www.mongodb.com/docs/manual/aggregation.md"])
+    body = client.get(PAGE).text
+    head = body[body.index("question-head"):body.index('data-stem="true"')]
+    assert "<dt>Question ID</dt>" in head
+    assert "<dt>Generated</dt>" in head
+    assert "<dt>Source</dt>" in head
+
+
+def test_a_question_with_no_source_omits_the_source_row(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Questions written before citations were recorded, and any written by research
+        rather than from a stored page, have no source. An empty labelled row would state
+        a fact the program does not have.
+    Success: The source label is not rendered for a question with no source.
+    Feature: Question review screen — absent facts are omitted, not shown empty.
+    """
+    seed_question(source_urls=[])
+    body = client.get(PAGE).text
+    head = body[body.index("question-head"):body.index('data-stem="true"')]
+    assert "<dt>Source</dt>" not in head

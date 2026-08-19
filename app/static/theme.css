@@ -470,6 +470,58 @@ a:focus-visible,
   border-bottom: 1px solid var(--line-strong);
 }
 
+/* A question's own facts — which one it is, when it was written, what from — set
+   above the stem as labelled rows. The labels are in the quietest weight the
+   theme has: they exist so the values are not three unlabelled strings, and they
+   should not compete with the question itself. */
+.question-head {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  gap: 0.125rem var(--s3);
+  margin: 0 0 var(--s4);
+  padding-bottom: var(--s3);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.8125rem;
+}
+
+.question-head > div {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+.question-head dt {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding-top: 0.1875rem;
+}
+
+.question-head dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink-2);
+}
+
+/* One source per line, truncated rather than wrapped: these URLs are long, and a
+   wrapped one would outweigh the question above it. */
+.question-source {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
+.question-stem {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: var(--s3);
+}
+
 /* ---------- notices ---------- */
 
 /* Alerts were the loudest thing on every screen. They are now a tinted panel
