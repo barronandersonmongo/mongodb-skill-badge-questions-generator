@@ -366,6 +366,19 @@ The bar shows no percentage while the badge is still being resolved to its page 
 The walk genuinely does not know how much work there is yet, and inventing a number
 would be worse than admitting it — so the phase says what is happening instead.
 
+**Throughput and unit cost.** Pages per minute describes the machinery; **questions per
+minute** describes the output, and it is what an author plans a session against — "34
+badges at this rate" is only answerable from it. **Cost per question** is the other
+derived figure, and the one that makes runs comparable: total spend depends on how many
+pages were walked, so it says nothing about whether a run went well, while cost per
+question says whether a prompt or effort change paid for itself. During a run the
+running average is also the best available projection of what the rest will cost. Both
+are absent rather than zero until there is something to divide by, since a rate of zero
+reads as a fact about a slow run rather than as "nothing has finished yet".
+
+The history's figures are derived from the totals rather than averaged over runs: a
+thirty-second run must not count for as much as an hour-long one.
+
 **Cost is reported, not estimated.** Every response carries its token counts, so the
 panel adds up exactly what the run consumed and prices it: spend so far, and the
 projected total at the rate it is going. The projection is what makes stopping an
@@ -387,6 +400,24 @@ and its questions are kept, and everything after it is skipped. That is the poin
 the reason to stop a walk is to stop it spending, not to undo it. A run stopped this
 way is labelled as stopped rather than done, so it cannot be mistaken for a badge that
 ran out of material, and the pages it did not reach are still there for the next run.
+
+**Skill level.** A run can be pitched at one level, or left mixed. The scale is the one
+every question already carries — `foundational`, `intermediate`, `advanced` — so asking
+for a level and filtering for it later use the same vocabulary.
+
+Each level is *described* in the prompt rather than merely named, because "advanced" on
+its own is read as harder wording rather than harder judgement, and that produces obscure
+trivia instead of questions a senior engineer finds worth answering: foundational is
+someone a few weeks in, tested on what a feature does and when to reach for it;
+intermediate ships MongoDB in production, choosing between reasonable approaches and
+reading diagnostic output; advanced owns the deployment, and is tested on failure modes,
+interactions between features, and the reasoning behind a recommendation rather than the
+recommendation itself. A version number nobody remembers is not an advanced question.
+
+**Mixed** is an instruction, not the absence of one: left silent the model pitches a whole
+page at one level of its own choosing, so a mixed run explicitly asks for a spread. The
+level requested is recorded with the run, since comparing two runs on a badge is
+meaningless without knowing one asked for foundational and the other for advanced.
 
 **When a badge has no pages.** Two different situations, with two different answers.
 A badge that has *never* been walked and resolves to nothing has no material in the
@@ -607,7 +638,7 @@ exactly the filtered set from the same endpoint the screen reads.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/` | The main screen; `?status=`, `?skill_badge=`, `?category=` |
-| `POST` | `/api/questions/generate` | Start a walk: `skill_badges`, `max_pages`, `questions_per_page` |
+| `POST` | `/api/questions/generate` | Start a walk: `skill_badges`, `max_pages`, `questions_per_page`, `difficulty` |
 | `GET` | `/api/questions/generate/status` | Poll a run — phase, pages, cost, page in flight |
 | `POST` | `/api/questions/generate/stop` | Stop the walk after the page it is on |
 | `GET` | `/api/questions/coverage` | Per-badge question counts and pages left to walk |
