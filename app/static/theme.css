@@ -536,6 +536,15 @@ a:focus-visible,
 
 .copy-id:hover { color: var(--forest); text-decoration: underline; }
 
+/* An identifier in the duplicate report. Same monospace as the one on a question,
+   but a link — it goes somewhere, and it should not be mistaken for the plain one. */
+.dupe-id {
+  font-size: 0.75rem;
+  color: var(--ink-3);
+}
+
+.dupe-id:hover { color: var(--forest); }
+
 .question-stem {
   font-size: 1rem;
   font-weight: 600;

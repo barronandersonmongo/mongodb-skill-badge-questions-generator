@@ -6,6 +6,18 @@
 {% block content %}
 {% import "_ui.html" as ui %}
 
+{# A question named by its identifier, linking to it. A stem alone cannot be checked
+   — the options, the badges and the source are what decide whether two questions are
+   really the same — and the search box takes an identifier, so that is the address.
+   Opened in a new tab: this report is not reproducible once the page is left, and
+   nothing on it survives a navigation. #}
+{% macro question_link(question_id) %}
+<a class="dupe-id font-monospace" href="/?q={{ question_id }}" target="_blank"
+   rel="noopener" title="{{ question_id }} — open this question in a new tab"
+   data-question-link="{{ question_id }}">{{ question_id[:8] }}</a>
+{% endmacro %}
+
+
 {% call ui.page_header(
     "Questions",
     "Review what has been written, or generate more. A run is scoped to the skill "
@@ -233,8 +245,14 @@
                  data-dupe-id="{{ pair.drop }}" checked>
           <span>
             <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
-            <span class="d-block">Delete: <span class="fst-italic">{{ pair.drop_stem }}</span></span>
-            <span class="d-block text-body-secondary">Keep: <span class="fst-italic">{{ pair.keep_stem }}</span></span>
+            <span class="d-block">
+              Delete: {{ question_link(pair.drop) }}
+              <span class="fst-italic">{{ pair.drop_stem }}</span>
+            </span>
+            <span class="d-block text-body-secondary">
+              Keep: {{ question_link(pair.keep) }}
+              <span class="fst-italic">{{ pair.keep_stem }}</span>
+            </span>
           </span>
         </label>
       </li>
@@ -254,8 +272,8 @@
     <ul class="small mb-0 mt-2">
       {% for pair in last_result.below_threshold %}
       <li>
-        <span class="fst-italic">{{ pair.drop_stem }}</span>
-        vs <span class="fst-italic">{{ pair.keep_stem }}</span>
+        {{ question_link(pair.drop) }} <span class="fst-italic">{{ pair.drop_stem }}</span>
+        vs {{ question_link(pair.keep) }} <span class="fst-italic">{{ pair.keep_stem }}</span>
         <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
       </li>
       {% endfor %}

@@ -1411,3 +1411,79 @@ def test_the_identifier_is_not_rendered_as_a_chip(client, fake_collection, fake_
     body = client.get(PAGE).text
     element = body[body.rindex("<button", 0, body.index("data-copy-id=")):]
     assert "tag" not in element[: element.index(">")]
+
+
+# --- checking a pair in the duplicate report ---
+
+
+def sweep_result() -> dict:
+    """A finished sweep with one flagged pair and one below the threshold."""
+    return {
+        "source": "question-duplicate-sweep",
+        "compared": 2,
+        "threshold": 0.85,
+        "flagged": [
+            {"keep": "k" * 32, "keep_stem": "The one kept?", "drop": "d" * 32,
+             "drop_stem": "The one to go?", "rerank_score": 0.98},
+        ],
+        "below_threshold": [
+            {"keep": "y" * 32, "keep_stem": "A survivor?", "drop": "z" * 32,
+             "drop_stem": "A suspect?", "rerank_score": 0.61},
+        ],
+        "errors": [],
+    }
+
+
+def test_each_question_in_a_pair_is_named_by_its_identifier(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: The report asks an operator to delete one of two questions on the strength of two
+        stems. Stems are the part most alike in a duplicate pair — that is why they were
+        flagged — so naming which question is which is what makes the decision auditable, and
+        what lets it be discussed with anyone else.
+    Success: Both questions in a flagged pair, and both in a pair below the threshold, are
+        shown with their identifier.
+    Feature: Question duplicate sweep — pairs name the questions they are about.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    for question_id in ("k" * 32, "d" * 32, "y" * 32, "z" * 32):
+        assert 'data-question-link="' + question_id + '"' in body
+
+
+def test_an_identifier_in_the_report_opens_that_question(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: A stem is not enough to judge whether two questions are really the same — the
+        options, the badges and the source are what decide it. Going and looking must not
+        mean copying a hex string into the search box by hand.
+    Success: Each identifier is a link to that question, opened in a new tab.
+    Feature: Question duplicate sweep — a pair's questions are one click away.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    link = body[body.index('data-question-link="' + "d" * 32) - 300:]
+    link = link[link.rindex("<a", 0, link.index("data-question-link")):]
+    link = link[: link.index(">")]
+    assert 'href="/?q=' + "d" * 32 + '"' in link
+    assert 'target="_blank"' in link
+
+
+def test_opening_a_pairs_question_cannot_lose_the_report(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: A sweep's report exists only in the run state of the page that is showing it —
+        leaving the page and coming back does not bring it back, and re-running the sweep is
+        minutes of round trips. Navigating away from it in the same tab would throw away the
+        work it took to produce.
+    Success: Every link out of the report opens in a new tab.
+    Feature: Question duplicate sweep — checking a question does not discard the report.
+    """
+    api_module._run_state["last_result"] = sweep_result()
+    body = client.get(PAGE).text
+    report = body[body.index('data-sweep-flagged="true"'):body.index("delete-dupes-btn")]
+    for fragment in report.split("<a ")[1:]:
+        assert 'target="_blank"' in fragment[: fragment.index(">")]
