@@ -335,6 +335,12 @@ question at all. Packing neighbours to a floor and a ceiling of 1,500/8,000 give
 ceiling, 3.8% under 500. Enough material to write several distinct questions from, small
 enough that no single call is expensive.
 
+**What it actually produced**, on the live corpus on 2026-08-19: 7,158 pages became
+**27,399 sections** — median 2,026 characters, p90 6,683, nothing over the ceiling, 5.0%
+under 500. Of those, 8,965 (33%) are under reference paths and excluded from walks,
+leaving **18,434 sections** to write from, which is within a few of the 18,421 the
+simulation predicted from the non-reference pages.
+
 Three passes, in order: cut at headings to `chunk_heading_depth` (3); cut anything still
 over the ceiling on blank lines, and bluntly if a single paragraph is still too big —
 needed because a handful of sections run to hundreds of kilobytes where the heading
@@ -351,7 +357,7 @@ Search > Filtering > Limitations".
 **Chunks are derived, not crawled.** They live in their own collection, rebuilt from
 stored pages by **Re-chunk** on the corpus screen. The band is a judgement that will want
 re-tuning against real question quality, and trying a different one should cost seconds
-rather than a twelve-minute crawl and another round of CloudFront refusals. Chunk ids key
+rather than an hour-long crawl and another round of CloudFront refusals. Chunk ids key
 on the page URL and position, so a rebuild of an unchanged page produces the same ids and
 questions written from it stay attributable. Chunks are stamped with the refresh that
 wrote them and swept the same way pages are — a chunk outliving its page is invisible and
@@ -777,14 +783,21 @@ server's `search-knowledge` answers a query with its best few chunks and cannot 
 asked for everything, which makes it the right tool at authoring time and the wrong
 one for building a cache.
 
-**Refresh documentation** replaces the corpus with what MongoDB publishes now — about
-**7,000 pages** (~72 MB), roughly twelve minutes.
+**Refresh documentation** replaces the corpus with what MongoDB publishes now, and
+chunks each batch as it lands — one action, not two. Measured on 2026-08-19:
+**7,158 pages** (~75 MB) becoming **27,399 sections**, in **71 minutes**.
+
+That is far longer than fetching 7,000 pages should take, and most of it is spent
+waiting rather than transferring: the docs are behind CloudFront, which refuses a crawl
+that asks for too much, and each refusal costs a growing back-off. It has not been
+optimised because it does not need to be — the corpus is expected to be refreshed about
+twice a year, so an hour is cheap and being politely slow is what keeps the crawl from
+being blocked outright.
 
 **Fill gaps** fetches only pages the corpus does not already have, and removes nothing.
 This is the recovery path: the docs are served through CloudFront, which starts answering
 **403** when a crawl asks for too much too fast, and re-crawling seven thousand pages to
-recover the few hundred that were refused wastes twelve minutes and invites another
-block.
+recover the few hundred that were refused wastes an hour and invites another block.
 
 Being refused is handled rather than merely reported:
 
