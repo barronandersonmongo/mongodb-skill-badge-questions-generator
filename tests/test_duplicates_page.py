@@ -64,6 +64,20 @@ def test_sweep_errors_are_surfaced(client):
     assert 'data-sweep-errors="true"' in body
     assert "VOYAGE_API_KEY" in body
 
+def test_the_screen_offers_one_duplicate_control(client):
+    """
+    Intent: Replaces a test requiring both a sweep button and a dry-run button. Two controls
+        where one is the same thing but irreversible made the operator choose a mode before
+        seeing the collection, and since reporting is strictly more informative nobody should
+        ever have pressed the other first.
+    Success: The screen offers a single find-duplicates control and no dry-run button.
+    Feature: Question duplicate sweep — one control, reachable from the main screen.
+    """
+    body = client.get(PAGE).text
+    assert 'id="sweep-btn"' in body
+    assert 'id="sweep-dry-run-btn"' not in body
+
+
 def test_flagged_pairs_are_listed_for_review_with_their_scores(client):
     """
     Intent: Replaces a test reporting what a sweep had already deleted. The operator is now

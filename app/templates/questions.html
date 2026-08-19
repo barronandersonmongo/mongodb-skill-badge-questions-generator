@@ -49,12 +49,6 @@ per_page={{ pagination.per_page }}&
      href="{{ api }}?{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
     Export JSON
   </a>
-  {# Placed apart from the four above, and coloured for what it leads to: the other
-     actions only read or add, while this one leads to a screen that proposes
-     deletions. #}
-  <a class="btn btn-outline-danger" id="sweep-btn" href="/duplicates">
-    Find duplicates
-  </a>
 {% endcall %}
 
 <div id="run-alert" class="alert d-none" role="status"></div>
