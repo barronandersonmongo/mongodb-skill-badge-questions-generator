@@ -127,7 +127,9 @@
       </thead>
       <tbody>
         {% for badge in badges %}
-        <tr data-slug="{{ badge.slug }}">
+        {# The id is the link target for a badge tag on a question: following one should
+           land on the badge's own row rather than the top of a 34-row table. #}
+        <tr id="badge-{{ badge.slug }}" data-slug="{{ badge.slug }}">
           <td>
             <div class="d-flex align-items-start gap-3">
             {% if badge.image_stored %}

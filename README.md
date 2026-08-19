@@ -529,6 +529,20 @@ dropped, and a question the model left untagged is attributed to the badges the
 run was scoped to. `skill_badges` is what the collection is filtered by, so a
 wrong value there would make a question unfindable.
 
+**Reading a question's tags.** Three kinds of tag sit together on each question, so they
+are told apart by colour as well as by position: a solid chip for the difficulty, blue
+for the skill badges the question is filed under, green for the topic areas it
+exercises. Each also says its kind in its title text, because colour alone is not a
+label — it fails for anyone who cannot separate the two hues, and it fails in a
+screenshot.
+
+Badge tags are links to that badge's row on `/admin/skill-badges`. A slug is not
+self-explanatory — `secure-mongodb-self-managed-authn-authz` does not say what it covers
+— and checking should be one click rather than a hunt through a 34-row table for a row
+whose name differs from its slug. Topic areas are deliberately not links: they are
+free-text labels with no definition anywhere, and linking one would promise a page that
+does not exist.
+
 **No review workflow.** A question that passes the format check is stored and
 usable — there is no draft state, no approve step and no reject step. At thousands of
 questions nobody works a queue of drafts, so the gate was a bottleneck rather than a

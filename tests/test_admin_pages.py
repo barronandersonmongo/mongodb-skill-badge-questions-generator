@@ -729,3 +729,18 @@ def test_a_badge_run_reports_when_it_started_and_finished(client, fake_collectio
     state = client.get("/api/admin/skill-badges/discover/status").json()
     assert state["finished_at"] >= state["started_at"]
     assert state["running"] is False
+
+
+def test_each_badge_row_can_be_linked_to_directly(client, fake_collection):
+    """
+    Intent: A question's badge tag links to that badge's definition. Landing at the top of a
+        34-row table leaves the reader to find the row themselves, which is the work the link
+        was supposed to save.
+    Success: Each badge row carries an id derived from its slug.
+    Feature: Badge review screen — a badge row is directly linkable.
+    """
+    fake_collection.docs.append(
+        {"slug": "atlas-search", "name": "Atlas Search", "status": "approved"}
+    )
+    body = client.get("/admin/skill-badges").text
+    assert 'id="badge-atlas-search"' in body

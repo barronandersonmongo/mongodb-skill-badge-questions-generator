@@ -1156,3 +1156,65 @@ def test_a_finished_run_reports_its_unit_cost_and_rate(client, fake_collection, 
     body = client.get(PAGE).text
     assert "0.0204" in body and "per question" in body
     assert "2.5" in body and "per minute" in body
+
+
+# --- telling the tags apart ---
+
+
+def test_badge_and_category_tags_are_coloured_differently(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Three kinds of tag sit side by side on a question — difficulty, the badges it is
+        filed under, and the topic areas it exercises. Rendered identically they read as one
+        undifferentiated row of chips, and the reader has to know the order to tell which is
+        which.
+    Success: Badge tags and category tags carry different colour classes, and neither matches
+        the other.
+    Feature: Question review screen — tag kinds are visually distinct.
+    """
+    seed_question(skill_badges=["atlas-search"], categories=["search"])
+    body = client.get(PAGE).text
+    assert "bg-primary-subtle" in body
+    assert "bg-success-subtle" in body
+
+
+def test_a_tags_kind_is_also_stated_in_words(client, fake_collection, fake_questions):
+    """
+    Intent: Colour alone is not a label — it fails for anyone who cannot distinguish the two
+        hues, and it fails in a screenshot pasted into a document. The distinction has to exist
+        in text as well as in colour.
+    Success: Each tag says what kind of tag it is.
+    Feature: Question review screen — tag kinds are named, not only coloured.
+    """
+    seed_question(skill_badges=["atlas-search"], categories=["search"])
+    body = client.get(PAGE).text
+    assert "Skill badge: atlas-search" in body
+    assert "Topic area: search" in body
+
+
+def test_a_badge_tag_links_to_the_badge_definition(client, fake_collection, fake_questions):
+    """
+    Intent: A slug is not self-explanatory — "secure-mongodb-self-managed-authn-authz" does not
+        say what it covers. Checking should be one click, not a hunt through a 34-row admin
+        table for a row whose name differs from its slug.
+    Success: A badge tag is a link to that badge's row on the badge screen.
+    Feature: Question review screen — badge tags link to their definitions.
+    """
+    seed_question(skill_badges=["atlas-search"])
+    body = client.get(PAGE).text
+    assert '/admin/skill-badges#badge-atlas-search' in body
+
+
+def test_category_tags_are_not_links(client, fake_collection, fake_questions):
+    """
+    Intent: A topic area is a free-text label with no definition anywhere, so linking one would
+        promise a page that does not exist. Only the tags that lead somewhere should look like
+        they do.
+    Success: A category tag is not rendered as an anchor.
+    Feature: Question review screen — only badge tags are links.
+    """
+    seed_question(skill_badges=["atlas-search"], categories=["search"])
+    body = client.get(PAGE).text
+    category_tag = body[body.index('data-category-tag="search"') - 260:]
+    assert "<a" not in category_tag[: category_tag.index("data-category-tag") + 30]
