@@ -626,88 +626,6 @@ def test_a_search_can_be_cleared(client, fake_collection, fake_questions):
     assert 'data-clear-search="true"' in body
 
 
-def test_the_screen_offers_the_duplicate_sweep(client, fake_collection, fake_questions):
-    """
-    Intent: The sweep is an on-demand action, so it needs a control. Without one it exists
-        only as an API call and would never be run.
-    Success: The page offers sweep and dry-run buttons.
-    Feature: Question duplicate sweep — reachable from the main screen.
-    """
-    body = client.get(PAGE).text
-    assert 'id="sweep-btn"' in body
-    assert 'id="sweep-dry-run-btn"' in body
-
-
-def test_sweep_results_are_reported_with_scores(client, fake_collection, fake_questions):
-    """
-    Intent: A sweep deletes questions with no judge behind it, so what it did and how sure
-        it was must both be visible — otherwise a wrong threshold is invisible until an
-        author notices something missing.
-    Success: The page reports deleted pairs and remaining suspects with their rerank scores.
-    Feature: Question duplicate sweep — outcomes are reported on screen.
-    """
-    api_module._run_state["last_result"] = {
-        "source": "question-duplicate-sweep",
-        "compared": 2,
-        "dry_run": False,
-        "deleted": [
-            {
-                "keep": "k1",
-                "keep_stem": "The one kept?",
-                "drop": "d1",
-                "drop_stem": "The one deleted?",
-                "vector_score": 0.91,
-                "rerank_score": 0.98,
-            }
-        ],
-        "possible_duplicates": [
-            {
-                "keep": "k2",
-                "keep_stem": "A survivor?",
-                "drop": "d2",
-                "drop_stem": "A suspect?",
-                "vector_score": 0.80,
-                "rerank_score": 0.61,
-            }
-        ],
-        "errors": [],
-    }
-    body = client.get(PAGE).text
-    assert 'data-sweep-deleted="true"' in body
-    assert "0.98" in body
-    assert 'data-sweep-possible="true"' in body
-    assert "0.61" in body
-
-
-def test_a_dry_run_is_labelled_as_one(client, fake_collection, fake_questions):
-    """
-    Intent: A dry run and a real sweep report the same pairs. If the screen did not
-        distinguish them, an author could believe duplicates were removed when nothing was.
-    Success: A dry-run result is labelled, and says nothing was deleted.
-    Feature: Question duplicate sweep — a dry run is visibly a dry run.
-    """
-    api_module._run_state["last_result"] = {
-        "source": "question-duplicate-sweep",
-        "compared": 1,
-        "dry_run": True,
-        "deleted": [],
-        "possible_duplicates": [
-            {
-                "keep": "k",
-                "keep_stem": "Kept?",
-                "drop": "d",
-                "drop_stem": "Would go?",
-                "vector_score": 0.9,
-                "rerank_score": 0.97,
-                "would_delete": True,
-            }
-        ],
-        "errors": [],
-    }
-    body = client.get(PAGE).text
-    assert 'data-sweep-dry-run="true"' in body
-
-
 def test_sweep_errors_are_surfaced(client, fake_collection, fake_questions):
     """
     Intent: A sweep that could not rerank part of the collection has not cleared it. Silence
@@ -1052,3 +970,99 @@ def test_the_delete_dialog_shows_the_question_it_will_delete(
     seed_question("Which stage filters documents?")
     body = client.get(PAGE).text
     assert 'data-stem="Which stage filters documents?"' in body
+
+
+# --- acting on a duplicate report ---
+
+
+def test_the_screen_offers_one_duplicate_control(client, fake_collection, fake_questions):
+    """
+    Intent: Replaces a test requiring both a sweep button and a dry-run button. Two controls
+        where one is the same thing but irreversible made the operator choose a mode before
+        seeing the collection, and since reporting is strictly more informative nobody should
+        ever have pressed the other first.
+    Success: The screen offers a single find-duplicates control and no dry-run button.
+    Feature: Question duplicate sweep — one control, reachable from the main screen.
+    """
+    body = client.get(PAGE).text
+    assert 'id="sweep-btn"' in body
+    assert 'id="sweep-dry-run-btn"' not in body
+
+
+def test_flagged_pairs_are_listed_for_review_with_their_scores(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Replaces a test reporting what a sweep had already deleted. The operator is now
+        being asked to decide, so both questions in a pair and the score behind the flag have
+        to be on screen — a list that only named the loser would be a decision taken on their
+        behalf.
+    Success: Each flagged pair shows the question to delete, the one to keep, and the score.
+    Feature: Question duplicate sweep — the report is reviewable on screen.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "question-duplicate-sweep",
+        "compared": 2,
+        "threshold": 0.85,
+        "flagged": [
+            {"keep": "k1", "keep_stem": "The one kept?", "drop": "d1",
+             "drop_stem": "The one to go?", "rerank_score": 0.98},
+        ],
+        "below_threshold": [
+            {"keep": "k2", "keep_stem": "A survivor?", "drop": "d2",
+             "drop_stem": "A suspect?", "rerank_score": 0.61},
+        ],
+        "errors": [],
+    }
+    body = client.get(PAGE).text
+    assert 'data-sweep-flagged="true"' in body
+    assert "The one to go?" in body and "The one kept?" in body
+    assert "0.980" in body
+    assert 'data-sweep-below="true"' in body and "0.610" in body
+
+
+def test_a_flagged_pair_can_be_left_alone(client, fake_collection, fake_questions):
+    """
+    Intent: The threshold is a measured judgement, not a fact, so some flagged pairs will be
+        two genuinely different questions on one topic. Deleting the whole flagged set as a
+        block would make the threshold decide again, which is what moving deletion out of the
+        sweep was meant to stop.
+    Success: Each flagged pair carries its own tickbox, pre-ticked, keyed to the question that
+        would be deleted.
+    Feature: Question duplicate sweep — pairs are chosen individually.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "question-duplicate-sweep",
+        "compared": 1,
+        "threshold": 0.85,
+        "flagged": [
+            {"keep": "k1", "keep_stem": "Kept?", "drop": "d1",
+             "drop_stem": "To go?", "rerank_score": 0.98},
+        ],
+        "below_threshold": [],
+        "errors": [],
+    }
+    body = client.get(PAGE).text
+    assert 'data-dupe-id="d1"' in body
+    assert "checked" in body
+    assert 'data-delete-dupes="true"' in body
+
+
+def test_the_report_says_nothing_was_deleted(client, fake_collection, fake_questions):
+    """
+    Intent: The sweep used to delete, so an operator who has used it before will assume it
+        still does. Saying plainly that nothing was removed is what stops them believing the
+        collection has already been cleaned.
+    Success: The sweep result states that nothing was deleted.
+    Feature: Question duplicate sweep — the report says it deleted nothing.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "question-duplicate-sweep",
+        "compared": 3,
+        "threshold": 0.85,
+        "flagged": [],
+        "below_threshold": [],
+        "errors": [],
+    }
+    body = client.get(PAGE).text
+    assert "Nothing was deleted" in body

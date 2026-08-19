@@ -255,9 +255,15 @@ questions screen is not served under `/admin`, and no questions endpoint is serv
 ### 15. Destructive actions are reversible, confirmed, or both
 
 Retiring is reversible and deleting is not, so a badge cannot be deleted until it is
-retired. The duplicate sweep has a dry run, because it deletes with no human judgement
-behind it. A sweep never removes both halves of a pair. Every irreversible button
-confirms first, and says what cannot be undone.
+retired. The duplicate sweep deletes nothing at all — it reports, and deleting is a
+separate act on a list somebody has read. Deleting a question, singly or as a batch,
+requires typing the word. Every irreversible button confirms first, and says what
+cannot be undone.
+
+A control that is "the same thing but safe" is a smell: it makes the operator choose a
+mode before they have the information to choose with, and the safe one is strictly more
+informative. Where that pattern appeared — a dry run beside a real sweep — the
+destructive mode was removed rather than kept as an option.
 
 ## Features
 
@@ -528,10 +534,20 @@ vectors cannot do. Native reranking needs MongoDB **8.3+**; this cluster runs 8.
 
 `question_rerank_delete_threshold` is **0.85**, inside that gap. Note the reranker
 does not return 1.0 for identical text, so a threshold near 1.0 would never fire.
-Pairs at or above it lose one question — more badges beats fewer, then older beats
-newer — and the rest are reported with their scores. **Dry run** reports what a sweep
-would delete without deleting it; re-check that way as the collection grows to span
-more badges.
+
+**Finding never deletes.** Pairs at or above the threshold are *flagged*, with the
+question this program would drop and the one it would keep both named — more badges
+beats fewer, then older beats newer — and the pairs below it are listed too, so the
+threshold stays visible as a judgement rather than a fact. Nothing is removed until
+someone unticks the pairs they consider genuinely different questions and confirms the
+rest by typing the word.
+
+That demotes the threshold from deciding which questions die to shortlisting the ones
+worth looking at, which is the right weight for a number measured on six questions. It
+also removes the old dry-run button: two controls where one was the same thing but
+irreversible made the operator pick a mode before seeing the collection, and since
+reporting is strictly more informative, nobody should ever have pressed the other
+first.
 
 Cost is bounded by `question_duplicate_neighbours` (5), since comparing every pair
 grows as the square of the collection.
@@ -557,7 +573,8 @@ exactly the filtered set from the same endpoint the screen reads.
 | `GET` | `/api/questions/coverage` | Per-badge question counts and pages left to walk |
 | `GET` | `/api/questions` | List / export questions, same filters |
 | `GET` | `/api/questions/search?q=&limit=` | Questions ranked by similarity to `q` |
-| `POST` | `/api/questions/duplicates/sweep?dry_run=` | Find duplicates; delete the clear ones |
+| `POST` | `/api/questions/duplicates/sweep` | Find duplicate candidates; deletes nothing |
+| `POST` | `/api/questions/duplicates/delete` | Delete questions chosen from that report |
 | `POST` | `/api/questions/backfill-embedding-text` | Compose `embedding_text` where missing or stale |
 | `POST` | `/api/questions/drop-status` | Strip the legacy review field from stored questions |
 | `DELETE` | `/api/questions/{id}` | Delete a question |

@@ -83,22 +83,6 @@ def collection(monkeypatch):
     return install
 
 
-def test_a_pair_the_reranker_is_sure_about_loses_one_question(collection, settings):
-    """
-    Intent: The sweep exists to remove repetition from the collection. If a confident pair
-        were only reported, the collection would stay duplicated and the sweep would be a
-        report generator.
-    Success: A pair scoring above the delete threshold has one question deleted, and the
-        deletion is reported.
-    Feature: Question duplicate sweep — clear duplicates are deleted.
-    """
-    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters docs?")]
-    deleted, _ = collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
-    result = question_duplicates.sweep(settings=settings)
-    assert deleted == [result["deleted"][0]["drop"]]
-    assert result["deleted"][0]["rerank_score"] == DUPLICATE_SCORE
-
-
 def test_a_pair_below_the_threshold_is_reported_and_kept(collection, settings):
     """
     Intent: A deletion here has no judge behind it and cannot be undone, so anything short
@@ -109,26 +93,9 @@ def test_a_pair_below_the_threshold_is_reported_and_kept(collection, settings):
     """
     docs = [stored("a", "Which stage filters?"), stored("b", "How do indexes work?")]
     deleted, _ = collection(docs, {"a": [neighbour("b", DISTINCT_SCORE)]})
-    result = question_duplicates.sweep(settings=settings)
+    result = question_duplicates.report(settings=settings)
     assert deleted == []
-    assert result["possible_duplicates"][0]["rerank_score"] == DISTINCT_SCORE
-
-
-def test_a_dry_run_deletes_nothing_but_says_what_it_would(collection, settings):
-    """
-    Intent: The delete threshold governs irreversible removal, so it has to be checkable
-        against live data before it is trusted — and re-checkable when the collection
-        changes character. A dry run is how that check is made safely.
-    Success: With delete=False nothing is deleted, and the pair is marked as one that would
-        have been.
-    Feature: Question duplicate sweep — dry run for calibrating the threshold.
-    """
-    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters docs?")]
-    deleted, _ = collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
-    result = question_duplicates.sweep(delete=False, settings=settings)
-    assert deleted == []
-    assert result["dry_run"] is True
-    assert result["possible_duplicates"][0]["would_delete"] is True
+    assert result["below_threshold"][0]["rerank_score"] == DISTINCT_SCORE
 
 
 def test_each_pair_is_scored_once(collection, settings):
@@ -146,7 +113,7 @@ def test_each_pair_is_scored_once(collection, settings):
             "b": [neighbour("a", DUPLICATE_SCORE)],
         },
     )
-    result = question_duplicates.sweep(settings=settings)
+    result = question_duplicates.report(settings=settings)
     assert result["compared"] == 1
 
 
@@ -160,7 +127,7 @@ def test_the_pair_is_compared_on_the_text_that_was_embedded(collection, settings
     """
     docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters docs?")]
     _, calls = collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
-    question_duplicates.sweep(settings=settings)
+    question_duplicates.report(settings=settings)
     assert calls[0]["text"] == docs[0]["embedding_text"]
 
 
@@ -174,7 +141,7 @@ def test_the_configured_index_and_model_are_used(collection, settings):
     """
     docs = [stored("a", "Which stage filters?")]
     _, calls = collection(docs, {})
-    question_duplicates.sweep(settings=settings)
+    question_duplicates.report(settings=settings)
     assert calls[0]["index"] == settings.questions_vector_index_name
     assert calls[0]["model"] == settings.rerank_model
 
@@ -188,7 +155,7 @@ def test_a_question_is_never_compared_against_itself(collection, settings):
     """
     docs = [stored("a", "Which stage filters?")]
     _, calls = collection(docs, {})
-    question_duplicates.sweep(settings=settings)
+    question_duplicates.report(settings=settings)
     assert calls[0]["exclude"] == "a"
 
 
@@ -220,31 +187,8 @@ def test_the_question_serving_more_badges_is_preferred(collection, settings):
         stored("b", "Two badges?", skill_badges=["atlas-search", "aggregation"]),
     ]
     collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
-    result = question_duplicates.sweep(settings=settings)
-    assert result["deleted"][0]["keep"] == "b"
-
-
-def test_a_question_is_not_deleted_twice_over(collection, settings):
-    """
-    Intent: Three near-identical questions produce overlapping pairs. Acting on each pair
-        independently could delete both halves of a pair whose survivor was already removed,
-        leaving no copy of the question at all.
-    Success: With three mutually similar questions, at most two are deleted and the skipped
-        pair is reported.
-    Feature: Question duplicate sweep — never deletes every copy.
-    """
-    docs = [stored(i, f"Near duplicate {i}?") for i in ("a", "b", "c")]
-    deleted, _ = collection(
-        docs,
-        {
-            "a": [neighbour("b", DUPLICATE_SCORE), neighbour("c", DUPLICATE_SCORE)],
-            "b": [neighbour("c", DUPLICATE_SCORE)],
-        },
-    )
-    result = question_duplicates.sweep(settings=settings)
-    assert len(deleted) == 2
-    assert any(p.get("skipped") for p in result["possible_duplicates"])
-    assert len(docs) - len(deleted) == 1
+    result = question_duplicates.report(settings=settings)
+    assert result["flagged"][0]["keep"] == "b"
 
 
 def test_pairs_are_reported_most_similar_first(collection, settings):
@@ -256,8 +200,8 @@ def test_pairs_are_reported_most_similar_first(collection, settings):
     """
     docs = [stored(i, f"Question {i}?") for i in ("a", "b", "c")]
     collection(docs, {"a": [neighbour("b", 0.30), neighbour("c", 0.80)]})
-    result = question_duplicates.sweep(settings=settings)
-    scores = [p["rerank_score"] for p in result["possible_duplicates"]]
+    result = question_duplicates.report(settings=settings)
+    scores = [p["rerank_score"] for p in result["flagged"] + result["below_threshold"]]
     assert scores == sorted(scores, reverse=True)
 
 
@@ -280,8 +224,8 @@ def test_a_failed_comparison_does_not_abandon_the_sweep(collection, settings, mo
     monkeypatch.setattr(
         question_duplicates.questions_repo, "reranked_by_embedding_text", explode
     )
-    result = question_duplicates.sweep(settings=settings)
-    assert result["deleted"] == []
+    result = question_duplicates.report(settings=settings)
+    assert result["flagged"] == []
     assert "index not found" in result["errors"][0]
 
 
@@ -293,7 +237,7 @@ def test_an_empty_collection_sweeps_without_comparing_anything(collection, setti
     Feature: Question duplicate sweep — no needless work.
     """
     _, calls = collection([], {})
-    result = question_duplicates.sweep(settings=settings)
+    result = question_duplicates.report(settings=settings)
     assert result["compared"] == 0 and calls == []
 
 
@@ -308,26 +252,30 @@ def test_a_neighbour_that_is_no_longer_stored_is_ignored(collection, settings):
     """
     docs = [stored("a", "Which stage filters?")]
     collection(docs, {"a": [neighbour("ghost", DUPLICATE_SCORE)]})
-    result = question_duplicates.sweep(settings=settings)
+    result = question_duplicates.report(settings=settings)
     assert result["compared"] == 0
 
 
-def test_the_delete_threshold_is_configurable(collection):
+def test_the_threshold_is_configurable_and_only_flags(collection):
     """
-    Intent: The threshold governs irreversible deletion. It is measured, but the collection
-        will change character as it spans more badges, so it must be tunable from
-        configuration rather than code.
-    Success: Lowering the threshold turns a reported pair into a deleted one.
-    Feature: Question duplicate sweep — tunable delete threshold.
+    Intent: Replaces a test where lowering the threshold turned a reported pair into a
+        deleted one. The sweep no longer deletes, so the threshold decides what is flagged
+        for a person to look at — which makes it a shortlist filter rather than the thing
+        that decides which questions die. It still has to be tunable from configuration,
+        because the collection will change character as it spans more badges.
+    Success: Lowering the threshold moves a pair from below-threshold to flagged, and still
+        deletes nothing.
+    Feature: Question duplicate sweep — a tunable flagging threshold.
     """
     docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters docs?")]
     deleted, _ = collection(docs, {"a": [neighbour("b", DISTINCT_SCORE)]})
     settings = Settings(
         mongodb_uri="mongodb://test", question_rerank_delete_threshold=0.4
     )
-    question_duplicates.sweep(settings=settings)
-    assert len(deleted) == 1
-
+    result = question_duplicates.report(settings=settings)
+    assert len(result["flagged"]) == 1
+    assert result["below_threshold"] == []
+    assert deleted == []
 
 def test_the_number_of_neighbours_compared_is_bounded_by_configuration(collection, settings):
     """
@@ -339,5 +287,41 @@ def test_the_number_of_neighbours_compared_is_bounded_by_configuration(collectio
     """
     docs = [stored("a", "Which stage filters?")]
     _, calls = collection(docs, {})
-    question_duplicates.sweep(settings=settings)
+    question_duplicates.report(settings=settings)
     assert calls[0]["limit"] == settings.question_duplicate_neighbours
+
+
+# --- finding reports, deleting is separate ---
+
+
+def test_a_confident_pair_is_flagged_rather_than_deleted(collection, settings):
+    """
+    Intent: Replaces a test requiring a confident pair to lose a question. Deleting during
+        the sweep made the operator choose between a safe mode and a destructive one before
+        seeing the collection — and since the safe mode is strictly more informative, nobody
+        should have run the other first. The sweep now reports and deletion is a separate
+        act on a list somebody has read.
+    Success: A pair above the threshold is flagged, with the question to drop and the one to
+        keep both named, and nothing is deleted.
+    Feature: Question duplicate sweep — finding never deletes.
+    """
+    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters docs?")]
+    deleted, _ = collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
+    result = question_duplicates.report(settings=settings)
+    assert deleted == []
+    assert len(result["flagged"]) == 1
+    assert result["flagged"][0]["drop"] and result["flagged"][0]["keep"]
+    assert result["flagged"][0]["rerank_score"] == DUPLICATE_SCORE
+
+
+def test_the_report_says_which_threshold_it_used(collection, settings):
+    """
+    Intent: The threshold is a measured judgement, not a fact, and the operator is being
+        asked to act on a list it produced. Reporting the number is what lets them see that
+        a pair at 0.86 was flagged by a hair rather than by certainty.
+    Success: The report carries the threshold it flagged against.
+    Feature: Question duplicate sweep — the threshold is visible in the report.
+    """
+    collection([], {})
+    result = question_duplicates.report(settings=settings)
+    assert result["threshold"] == settings.question_rerank_delete_threshold

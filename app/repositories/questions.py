@@ -254,6 +254,21 @@ def source_urls_for_badge(slug: str) -> set[str]:
     }
 
 
+def delete_questions(question_ids: list[str]) -> int:
+    """Delete the named questions, returning how many were removed.
+
+    One round trip rather than one per question: the duplicate screen deletes a
+    reviewed batch, and the count is what the operator is told — so a stale id that
+    matches nothing is silently absent from it rather than an error, which is the
+    honest answer when another tab already deleted it.
+    """
+    if not question_ids:
+        return 0
+    return (
+        collection().delete_many({"question_id": {"$in": question_ids}}).deleted_count
+    )
+
+
 def counts_by_badge() -> dict[str, int]:
     """How many questions each badge has, for the coverage screen.
 

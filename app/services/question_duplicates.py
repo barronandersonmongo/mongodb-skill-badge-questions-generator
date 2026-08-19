@@ -4,6 +4,13 @@ An ad-hoc sweep, not a check on every generation run: authoring is where the tim
 and the money go, and a duplicate costs nothing until someone builds a quiz from
 the collection. So duplicates are found on request, over what is stored.
 
+Finding never deletes. There used to be a delete mode and a dry-run mode, which
+made the operator choose before seeing the collection — and since the safe mode is
+strictly more informative, nobody should ever have run the other one first. Now the
+sweep reports, and deleting is a separate act on a list somebody has read. That also
+demotes the score threshold: it shortlists pairs worth looking at rather than
+deciding which questions die.
+
 No language model is involved, and nothing here needs an API key. One aggregation
 per question does both stages on the cluster:
 
@@ -110,48 +117,37 @@ def find_pairs(*, settings: Settings | None = None) -> tuple[list[dict], list[st
     return pairs, errors
 
 
-def sweep(*, delete: bool = True, settings: Settings | None = None) -> dict[str, Any]:
-    """Find duplicate questions, and optionally delete one of each confident pair.
+def report(*, settings: Settings | None = None) -> dict[str, Any]:
+    """Duplicate candidates, scored, deleting nothing.
 
-    `delete=False` is a dry run: the same pairs and scores, nothing removed. A
-    deletion here has no judge behind it and cannot be undone, so the threshold
-    should be re-checked this way whenever the collection changes character.
+    Pairs at or above the threshold are `flagged` — the ones worth acting on — and the
+    rest are reported below it so the threshold itself stays visible as a judgement
+    rather than a fact. Every pair names the question this program would drop and the
+    one it would keep, so acting on the list is one click rather than a comparison the
+    reader has to redo.
     """
     settings = settings or get_settings()
     pairs, errors = find_pairs(settings=settings)
 
-    deleted, possible = [], []
-    removed: set[str] = set()
+    flagged, below = [], []
     for pair in pairs:
-        if pair["rerank_score"] < settings.question_rerank_delete_threshold:
-            possible.append(pair)
-            continue
-        if not delete:
-            possible.append({**pair, "would_delete": True})
-            continue
-        # A question already removed by an earlier pair cannot be deleted again, and
-        # must not become the survivor of a later one either — otherwise three near
-        # copies could leave none.
-        if pair["drop"] in removed or pair["keep"] in removed:
-            possible.append({**pair, "skipped": "already resolved"})
-            continue
-        if questions_repo.delete_question(pair["drop"]):
-            removed.add(pair["drop"])
-            deleted.append(pair)
+        if pair["rerank_score"] >= settings.question_rerank_delete_threshold:
+            flagged.append(pair)
+        else:
+            below.append(pair)
 
     logger.info(
-        "Duplicate sweep: %d pair(s) compared, %d deleted, %d reported, %d error(s)%s",
+        "Duplicate sweep: %d pair(s) compared, %d flagged, %d below threshold, %d error(s)",
         len(pairs),
-        len(deleted),
-        len(possible),
+        len(flagged),
+        len(below),
         len(errors),
-        " (dry run)" if not delete else "",
     )
     return {
         "source": "question-duplicate-sweep",
         "compared": len(pairs),
-        "deleted": deleted,
-        "possible_duplicates": possible,
+        "threshold": settings.question_rerank_delete_threshold,
+        "flagged": flagged,
+        "below_threshold": below,
         "errors": errors,
-        "dry_run": not delete,
     }

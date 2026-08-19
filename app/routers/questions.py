@@ -241,21 +241,50 @@ def list_questions(
 
 
 @router.post("/duplicates/sweep")
-def sweep_duplicates(background: BackgroundTasks, dry_run: bool = False) -> dict:
-    """Find duplicate questions already stored, deleting the clear ones.
+def sweep_duplicates(background: BackgroundTasks) -> dict:
+    """Find duplicate questions already stored. Deletes nothing.
 
     Runs in the background like a generation run: the sweep is one vector search
     and one rerank call per question, which is fast but not instant on a large
-    collection. `dry_run=true` reports what it would delete without deleting it.
+    collection.
+
+    There is no delete mode. It made the operator choose before seeing the
+    collection, and since reporting is strictly more informative nobody should have
+    run the other one first — so deleting is now a separate act, on the list this
+    returns, through `/duplicates/delete`.
     """
     if _run_state["running"]:
         raise HTTPException(409, "A run is already in progress.")
-    background.add_task(_run_sweep, dry_run)
+    background.add_task(_run_sweep)
     return {"started": True}
 
 
-def _run_sweep(dry_run: bool) -> None:
-    from app.services.question_duplicates import sweep
+class DeleteDuplicatesRequest(BaseModel):
+    """The questions an operator has chosen to delete from a sweep's report."""
+
+    question_ids: list[str] = Field(min_length=1, max_length=1000)
+
+
+@router.post("/duplicates/delete")
+def delete_duplicates(request: DeleteDuplicatesRequest) -> dict:
+    """Delete questions chosen from a duplicate report.
+
+    Explicit ids rather than "delete everything flagged": the screen sends what the
+    operator actually ticked, so a pair they judged to be two different questions
+    stays put, and a report that has gone stale cannot delete something that was not
+    on it.
+    """
+    deleted = questions.delete_questions(request.question_ids)
+    logger.info(
+        "Deleted %d of %d question(s) chosen from a duplicate report",
+        deleted,
+        len(request.question_ids),
+    )
+    return {"requested": len(request.question_ids), "deleted": deleted}
+
+
+def _run_sweep() -> None:
+    from app.services.question_duplicates import report
 
     _run_state.update(
         running=True,
@@ -266,9 +295,9 @@ def _run_sweep(dry_run: bool) -> None:
         progress=None,
         stop_requested=False,
     )
-    logger.info("Duplicate sweep started%s", " (dry run)" if dry_run else "")
+    logger.info("Duplicate sweep started")
     try:
-        _run_state["last_result"] = sweep(delete=not dry_run)
+        _run_state["last_result"] = report()
     except Exception as exc:  # surfaced to the page, not swallowed
         _run_state["last_error"] = str(exc)
         _run_state["last_traceback"] = traceback.format_exc()

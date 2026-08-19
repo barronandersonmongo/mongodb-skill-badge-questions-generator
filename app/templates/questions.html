@@ -27,9 +27,6 @@
     <button class="btn btn-outline-secondary" id="sweep-btn" type="button">
       Find duplicates
     </button>
-    <button class="btn btn-outline-secondary" id="sweep-dry-run-btn" type="button">
-      Dry run
-    </button>
     <a class="btn btn-outline-secondary" id="export-btn" target="_blank" rel="noopener"
        href="{{ api }}?{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
       Export JSON
@@ -201,39 +198,48 @@
   {% endif %}
   {% if last_result.source == "question-duplicate-sweep" %}
   <div class="mt-1">
-    {{ last_result.compared }} pair(s) compared.
-    {% if last_result.dry_run %}
-    <span class="badge text-bg-warning" data-sweep-dry-run="true">dry run — nothing deleted</span>
-    {% endif %}
+    {{ last_result.compared }} pair(s) compared. Nothing was deleted — choose below.
   </div>
-  {% if last_result.deleted %}
-  <details class="mt-2" data-sweep-deleted="true">
-    <summary class="small">{{ last_result.deleted | length }} deleted as duplicates</summary>
-    <ul class="small mb-0 mt-2">
-      {% for pair in last_result.deleted %}
-      <li>
-        deleted <span class="fst-italic">{{ pair.drop_stem }}</span>,
-        kept <span class="fst-italic">{{ pair.keep_stem }}</span>
-        <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
-        <span class="badge text-bg-light border">vector {{ "%.3f"|format(pair.vector_score) }}</span>
+  {% if last_result.flagged %}
+  <div class="mt-2" data-sweep-flagged="true">
+    <div class="small mb-2">
+      {{ last_result.flagged | length }} pair(s) scored
+      {{ "%.2f"|format(last_result.threshold) }} or above. The ticked question is the one
+      that would go; its pair is kept because it is filed under more badges, or is older.
+      Untick anything you judge to be a genuinely different question.
+    </div>
+    <ul class="list-unstyled small mb-2">
+      {% for pair in last_result.flagged %}
+      <li class="mb-2">
+        <label class="d-flex gap-2">
+          <input type="checkbox" class="form-check-input mt-1 flex-shrink-0 js-dupe"
+                 data-dupe-id="{{ pair.drop }}" checked>
+          <span>
+            <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
+            <span class="d-block">Delete: <span class="fst-italic">{{ pair.drop_stem }}</span></span>
+            <span class="d-block text-body-secondary">Keep: <span class="fst-italic">{{ pair.keep_stem }}</span></span>
+          </span>
+        </label>
       </li>
       {% endfor %}
     </ul>
-  </details>
+    <button class="btn btn-sm btn-danger" id="delete-dupes-btn" type="button"
+            data-delete-dupes="true">
+      Delete ticked questions
+    </button>
+  </div>
   {% endif %}
-  {% if last_result.possible_duplicates %}
-  <details class="mt-2" data-sweep-possible="true">
+  {% if last_result.below_threshold %}
+  <details class="mt-2" data-sweep-below="true">
     <summary class="small">
-      {{ last_result.possible_duplicates | length }} pair(s) below the delete threshold — kept
+      {{ last_result.below_threshold | length }} pair(s) below the threshold — not flagged
     </summary>
     <ul class="small mb-0 mt-2">
-      {% for pair in last_result.possible_duplicates %}
+      {% for pair in last_result.below_threshold %}
       <li>
         <span class="fst-italic">{{ pair.drop_stem }}</span>
         vs <span class="fst-italic">{{ pair.keep_stem }}</span>
         <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
-        {% if pair.would_delete %}<span class="badge text-bg-warning">would delete</span>{% endif %}
-        {% if pair.skipped %}<span class="badge text-bg-secondary">{{ pair.skipped }}</span>{% endif %}
       </li>
       {% endfor %}
     </ul>
@@ -834,12 +840,12 @@ document.getElementById("start-run").addEventListener("click", async () => {
   pollStatus();
 });
 
-async function startSweep(dryRun) {
-  showAlert("info", dryRun
-    ? "Comparing stored questions — nothing will be deleted…"
-    : "Comparing stored questions for duplicates…", {timed: true});
-  const response = await fetch(API + "/duplicates/sweep?dry_run=" + (dryRun ? "true" : "false"),
-    {method: "POST"});
+// The sweep only reports, so there is nothing to confirm before running it — the
+// confirmation belongs to the deletion, which now happens afterwards on a list the
+// operator has read.
+document.getElementById("sweep-btn").addEventListener("click", async () => {
+  showAlert("info", "Comparing stored questions — nothing will be deleted…", {timed: true});
+  const response = await fetch(API + "/duplicates/sweep", {method: "POST"});
   if (response.status === 409) {
     showAlert("warning", "A run is already in progress.");
     return;
@@ -849,17 +855,7 @@ async function startSweep(dryRun) {
     return;
   }
   pollStatus();
-}
-
-document.getElementById("sweep-btn").addEventListener("click", () => {
-  if (!window.confirm(
-    "Find duplicates and delete the clear ones?\n\nDeletions cannot be undone. " +
-    "Use Dry run first if the threshold has not been checked against real data."
-  )) return;
-  startSweep(false);
 });
-
-document.getElementById("sweep-dry-run-btn").addEventListener("click", () => startSweep(true));
 
 // Deleting is the only irreversible act on this screen and the only editorial one,
 // so it is guarded twice over: the question is shown again in the dialog, and the
@@ -869,6 +865,10 @@ const deleteModal = new bootstrap.Modal(deleteModalEl);
 const deleteConfirmInput = document.getElementById("delete-confirm");
 const confirmDeleteButton = document.getElementById("confirm-delete");
 let pendingDeleteId = null;
+// Set instead of pendingDeleteId when the duplicate report is what is being acted on.
+// Both paths end at the same typed confirmation, so deleting a batch is no easier to
+// trigger by accident than deleting one.
+let pendingDeleteIds = null;
 
 function resetDeleteDialog() {
   deleteConfirmInput.value = "";
@@ -883,6 +883,7 @@ deleteConfirmInput.addEventListener("input", () => {
 
 deleteModalEl.addEventListener("hidden.bs.modal", () => {
   pendingDeleteId = null;
+  pendingDeleteIds = null;
   resetDeleteDialog();
 });
 
@@ -891,6 +892,7 @@ deleteModalEl.addEventListener("shown.bs.modal", () => deleteConfirmInput.focus(
 document.querySelectorAll(".js-delete").forEach((button) => {
   button.addEventListener("click", () => {
     pendingDeleteId = button.closest("[data-question-id]").dataset.questionId;
+    pendingDeleteIds = null;
     // textContent, never innerHTML: a stem is model-written text.
     deleteModalEl.querySelector("[data-delete-stem]").textContent =
       button.dataset.stem || "";
@@ -900,19 +902,43 @@ document.querySelectorAll(".js-delete").forEach((button) => {
 });
 
 confirmDeleteButton.addEventListener("click", async () => {
-  if (!pendingDeleteId) return;
+  if (!pendingDeleteId && !pendingDeleteIds) return;
   confirmDeleteButton.disabled = true;
   confirmDeleteButton.textContent = "Deleting…";
-  const response = await fetch(API + "/" + encodeURIComponent(pendingDeleteId), {
-    method: "DELETE",
-  });
+  const response = pendingDeleteIds
+    ? await fetch(API + "/duplicates/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({question_ids: pendingDeleteIds}),
+      })
+    : await fetch(API + "/" + encodeURIComponent(pendingDeleteId), {method: "DELETE"});
   if (!response.ok) {
     deleteModal.hide();
-    showAlert("danger", "Could not delete the question (HTTP " + response.status + ").");
+    showAlert("danger", "Could not delete (HTTP " + response.status + ").");
     return;
   }
   window.location.reload();
 });
+
+const deleteDupesButton = document.getElementById("delete-dupes-btn");
+if (deleteDupesButton) {
+  deleteDupesButton.addEventListener("click", () => {
+    const ticked = Array.from(document.querySelectorAll(".js-dupe"))
+      .filter((box) => box.checked)
+      .map((box) => box.dataset.dupeId);
+    if (ticked.length === 0) {
+      showAlert("warning", "Nothing is ticked, so there is nothing to delete.");
+      return;
+    }
+    pendingDeleteId = null;
+    pendingDeleteIds = ticked;
+    deleteModalEl.querySelector("[data-delete-stem]").textContent =
+      ticked.length + " question(s) flagged as duplicates. The question kept from each "
+      + "pair stays.";
+    resetDeleteDialog();
+    deleteModal.show();
+  });
+}
 
 // A run may already be going when the page loads (started elsewhere, or a reload).
 if ({{ "true" if running else "false" }}) { pollStatus(); }

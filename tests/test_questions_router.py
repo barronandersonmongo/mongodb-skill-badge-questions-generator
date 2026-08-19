@@ -414,28 +414,12 @@ def test_the_sweep_runs_in_the_background(client, monkeypatch, fake_questions):
     """
     calls: list[dict] = []
     monkeypatch.setattr(
-        "app.services.question_duplicates.sweep",
+        "app.services.question_duplicates.report",
         lambda **kwargs: calls.append(kwargs) or {},
     )
     response = client.post(API + "/duplicates/sweep")
     assert response.json() == {"started": True}
-    assert calls == [{"delete": True}]
-
-
-def test_a_dry_run_is_passed_through_as_one(client, monkeypatch, fake_questions):
-    """
-    Intent: The dry run is the safeguard for an unmeasured delete threshold. If the flag were
-        dropped between the button and the sweep, a "dry run" would delete questions.
-    Success: dry_run=true reaches the sweep as delete=False.
-    Feature: Question duplicate sweep — a dry run never deletes.
-    """
-    calls: list[dict] = []
-    monkeypatch.setattr(
-        "app.services.question_duplicates.sweep",
-        lambda **kwargs: calls.append(kwargs) or {},
-    )
-    client.post(API + "/duplicates/sweep", params={"dry_run": True})
-    assert calls == [{"delete": False}]
+    assert calls == [{}]
 
 
 def test_a_sweep_is_refused_while_another_run_is_going(client, fake_questions):
@@ -460,7 +444,7 @@ def test_a_failed_sweep_is_reported_with_its_traceback(client, monkeypatch, fake
     def explode(**kwargs):
         raise RuntimeError("No Voyage API key found")
 
-    monkeypatch.setattr("app.services.question_duplicates.sweep", explode)
+    monkeypatch.setattr("app.services.question_duplicates.report", explode)
     client.post(API + "/duplicates/sweep")
     state = client.get(API + "/generate/status").json()
     assert state["running"] is False
@@ -475,7 +459,7 @@ def test_the_sweep_is_timed_like_any_other_run(client, monkeypatch, fake_questio
     Success: A completed sweep reports started_at and finished_at in order.
     Feature: Question duplicate sweep — timed on the server.
     """
-    monkeypatch.setattr("app.services.question_duplicates.sweep", lambda **k: {"compared": 0})
+    monkeypatch.setattr("app.services.question_duplicates.report", lambda **k: {"compared": 0})
     client.post(API + "/duplicates/sweep")
     state = client.get(API + "/generate/status").json()
     assert state["finished_at"] >= state["started_at"]
@@ -689,3 +673,61 @@ def test_the_legacy_review_field_can_be_stripped_from_the_api(client, fake_quest
     assert response.status_code == 200
     assert response.json() == {"changed": 1}
     assert "status" not in fake_questions.docs[0]
+
+
+# --- deleting from a duplicate report ---
+
+
+def test_questions_chosen_from_a_report_can_be_deleted(client, fake_questions):
+    """
+    Intent: The sweep only reports now, so there has to be a way to act on what it found —
+        otherwise moving deletion out of the sweep would have removed the ability to clean
+        the collection at all.
+    Success: The endpoint deletes the named questions and reports how many went.
+    Feature: Question duplicate sweep — deleting a reviewed selection.
+    """
+    ids = questions.insert_questions([make("One?"), make("Two?")])["question_ids"]
+    response = client.post(API + "/duplicates/delete", json={"question_ids": ids[:1]})
+    assert response.status_code == 200
+    assert response.json() == {"requested": 1, "deleted": 1}
+    assert [q["stem"] for q in questions.list_questions()] == ["Two?"]
+
+
+def test_only_the_chosen_questions_are_deleted(client, fake_questions):
+    """
+    Intent: The point of moving deletion out of the sweep is that the operator decides, pair
+        by pair. If the endpoint deleted everything the sweep had flagged, the threshold would
+        be deciding again and unticking a pair would achieve nothing.
+    Success: A question the request does not name survives.
+    Feature: Question duplicate sweep — an unticked pair is left alone.
+    """
+    ids = questions.insert_questions([make("One?"), make("Two?"), make("Three?")])["question_ids"]
+    client.post(API + "/duplicates/delete", json={"question_ids": [ids[1]]})
+    assert len(questions.list_questions()) == 2
+
+
+def test_a_stale_selection_deletes_what_it_can(client, fake_questions):
+    """
+    Intent: A report can be minutes old and another tab may have deleted from it already. An
+        id that matches nothing is the expected case, not an error — failing the whole request
+        would leave the operator unable to act on the rest of a list they had reviewed.
+    Success: Unknown ids are absent from the count rather than raising.
+    Feature: Question duplicate sweep — a stale report still works.
+    """
+    ids = questions.insert_questions([make("One?")])["question_ids"]
+    response = client.post(
+        API + "/duplicates/delete", json={"question_ids": [ids[0], "already-gone"]}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"requested": 2, "deleted": 1}
+
+
+def test_an_empty_selection_is_refused(client, fake_questions):
+    """
+    Intent: A request with no ids is a bug in the caller, and answering it with "deleted 0"
+        would hide that. Refusing at the boundary keeps the endpoint's meaning — delete these
+        — rather than making it a no-op that looks like success.
+    Success: An empty id list is a validation error.
+    Feature: Question duplicate sweep — an empty selection is refused.
+    """
+    assert client.post(API + "/duplicates/delete", json={"question_ids": []}).status_code == 422
