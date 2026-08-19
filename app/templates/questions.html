@@ -60,6 +60,14 @@
       <div><div class="text-body-secondary">Questions/min</div><div data-stat="qpm">—</div></div>
       <div><div class="text-body-secondary">Per question</div><div data-stat="per-question">—</div></div>
     </div>
+    {# A sweep's figures. The walk's — sections, cost, questions per page — describe
+       work a sweep does not do, so it gets its own row rather than a row of dashes. #}
+    <div class="row row-cols-2 row-cols-md-4 g-2 small mb-2 d-none" data-sweep-stats="true">
+      <div><div class="text-body-secondary">Compared</div><div data-stat="sweep-compared">—</div></div>
+      <div><div class="text-body-secondary">Pairs found</div><div data-stat="sweep-pairs">—</div></div>
+      <div><div class="text-body-secondary">Rate</div><div data-stat="sweep-rate">—</div></div>
+      <div><div class="text-body-secondary">Remaining</div><div data-stat="sweep-eta">—</div></div>
+    </div>
     <div class="d-flex justify-content-between align-items-center gap-2">
       <div class="small text-body-secondary text-truncate" data-stat="current-page">—</div>
       <button class="btn btn-sm btn-outline-danger text-nowrap d-none" id="stop-run-btn"
@@ -688,8 +696,10 @@ const panel = document.getElementById("progress-panel");
 const bar = document.getElementById("progress-bar");
 const stopButton = document.getElementById("stop-run-btn");
 const statsPanel = panel.querySelector("[data-progress-stats]");
+const sweepStatsPanel = panel.querySelector("[data-sweep-stats]");
 
 const PHASES = {
+  comparing: "Comparing every stored question with its nearest neighbours…",
   resolving: "Working out which documentation this badge is about…",
   writing: "Reading sections and writing questions…",
   stopped: "Stopped",
@@ -756,6 +766,25 @@ function showProgress(p) {
   if (!p) return;
   panel.classList.remove("d-none");
   panel.querySelector("[data-phase]").textContent = PHASES[p.phase] || p.phase || "Working…";
+
+  // A sweep is one round trip per stored question and reports how many it has done of
+  // how many there are, which is a real bar rather than an indeterminate one.
+  if (p.phase === "comparing") {
+    bar.classList.remove("bg-secondary");
+    bar.style.width = p.percent + "%";
+    bar.textContent = p.percent.toFixed(1) + "%";
+    panel.querySelector("[data-headline]").textContent =
+      p.compared + " / " + p.total + " questions";
+    setStat("sweep-compared", p.compared + " of " + p.total);
+    setStat("sweep-pairs", String(p.pairs || 0)
+      + (p.errors ? " · " + p.errors + " could not be compared" : ""));
+    setStat("sweep-rate", p.questions_per_minute
+      ? p.questions_per_minute.toFixed(0) + "/min" : "—");
+    setStat("sweep-eta", formatDuration(p.eta_seconds));
+    if (elapsedTimer === null) setStat("elapsed", formatDuration(p.elapsed_seconds));
+    setStat("current-page", "Nothing is deleted by comparing — you choose from the report.");
+    return;
+  }
 
   // A percentage is only shown once the page set is known — while resolving, the walk
   // genuinely does not know how much work there is, and inventing a number would be
@@ -856,28 +885,22 @@ async function pollStatus() {
     // The stats are a generation run's — pages walked, questions written, cost — and
     // none of them applies to a sweep, so they are not shown reading "—" for it.
     statsPanel.classList.toggle("d-none", sweeping);
+    sweepStatsPanel.classList.toggle("d-none", !sweeping);
     alertBox.classList.add("d-none");
     setPanelState("info", sweeping
       ? "Comparing stored questions — nothing will be deleted."
       : "Writing questions — you can leave this page open and come back.");
     startPanelClock();
-    if (sweeping) {
-      // A sweep creates nothing, so there is nothing to watch for; polling the count
-      // would only reload the page underneath the operator.
-      panel.querySelector("[data-phase]").textContent =
-        "Comparing every stored question with its nearest neighbours…";
-      bar.style.width = "100%";
-      bar.textContent = "";
-      bar.classList.add("bg-secondary");
-      panel.classList.remove("d-none");
-    } else {
-      await showNewQuestions();
-    }
+    // A sweep creates nothing, so there is nothing to watch for; polling the count
+    // would only reload the page underneath the operator.
+    if (!sweeping) await showNewQuestions();
+    panel.classList.remove("d-none");
     setTimeout(pollStatus, 2000);
     return;
   }
   stopButton.classList.add("d-none");
-  statsPanel.classList.remove("d-none");
+  statsPanel.classList.toggle("d-none", sweeping);
+  sweepStatsPanel.classList.toggle("d-none", !sweeping);
   stopElapsed();
   bar.classList.remove("progress-bar-animated");
   // The finished run carries the final figures, which the last progress snapshot may

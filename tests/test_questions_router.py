@@ -420,7 +420,10 @@ def test_the_sweep_runs_in_the_background(client, monkeypatch, fake_questions):
     )
     response = client.post(API + "/duplicates/sweep")
     assert response.json() == {"started": True}
-    assert calls == [{}]
+    # One call, the work having run. What it is called with is no longer empty — the
+    # sweep is handed a progress callback — and that is asserted where it belongs, in
+    # the test for the sweep reporting its progress.
+    assert len(calls) == 1
 
 
 def test_a_sweep_is_refused_while_another_run_is_going(client, fake_questions):
@@ -1094,3 +1097,27 @@ def test_the_status_endpoint_publishes_which_job_is_running(client, fake_questio
     """
     api_module._run_state.update(running=True, kind="duplicate-sweep")
     assert client.get(API + "/generate/status").json()["kind"] == "duplicate-sweep"
+
+
+def test_the_sweep_reports_how_far_it_has_got(client, monkeypatch, fake_questions):
+    """
+    Intent: A sweep is one round trip per stored question, so on a collection of thousands it
+        is minutes long — and it showed nothing but an indeterminate bar for all of them.
+        There was no way to tell a slow sweep from a stuck one, or to judge whether to wait.
+        How many questions there are is known before the first comparison, so the progress is
+        genuinely measurable rather than guessed at.
+    Success: While the sweep runs, the run state carries how many questions have been
+        compared of how many, a percentage, and how long is left.
+    Feature: Question duplicate sweep — progress is reported as it runs.
+    """
+    def fake_report(*, progress=None, **kwargs):
+        progress({"phase": "comparing", "compared": 3, "total": 12,
+                  "percent": 25.0, "pairs": 1, "errors": 0})
+        return {}
+
+    monkeypatch.setattr("app.services.question_duplicates.report", fake_report)
+    client.post(API + "/duplicates/sweep")
+    reported = api_module._run_state["progress"]
+    assert reported["compared"] == 3 and reported["total"] == 12
+    assert reported["percent"] == 25.0
+    assert reported["eta_seconds"] is not None

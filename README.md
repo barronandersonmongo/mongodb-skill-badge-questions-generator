@@ -645,8 +645,10 @@ Calibrated against `rerank-2.5` on the live collection:
 `question_rerank_delete_threshold` is **0.85**, inside that gap. Note the reranker does not
 return 1.0 for identical text, so a threshold near 1.0 would never fire.
 
-The sweep runs in the background on the same run state a generation run uses, and says
-which of the two it is: they are not interchangeable — one writes questions and spends
+The sweep runs in the background on the same run state a generation run uses, reporting
+after each question — the work is one round trip per stored question, and how many there
+are is known before the first one, so the bar measures the whole job rather than standing
+in for it. It also says which of the two jobs it is: they are not interchangeable — one writes questions and spends
 money, the other only compares what is already stored — so the screen reports a sweep in
 its own words, hides the stats that belong to a walk, and offers no stop button, there
 being no seam to stop at.

@@ -26,6 +26,7 @@ query the shortlist already ran.
 """
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from app.config import Settings, get_settings
@@ -64,11 +65,20 @@ def choose_survivor(
     return (left, right) if _rank(left) >= _rank(right) else (right, left)
 
 
-def find_pairs(*, settings: Settings | None = None) -> tuple[list[dict], list[str]]:
+def find_pairs(
+    *,
+    settings: Settings | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[list[dict], list[str]]:
     """Every pair of stored questions the reranker scored, most similar first.
 
     Each pair is scored once: A-B and B-A are the same pair, and scoring both would
     double the work to reach the same answer.
+
+    `progress` is called after each question with how far the sweep has got. The work
+    is one round trip per stored question, and how many there are is known before the
+    first one — so on a collection of thousands this is minutes of a bar that would
+    otherwise sit at nothing, with no way to tell a slow sweep from a stuck one.
     """
     settings = settings or get_settings()
     stored = questions_repo.list_questions()
@@ -77,8 +87,27 @@ def find_pairs(*, settings: Settings | None = None) -> tuple[list[dict], list[st
     seen: set[tuple[str, str]] = set()
     pairs: list[dict[str, Any]] = []
     errors: list[str] = []
+    total = len(stored)
 
-    for question in stored:
+    def report_progress(done: int) -> None:
+        if progress is None:
+            return
+        progress(
+            {
+                "phase": "comparing",
+                "compared": done,
+                "total": total,
+                # Guarded rather than assumed: an empty collection is a legitimate
+                # sweep, and dividing by its size is not.
+                "percent": (done / total * 100) if total else 100.0,
+                "pairs": len(pairs),
+                "errors": len(errors),
+            }
+        )
+
+    report_progress(0)
+
+    for index, question in enumerate(stored, start=1):
         try:
             neighbours = questions_repo.reranked_by_embedding_text(
                 _text(question),
@@ -91,6 +120,7 @@ def find_pairs(*, settings: Settings | None = None) -> tuple[list[dict], list[st
             # One unsearchable question must not abandon the whole sweep, and must
             # never be reported as "no duplicates here".
             errors.append(f"{question['question_id']}: {exc}")
+            report_progress(index)
             continue
 
         for neighbour in neighbours:
@@ -113,11 +143,17 @@ def find_pairs(*, settings: Settings | None = None) -> tuple[list[dict], list[st
                 }
             )
 
+        report_progress(index)
+
     pairs.sort(key=lambda item: item["rerank_score"], reverse=True)
     return pairs, errors
 
 
-def report(*, settings: Settings | None = None) -> dict[str, Any]:
+def report(
+    *,
+    settings: Settings | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     """Duplicate candidates, scored, deleting nothing.
 
     Pairs at or above the threshold are `flagged` — the ones worth acting on — and the
@@ -127,7 +163,7 @@ def report(*, settings: Settings | None = None) -> dict[str, Any]:
     reader has to redo.
     """
     settings = settings or get_settings()
-    pairs, errors = find_pairs(settings=settings)
+    pairs, errors = find_pairs(settings=settings, progress=progress)
 
     flagged, below = [], []
     for pair in pairs:

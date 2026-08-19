@@ -414,8 +414,28 @@ def _run_sweep() -> None:
         stop_requested=False,
     )
     logger.info("Duplicate sweep started")
+
+    started = _run_state["started_at"]
+
+    def progress(state: dict) -> None:
+        # Timing is added here rather than in the service: the run state is what knows
+        # when this sweep began, and a service that started keeping its own clock would
+        # disagree with the elapsed time already on the screen.
+        elapsed = time.time() - started
+        done = state["compared"]
+        remaining = state["total"] - done
+        per_question = elapsed / done if done else None
+        _run_state["progress"] = {
+            **state,
+            "elapsed_seconds": elapsed,
+            "questions_per_minute": (done / elapsed * 60) if elapsed > 0 else None,
+            # Only once something has been measured. A projection from no completed
+            # work is a guess presented as a number.
+            "eta_seconds": per_question * remaining if per_question else None,
+        }
+
     try:
-        _run_state["last_result"] = report()
+        _run_state["last_result"] = report(progress=progress)
         _record(_run_state["last_result"])
     except Exception as exc:  # surfaced to the page, not swallowed
         _run_state["last_error"] = str(exc)

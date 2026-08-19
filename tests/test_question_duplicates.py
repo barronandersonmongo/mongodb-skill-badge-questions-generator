@@ -325,3 +325,84 @@ def test_the_report_says_which_threshold_it_used(collection, settings):
     collection([], {})
     result = question_duplicates.report(settings=settings)
     assert result["threshold"] == settings.question_rerank_delete_threshold
+
+
+def test_the_sweep_calls_back_after_every_question(collection, settings):
+    """
+    Intent: Progress has to be reported per question, because that is the unit of work — one
+        vector search and rerank per stored question. Reporting only at the end, or only per
+        batch, is what left the screen with nothing to show for minutes at a time.
+    Success: The callback fires once before any work and once per stored question, with a
+        rising count and a total that is known from the start.
+    Feature: Question duplicate sweep — per-question progress.
+    """
+    docs = [
+        stored("a", "Which stage filters?"),
+        stored("b", "Which stage groups?"),
+        stored("c", "Which stage sorts?"),
+    ]
+    collection(docs, {})
+
+    seen: list[tuple[int, int]] = []
+    question_duplicates.find_pairs(
+        settings=settings,
+        progress=lambda state: seen.append((state["compared"], state["total"])),
+    )
+    assert seen == [(0, 3), (1, 3), (2, 3), (3, 3)]
+
+
+def test_the_reported_percentage_is_of_the_whole_sweep(collection, settings):
+    """
+    Intent: A bar is only worth showing if it measures the whole job. The total is known
+        before the first comparison — it is the size of the collection — so the percentage is
+        a fact rather than an estimate.
+    Success: The reported percentage matches the fraction of questions compared.
+    Feature: Question duplicate sweep — the percentage measures the whole sweep.
+    """
+    collection([stored("a", "One?"), stored("b", "Two?"), stored("c", "Three?"), stored("d", "Four?")], {})
+
+    seen: list[float] = []
+    question_duplicates.find_pairs(
+        settings=settings, progress=lambda state: seen.append(state["percent"])
+    )
+    assert seen == [0.0, 25.0, 50.0, 75.0, 100.0]
+
+
+def test_a_question_that_cannot_be_compared_still_advances_the_count(
+    collection, settings, monkeypatch
+):
+    """
+    Intent: One unsearchable question must not abandon the sweep — and must not stall the
+        bar either, or the sweep looks stuck at exactly the moment something has gone wrong.
+    Success: The count advances past a question whose search failed, and the failure is
+        counted in the reported state.
+    Feature: Question duplicate sweep — progress survives a failed comparison.
+    """
+    collection([stored("a", "One?"), stored("b", "Two?")], {})
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("index not queryable")
+
+    monkeypatch.setattr(
+        question_duplicates.questions_repo, "reranked_by_embedding_text", explode
+    )
+
+    seen: list[dict] = []
+    question_duplicates.find_pairs(settings=settings, progress=seen.append)
+    assert [state["compared"] for state in seen] == [0, 1, 2]
+    assert seen[-1]["errors"] == 2
+
+
+def test_an_empty_collection_reports_a_finished_sweep(collection, settings):
+    """
+    Intent: Sweeping an empty collection is a legitimate thing to do, and its size is the
+        denominator of the percentage — so it must not be divided by.
+    Success: The sweep reports complete rather than failing.
+    Feature: Question duplicate sweep — an empty collection does not divide by zero.
+    """
+    collection([], {})
+
+    seen: list[dict] = []
+    question_duplicates.find_pairs(settings=settings, progress=seen.append)
+    assert seen == [{"phase": "comparing", "compared": 0, "total": 0,
+                     "percent": 100.0, "pairs": 0, "errors": 0}]
