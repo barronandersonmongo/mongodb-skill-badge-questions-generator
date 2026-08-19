@@ -1,289 +1,608 @@
 /* The one place this program decides how it looks.
  *
- * Every screen was Bootstrap's defaults plus whatever utility classes the
- * template happened to reach for, so no two screens agreed on type scale,
- * control size, or what a colour meant. This file sets those once, mostly by
- * overriding Bootstrap's own CSS variables so existing markup inherits the
- * decisions without being rewritten.
+ * Bootstrap is still loaded, because the modals and dropdowns use its
+ * JavaScript, but almost none of its appearance survives this file: its
+ * components are what made every screen read as a generic Bootstrap page —
+ * hairline-bordered cards at one flat elevation, dense list groups, centred
+ * dialogs, a dark navbar. What is kept is the behaviour and the class names the
+ * tests and scripts hook onto.
+ *
+ * Three ideas do most of the work:
+ *   1. A shell, not a page. Persistent sidebar, sticky content header, the
+ *      screen's own scroll region. Navigation is furniture, not content.
+ *   2. Whitespace and one accent instead of lines and colour. Surfaces are
+ *      separated by elevation and space; forest green appears only where
+ *      something is the primary action or is currently selected.
+ *   3. A real scale for everything — space, radius, shadow, type — so nothing is
+ *      chosen by eye per screen.
  */
 
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
 :root {
-  /* MongoDB's palette. Forest is the resting brand colour and carries primary
-   * actions; spring green is loud and is kept for focus and success only, never
-   * for a large fill. Slate is the dark ground the navbar sits on. */
-  --mdb-forest: #00684a;
-  --mdb-forest-dark: #00553c;
-  --mdb-spring: #00ed64;
-  --mdb-slate: #001e2b;
-  --mdb-slate-soft: #0a3242;
-  --mdb-mist: #f9fbfa;
-  --mdb-line: #e3e9e7;
-  --mdb-ink: #12202a;
-  --mdb-ink-soft: #5c6c75;
+  /* MongoDB's palette, used sparingly. Forest is the accent and marks primary
+   * actions and the current screen; spring green is loud and is kept for focus
+   * rings and success only. */
+  --forest: #00684a;
+  --forest-hover: #005240;
+  --forest-wash: #e8f3ee;
+  --spring: #00ed64;
+  --slate: #001e2b;
 
-  /* One type scale, one rhythm. Screens differed by an h3-vs-h4 accident;
-   * headings now come from the shared macros and read from here. */
-  --mdb-font: "Euclid Circular A", "Helvetica Neue", Helvetica, Arial, sans-serif;
-  --mdb-font-mono: "Source Code Pro", ui-monospace, "SFMono-Regular", Menlo, monospace;
-  --mdb-page-title: 1.5rem;
-  --mdb-section-title: 1.0625rem;
-  --mdb-gutter: 1rem;
+  /* Near-monochrome ground. Surfaces are told apart by elevation, not borders:
+   * the page is faintly grey, anything raised is pure white. */
+  --ground: #f6f7f8;
+  --surface: #ffffff;
+  --surface-sunken: #fafbfb;
+  --line: #eceeef;
+  --line-strong: #dfe3e5;
 
-  /* Bootstrap's own variables, repointed. Anything using btn-primary,
-   * text-primary, or a link inherits the brand without touching the markup. */
-  --bs-primary: var(--mdb-forest);
+  --ink: #10242f;
+  --ink-2: #4c5c66;
+  --ink-3: #7b8b94;
+
+  --danger: #c02d2d;
+  --danger-wash: #fdf0ef;
+  --warn: #8f6b00;
+  --warn-wash: #fdf6e3;
+
+  /* Space scale. Every gap and pad in this file is one of these. */
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --s5: 1.5rem;
+  --s6: 2rem;
+  --s7: 3rem;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+
+  /* Shadows do the job borders were doing. Two levels only: resting and lifted. */
+  --shadow-1: 0 1px 2px rgba(16, 36, 47, 0.04), 0 1px 3px rgba(16, 36, 47, 0.06);
+  --shadow-2: 0 4px 12px rgba(16, 36, 47, 0.08), 0 1px 3px rgba(16, 36, 47, 0.06);
+  --shadow-3: 0 24px 48px -12px rgba(16, 36, 47, 0.25);
+
+  --sidebar-w: 15rem;
+  --header-h: 4.5rem;
+
+  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  /* Bootstrap's variables, repointed so anything still using its utilities
+   * inherits these decisions rather than its defaults. */
+  --bs-primary: var(--forest);
   --bs-primary-rgb: 0, 104, 74;
-  --bs-link-color: var(--mdb-forest);
-  --bs-link-color-rgb: 0, 104, 74;
-  --bs-link-hover-color: var(--mdb-forest-dark);
-  --bs-body-color: var(--mdb-ink);
-  --bs-body-font-family: var(--mdb-font);
-  --bs-font-monospace: var(--mdb-font-mono);
-  --bs-secondary-color: var(--mdb-ink-soft);
-  --bs-border-color: var(--mdb-line);
-  --bs-body-bg: #ffffff;
-  --bs-tertiary-bg: var(--mdb-mist);
-  --bs-focus-ring-color: rgba(0, 237, 100, 0.4);
+  --bs-link-color: var(--forest);
+  --bs-link-hover-color: var(--forest-hover);
+  --bs-body-color: var(--ink);
+  --bs-body-bg: var(--ground);
+  --bs-font-sans-serif: var(--font);
+  --bs-font-monospace: var(--mono);
+  --bs-border-color: var(--line);
+  --bs-secondary-color: var(--ink-2);
+  --bs-border-radius: var(--r-md);
 }
 
-body {
-  font-family: var(--mdb-font);
-  color: var(--mdb-ink);
+/* ---------- base ---------- */
+
+* { -webkit-font-smoothing: antialiased; }
+
+body,
+body.bg-body-tertiary {
+  font-family: var(--font);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--ground);
+  margin: 0;
 }
 
-/* Buttons. Bootstrap derives hover and active shades from the Sass colour it was
- * compiled with, not from --bs-primary, so the brand ones are stated outright. */
-.btn-primary {
-  --bs-btn-bg: var(--mdb-forest);
-  --bs-btn-border-color: var(--mdb-forest);
-  --bs-btn-hover-bg: var(--mdb-forest-dark);
-  --bs-btn-hover-border-color: var(--mdb-forest-dark);
-  --bs-btn-active-bg: var(--mdb-forest-dark);
-  --bs-btn-active-border-color: var(--mdb-forest-dark);
-  --bs-btn-disabled-bg: var(--mdb-forest);
-  --bs-btn-disabled-border-color: var(--mdb-forest);
+.font-monospace, code, pre, .mono { font-family: var(--mono); }
+
+a { color: var(--forest); text-decoration: none; }
+a:hover { color: var(--forest-hover); text-decoration: underline; }
+
+::selection { background: var(--forest-wash); }
+
+/* ---------- the shell ---------- */
+
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  min-height: 100vh;
 }
 
-.btn-outline-primary {
-  --bs-btn-color: var(--mdb-forest);
-  --bs-btn-border-color: var(--mdb-forest);
-  --bs-btn-hover-bg: var(--mdb-forest);
-  --bs-btn-hover-border-color: var(--mdb-forest);
-  --bs-btn-active-bg: var(--mdb-forest);
-  --bs-btn-active-border-color: var(--mdb-forest);
-  --bs-btn-disabled-color: var(--mdb-forest);
-  --bs-btn-disabled-border-color: var(--mdb-forest);
+/* The sidebar is furniture: it never scrolls with the work, and it is quieter
+   than everything to its right. */
+.app-sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: var(--s5) var(--s3) var(--s4);
+  background: var(--surface);
+  border-right: 1px solid var(--line);
 }
 
-/* Spring green is the focus colour throughout, so keyboard position is obvious
- * on a screen that is otherwise green — the ring has to be brighter than the
- * buttons it moves between. */
-.btn:focus-visible,
-.form-control:focus,
-.form-select:focus,
-.form-check-input:focus {
-  border-color: var(--mdb-forest);
-  box-shadow: 0 0 0 0.2rem var(--bs-focus-ring-color);
-  outline: none;
-}
-
-/* Navbar: slate ground, spring green marking the screen you are on. The brand
- * word is not a link back to a dashboard — there is no dashboard — it is the
- * questions screen, which is the work. */
-.app-nav {
-  background-color: var(--mdb-slate);
-  border-bottom: 1px solid var(--mdb-slate-soft);
-}
-
-.app-nav .navbar-brand {
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s2) var(--s6);
+  font-size: 0.9375rem;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
+  color: var(--ink);
 }
 
-.app-nav .nav-link {
-  color: rgba(255, 255, 255, 0.72);
-  border-bottom: 2px solid transparent;
-  padding-bottom: calc(0.5rem - 2px);
+.app-brand:hover { color: var(--ink); text-decoration: none; }
+
+.app-brand-mark {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  border-radius: var(--r-sm);
+  background: linear-gradient(135deg, var(--forest), #00a35c);
 }
 
-.app-nav .nav-link:hover {
-  color: #ffffff;
+.app-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.app-nav .nav-link.active {
-  color: #ffffff;
-  border-bottom-color: var(--mdb-spring);
+/* Nav items keep Bootstrap's class names — scripts and tests hook onto them —
+   and none of its appearance. */
+.app-sidebar .nav-link {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0.4375rem var(--s2);
+  border-radius: var(--r-sm);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--ink-2);
+  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-/* The admin screens are a group, not four unrelated destinations, so they are
- * separated once by a rule rather than each carrying its own "admin" pill. */
-.app-nav .nav-divider {
-  width: 1px;
-  align-self: center;
-  height: 1.25rem;
-  margin: 0 0.75rem;
-  background-color: rgba(255, 255, 255, 0.25);
+.app-sidebar .nav-link:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+  text-decoration: none;
 }
 
-/* The admin group is named once, quietly, instead of three identical pills. */
-.app-nav .nav-group-label {
-  display: inline-block;
-  padding: 0.5rem 0.5rem 0.5rem 0;
+.app-sidebar .nav-link.active {
+  background: var(--forest-wash);
+  color: var(--forest);
+  font-weight: 600;
+}
+
+/* The admin group. Curation is a different kind of work from authoring, so it
+   sits below a rule under its own heading rather than among the author's own
+   screens — the separation is the point, not the label. */
+.nav-section {
+  margin-top: var(--s5);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--line);
+}
+
+.nav-group-label {
+  display: block;
+  padding: 0 var(--s2) var(--s2);
   font-size: 0.6875rem;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--ink-3);
 }
 
-/* Page headers. Every screen leads with a title, a sentence of standing
- * explanation, and its actions; the macros lay that out so a new screen cannot
- * drift from the others by accident. */
-.page-header {
+.app-sidebar-footer {
+  margin-top: auto;
+  padding: var(--s3) var(--s2) 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.75rem;
+  color: var(--ink-3);
+}
+
+/* ---------- content ---------- */
+
+.app-main {
+  min-width: 0;
   display: flex;
+  flex-direction: column;
+}
+
+/* The screen's header stays put while its list scrolls under it, so the title
+   and the actions are reachable from anywhere in a long list. */
+.page-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  align-items: start;
-  gap: var(--mdb-gutter);
-  margin-bottom: 1.25rem;
+  gap: var(--s5);
+  padding: var(--s5) var(--s6) var(--s4);
+  background: rgba(246, 247, 248, 0.85);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
 }
 
 .page-title {
-  font-size: var(--mdb-page-title);
+  font-size: 1.375rem;
   font-weight: 600;
-  letter-spacing: -0.015em;
-  margin: 0 0 0.25rem;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin: 0;
 }
 
 .page-lede {
-  color: var(--mdb-ink-soft);
-  font-size: 0.9375rem;
-  max-width: 62ch;
-  margin: 0;
+  margin: var(--s2) 0 0;
+  max-width: 68ch;
+  font-size: 0.875rem;
+  color: var(--ink-2);
+}
+
+/* Everything below a screen's header is inset from the shell and spaced apart,
+   without each template having to wrap itself in a container. Dialogs are
+   excluded: they are positioned against the viewport, not laid out in the flow. */
+.app-main > :not(.page-header):not(.modal) {
+  margin: 0 var(--s6) var(--s4);
+}
+
+.app-main > .page-header + :not(.modal) {
+  margin-top: var(--s5);
+}
+
+.app-main > :last-child:not(.modal) {
+  margin-bottom: var(--s7);
 }
 
 .section-title {
-  font-size: var(--mdb-section-title);
+  font-size: 0.9375rem;
   font-weight: 600;
+  letter-spacing: -0.01em;
   margin: 0;
 }
 
-/* Toolbars. A row of actions is one control group at one size, so a screen
- * cannot end up mixing btn-sm and btn in the same row as they all did. */
+/* ---------- buttons ---------- */
+
+.btn {
+  --bs-btn-border-radius: var(--r-sm);
+  font-family: var(--font);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 0.4375rem 0.875rem;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  transition: background-color 0.12s ease, box-shadow 0.12s ease, color 0.12s ease;
+}
+
+.btn:disabled, .btn.disabled { opacity: 0.45; }
+
+.btn-primary,
+.btn-primary:hover,
+.btn-primary:focus {
+  background: var(--forest);
+  border-color: var(--forest);
+  color: #fff;
+  box-shadow: var(--shadow-1);
+}
+
+.btn-primary:hover { background: var(--forest-hover); border-color: var(--forest-hover); }
+
+/* Everything that is not the one primary action is a quiet button on white.
+   Bootstrap's outline variants all shouted at the same volume. */
+.btn-outline-secondary,
+.btn-outline-primary,
+.btn-secondary {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--ink);
+  box-shadow: var(--shadow-1);
+}
+
+.btn-outline-secondary:hover,
+.btn-outline-primary:hover,
+.btn-secondary:hover {
+  background: var(--surface-sunken);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.btn-outline-primary { color: var(--forest); }
+
+.btn-outline-danger {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--danger);
+  box-shadow: var(--shadow-1);
+}
+
+.btn-outline-danger:hover {
+  background: var(--danger-wash);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-danger, .btn-danger:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.btn-outline-success, .btn-outline-success:hover {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--forest);
+  box-shadow: var(--shadow-1);
+}
+
+.btn-outline-success:hover { background: var(--forest-wash); border-color: var(--forest); }
+
+.btn-link { color: var(--forest); font-weight: 500; box-shadow: none; }
+
+.btn-sm { font-size: 0.8125rem; padding: 0.25rem 0.5rem; }
+
+/* Spring green is the focus colour throughout: on a screen that is otherwise
+   green-accented, the ring has to be brighter than the things it moves between. */
+.btn:focus-visible,
+.form-control:focus,
+.form-select:focus,
+.form-check-input:focus,
+a:focus-visible,
+[data-copy-id]:focus-visible {
+  outline: 2px solid var(--spring);
+  outline-offset: 1px;
+  box-shadow: none;
+  border-color: var(--forest);
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--s2);
 }
 
-.toolbar .btn {
-  --bs-btn-padding-y: 0.375rem;
-  --bs-btn-padding-x: 0.75rem;
-  --bs-btn-font-size: 0.9375rem;
-  white-space: nowrap;
-}
+.toolbar .btn { white-space: nowrap; }
 
-/* A destructive action never sits flush against a safe one. */
+/* A destructive action is never flush against a safe one. */
 .toolbar .btn-outline-danger,
 .toolbar .btn-danger {
-  margin-left: 0.5rem;
+  margin-left: var(--s3);
 }
 
-/* Filter bars sit above a list and are secondary to it: small controls, aligned
- * on their baselines, labelled quietly. */
+.btn-group > .btn { box-shadow: none; }
+.btn-group > .btn.active { background: var(--forest-wash); color: var(--forest); border-color: var(--line-strong); }
+
+/* ---------- forms ---------- */
+
+.form-control, .form-select {
+  font-family: var(--font);
+  font-size: 0.875rem;
+  padding: 0.4375rem 0.625rem;
+  color: var(--ink);
+  background-color: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  box-shadow: none;
+}
+
+.form-control::placeholder { color: var(--ink-3); }
+
+.form-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--ink-2);
+  margin-bottom: var(--s1);
+}
+
+.form-text { font-size: 0.8125rem; color: var(--ink-3); }
+
+.form-check-input:checked { background-color: var(--forest); border-color: var(--forest); }
+
+/* Filters sit above a list and are subordinate to it. */
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
-  align-items: end;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
+  align-items: flex-end;
+  gap: var(--s3);
+  margin-bottom: var(--s4);
 }
 
-.filter-bar .form-label {
-  font-size: 0.8125rem;
-  color: var(--mdb-ink-soft);
-  margin-bottom: 0.25rem;
+/* ---------- surfaces ---------- */
+
+/* One surface treatment, and it is the same object whether a template calls it a
+   panel or reaches for Bootstrap's card. */
+.panel, .card {
+  background: var(--surface);
+  border: none;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
 }
 
-.filter-bar .form-control,
-.filter-bar .form-select,
-.filter-bar .btn {
-  font-size: 0.875rem;
-  padding-top: 0.25rem;
-  padding-bottom: 0.25rem;
-}
-
-/* Panels: the one card treatment. */
-.panel {
-  background-color: var(--bs-body-bg);
-  border: 1px solid var(--mdb-line);
-  border-radius: 0.5rem;
-}
-
-.panel > .panel-header {
+.panel > .panel-header, .card-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.625rem 1rem;
-  border-bottom: 1px solid var(--mdb-line);
-  background-color: var(--mdb-mist);
-  border-radius: 0.5rem 0.5rem 0 0;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: var(--s3) var(--s5);
+  background: transparent;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  font-size: 0.9375rem;
 }
 
-.panel > .panel-body {
-  padding: 1rem;
+.panel > .panel-body, .card-body { padding: var(--s5); }
+
+/* Rows in a list are cards' worth of breathing room without cards' borders; the
+   whole row lifts on hover so it reads as one object. */
+.list-group, .list-group-flush { border-radius: var(--r-lg); }
+
+.list-group-item {
+  border: none;
+  border-bottom: 1px solid var(--line);
+  padding: var(--s5);
+  background: transparent;
+  transition: background-color 0.12s ease;
 }
 
-/* Empty states read as a deliberate answer rather than a failure to load. */
-.empty-state {
-  padding: 3rem 1rem;
-  text-align: center;
-  color: var(--mdb-ink-soft);
-}
+.list-group-item:last-child { border-bottom: none; }
+.list-group-item:hover { background: var(--surface-sunken); }
 
-/* Tags. Colour means one thing each, and the meaning is repeated in the title
- * attribute because colour alone is not a label: gold for the skill badge a
- * question is filed under (the badge artwork is gold), green for the topic area
- * it exercises, and flat grey for anything that is only an identifier. */
-.tag {
-  display: inline-block;
+.table { --bs-table-bg: transparent; font-size: 0.875rem; }
+.table > :not(caption) > * > * { padding: var(--s3) var(--s4); border-bottom-color: var(--line); }
+.table > thead th {
   font-size: 0.75rem;
   font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+/* ---------- notices ---------- */
+
+/* Alerts were the loudest thing on every screen. They are now a tinted panel
+   with a coloured edge, which reads as information rather than as an incident. */
+.alert {
+  border: none;
+  border-left: 3px solid var(--ink-3);
+  border-radius: var(--r-md);
+  padding: var(--s4) var(--s5);
+  font-size: 0.875rem;
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.alert-danger { border-left-color: var(--danger); background: var(--danger-wash); color: #6b1d1d; }
+.alert-warning { border-left-color: var(--warn); background: var(--warn-wash); color: #5c4600; }
+.alert-success { border-left-color: var(--forest); background: var(--forest-wash); color: #0a4436; }
+.alert-info, .alert-secondary { border-left-color: var(--forest); background: var(--surface); color: var(--ink); }
+
+.alert strong { font-weight: 600; }
+
+.progress {
+  background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-bar { background: var(--forest); font-size: 0.75rem; font-weight: 500; }
+
+/* Nothing to show, said as a deliberate answer rather than a failure to load. */
+.empty-state {
+  padding: var(--s7) var(--s5);
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 0.9375rem;
+}
+
+/* ---------- dialogs ---------- */
+
+/* Bootstrap's dialog is a bordered box with a grey header and footer rule. These
+   are one white sheet, lifted well clear of the page. */
+.modal-content {
+  border: none;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
+}
+
+.modal-header, .modal-footer {
+  border: none;
+  padding: var(--s5) var(--s5) var(--s3);
+}
+
+.modal-footer {
+  padding: var(--s3) var(--s5) var(--s5);
+  gap: var(--s2);
+}
+
+.modal-body { padding: var(--s2) var(--s5); }
+.modal-title { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.015em; }
+.modal-backdrop.show { opacity: 0.35; }
+
+/* ---------- tags ---------- */
+
+/* Colour means one thing each, and the meaning is repeated in the title
+   attribute because colour alone is not a label: forest for the skill badge a
+   question is filed under, a warmer neutral for the topic area it exercises,
+   flat grey for anything that is only an identifier. */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
   line-height: 1.4;
-  padding: 0.15rem 0.45rem;
-  border-radius: 0.25rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
   border: 1px solid transparent;
-  text-decoration: none;
+  white-space: nowrap;
 }
 
-.tag-badge {
-  color: #7a5c00;
-  background-color: #fff5d6;
-  border-color: #f2e0a8;
-}
-
-.tag-badge:hover {
-  color: #5c4500;
-  background-color: #ffeeb8;
-}
-
-.tag-category {
-  color: var(--mdb-forest);
-  background-color: #e3f5ec;
-  border-color: #bfe5d3;
-}
+.tag-badge { color: var(--forest); background: var(--forest-wash); border-color: #cfe6dc; }
+.tag-badge:hover { background: #dcece5; color: var(--forest-hover); text-decoration: none; }
+.tag-category { color: var(--warn); background: var(--warn-wash); border-color: #f0e3bf; }
 
 .tag-meta {
-  color: var(--mdb-ink-soft);
-  background-color: var(--mdb-mist);
-  border-color: var(--mdb-line);
+  color: var(--ink-3);
+  background: var(--surface-sunken);
+  border-color: var(--line-strong);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
   font-weight: 400;
-  font-family: var(--mdb-font-mono);
 }
 
-/* Metadata that is read rather than acted on: timestamps, counts, paths. */
-.meta {
-  font-size: 0.8125rem;
-  color: var(--mdb-ink-soft);
+.tag-meta:hover { color: var(--ink); background: var(--line); }
+
+/* Bootstrap's own badges, wherever a template still uses one, are given the same
+   pill shape so they cannot look like a different species of chip. */
+.badge {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+}
+
+.meta { font-size: 0.8125rem; color: var(--ink-3); }
+
+.breadcrumb { font-size: 0.8125rem; margin-bottom: var(--s3); }
+.breadcrumb-item + .breadcrumb-item::before { color: var(--ink-3); }
+
+/* ---------- narrow screens ---------- */
+
+/* The sidebar becomes a strip along the top. This is an internal authoring tool
+   used at a desk, so it is made to survive a narrow window rather than designed
+   for a phone. */
+@media (max-width: 60rem) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+
+  .app-sidebar {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--s4);
+    overflow-x: auto;
+    padding: var(--s2) var(--s4);
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .app-brand { padding: 0 var(--s3) 0 0; }
+  .app-nav-list { flex-direction: row; }
+  .nav-section { margin: 0; padding: 0 0 0 var(--s3); border-top: none; border-left: 1px solid var(--line); }
+  .nav-group-label { display: none; }
+  .app-sidebar-footer { margin: 0; padding: 0; border: none; }
+  .page-header, .page-body { padding-left: var(--s4); padding-right: var(--s4); }
 }

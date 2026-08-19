@@ -180,18 +180,32 @@ render. Where no stable hook exists, add a `data-` attribute rather than matchin
 
 The look is not decided per template. Every screen is built from the macros in
 `app/templates/_ui.html` — `page_header`, `filter_bar`, `field`, `panel`, `empty_state`
-and the tag macros — and every colour, type size and control size comes from
-`app/static/theme.css`, which works by overriding Bootstrap's own CSS variables and so is
-always loaded after it. This is a constraint, not a convenience: when each template laid
-out its own header the screens drifted apart, ending up with two different heading sizes,
-control sizes mixed inside one row, and five tag colours on a single line. Colour now
-means one thing each — MongoDB forest green for a primary action, spring green for focus
-and success, red for anything destructive, gold for a skill badge, green for a topic area,
-flat grey for anything that is only an identifier. `tests/test_theme.py` holds the screens
-to it, including a test that fails if a template hand-rolls a page header instead of
-calling the macro.
+and the tag macros — and every colour, space, radius, shadow and type size comes from
+`app/static/theme.css`. Bootstrap is still loaded, because the modals and dropdowns use
+its JavaScript, but almost none of its appearance survives: the theme is loaded after it
+and replaces its components, keeping the class names the scripts and tests hook onto.
+Surfaces are separated by elevation and whitespace rather than by hairline borders, and
+MongoDB forest green appears only where something is the primary action or the current
+screen. Colour means one thing each — forest for a primary action and for a skill badge,
+spring green for focus, red for destructive, a warm neutral for a topic area, flat grey
+for anything that is only an identifier.
 
-### 3. Long work runs in the background and is timed on the server
+### 3. One shell, with authoring separated from curation
+
+The screens are not a flat list of peers. Writing questions is the job; the badge catalog,
+the corpus and the logs are curation you visit when something about the material is wrong.
+So `base.html` renders one app shell — a persistent sidebar that does not scroll with the
+work, and a sticky header per screen — with **Questions** alone at the top and the three
+curation screens below a rule under an **Admin** heading. Nothing enforces that boundary,
+because there are no authorizations and both areas are reachable by anyone who can reach
+the service; the layout is the only thing that tells an author which side of it they are
+on, which is why it is drawn in the layout rather than repeated as a label on each link.
+
+`tests/test_theme.py` holds the screens to all of this, including tests that fail if a
+template hand-rolls a page header instead of calling the macro, or if the questions link
+drifts into the admin section.
+
+### 4. Long work runs in the background and is timed on the server
 
 Anything that calls a model or crawls a site runs as a background task with its own run
 state, and the page polls for status. Each job — question generation, badge sync,
@@ -203,7 +217,7 @@ alongside it. The page computes elapsed time from those, correcting for clock sk
 This is why the timer survives a reload or a trip to another screen: the browser is not
 the thing that remembers when the run began.
 
-### 4. Failures are reported, never swallowed
+### 5. Failures are reported, never swallowed
 
 A background failure has nowhere to surface on its own. Every run captures the error
 and its traceback into run state, and the screen shows both — an operator should not
@@ -218,7 +232,7 @@ The state that must never be silently produced is a **clean result that was not
 actually checked** — "screening did not run" and "screened and found nothing" are
 different, and the screen says which.
 
-### 5. Never lose work that has already been paid for
+### 6. Never lose work that has already been paid for
 
 By the time a follow-up step runs, the expensive part is done. So:
 
@@ -230,7 +244,7 @@ By the time a follow-up step runs, the expensive part is done. So:
 - if a documentation crawl stores nothing, the previous corpus is left intact rather than
   swept away.
 
-### 6. Cheap and deterministic first, expensive and probabilistic second
+### 7. Cheap and deterministic first, expensive and probabilistic second
 
 Where a model or a paid service makes a judgement, something cheap narrows the field
 first, and the narrowing is never allowed to make the decision:
@@ -242,14 +256,14 @@ first, and the narrowing is never allowed to make the decision:
   never catalogued;
 - nothing calls out at all when there is nothing to compare.
 
-### 7. Machine runs never overwrite human decisions
+### 8. Machine runs never overwrite human decisions
 
 Review is the product of this tool, so a re-run must not undo it. Status is set on
 insert only; a corrected badge title and curated links are locked against later syncs;
 and when a merge or a duplicate sweep must choose a survivor, it prefers the record
 carrying review work — curated over machine-written.
 
-### 8. Model output is validated deterministically
+### 9. Model output is validated deterministically
 
 Schemas are permissive on arrival and the rules are enforced afterwards, in code:
 exactly four options, exactly one correct, no repeated or empty options, a non-empty
@@ -261,7 +275,7 @@ Refusals, truncated structured output and missing parsed results are errors — 
 read as "the model found nothing", which is indistinguishable from a correct empty
 answer.
 
-### 9. Fetched content is data, never instructions or markup
+### 10. Fetched content is data, never instructions or markup
 
 Documentation pages, search results and log lines are content this program did not
 write. They go into a prompt as clearly-labelled reference material, and into a page as
@@ -270,7 +284,7 @@ the document; the log viewer and every traceback are written with `textContent`.
 endpoint accepts a file path — the log viewer serves one known file and takes no path
 parameter at all, because there are no authorizations here to fall back on.
 
-### 10. Configuration from the environment; external contracts as named constants
+### 11. Configuration from the environment; external contracts as named constants
 
 Every setting resolves from the environment through one frozen `Settings` object, and
 nothing that identifies infrastructure is defaulted in code that lives in a public
@@ -283,7 +297,7 @@ name and the `embedding_text` field path are referenced by an Atlas index defini
 created by hand, so renaming either would silently stop the index matching anything
 with no error raised here.
 
-### 11. Storage shapes follow the way things are read
+### 12. Storage shapes follow the way things are read
 
 - Many-to-many is an array: `categories` and `skill_badges` on a question, so one
   question is findable under every badge it serves.
@@ -298,14 +312,14 @@ with no error raised here.
 - `content_hash` distinguishes "unchanged" from "updated", which is what makes a
   re-crawl cheap and the reported counts meaningful.
 
-### 12. Atlas does the embedding and the reranking
+### 13. Atlas does the embedding and the reranking
 
 The vector index uses `autoEmbed`, and reranking uses the native `$rerank` stage in the
 same aggregation. This program stores no vectors, needs no model API key for retrieval,
 and makes no second round trip. The consequence to preserve: retrieval quality is a
 property of the index definition and the pipeline, not of client code.
 
-### 13. Tests are the recorded requirements
+### 14. Tests are the recorded requirements
 
 Every test carries an `Intent` / `Success` / `Feature` block, and those blocks are never
 edited. When a requirement genuinely changes — as several have — the test is **replaced**
@@ -318,7 +332,7 @@ semantics, the Anthropic client is a scripted double, and HTTP is a local stub s
 When a fake diverges from real behaviour it gets fixed — a fake that returns the wrong
 shape lets a test pass while the code asks for fields it will never receive.
 
-### 14. Two areas, separated by audience rather than permission
+### 15. Two areas, separated by audience rather than permission
 
 Authoring lives at the root; curation lives under `/admin`. There are no authorizations
 anywhere in this program, and both are reachable by anyone who can reach the service.
@@ -326,7 +340,7 @@ The split exists so each screen has one audience, and it is enforced only by tes
 questions screen is not served under `/admin`, and no questions endpoint is served under
 `/api/admin`.
 
-### 15. Destructive actions are reversible, confirmed, or both
+### 16. Destructive actions are reversible, confirmed, or both
 
 Retiring is reversible and deleting is not, so a badge cannot be deleted until it is
 retired. The duplicate sweep deletes nothing at all — it reports, and deleting is a
@@ -635,7 +649,7 @@ confirmation a single delete uses.
 
 That demotes 0.85 from deciding which questions die to shortlisting the ones worth reading,
 which is the right weight for a number measured on six questions. It also removed the old
-dry-run button — see strategy 15.
+dry-run button — see strategy 16.
 
 ### Citations
 

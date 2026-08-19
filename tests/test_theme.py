@@ -72,7 +72,10 @@ def test_the_theme_is_served_as_one_stylesheet(client):
     response = client.get("/static/theme.css")
     assert response.status_code == 200
     assert "css" in response.headers["content-type"]
-    assert "--mdb-forest" in response.text
+    # The token was renamed when the theme stopped being a repaint of Bootstrap and
+    # became its own layer; the recorded requirement — that the brand colours are
+    # defined here rather than per template — is unchanged.
+    assert "--forest: #00684a" in response.text
 
 
 def test_the_theme_loads_after_bootstrap(client):
@@ -141,6 +144,53 @@ def test_the_admin_area_is_labelled_once_rather_than_per_link(client):
     nav = body[body.index("<nav"):body.index("</nav>")]
     assert nav.count("nav-group-label") == 1
     assert nav.count('data-admin-area="true"') == 3
+
+
+@pytest.mark.parametrize("screen", SCREENS)
+def test_every_screen_renders_inside_the_app_shell(client, screen):
+    """
+    Intent: Navigation is furniture, not content. A nav that scrolls away with the work,
+        or that each screen redraws, is what made this read as a sequence of pages rather
+        than one application.
+    Success: Every screen renders the shell with its persistent sidebar.
+    Feature: Shell — one persistent frame around every screen.
+    """
+    body = client.get(screen).text
+    assert '<div class="app">' in body
+    assert body.count("app-sidebar") == 1
+
+
+def test_authoring_and_curation_are_not_peers_in_the_navigation(client):
+    """
+    Intent: All four screens sat in one flat list, which said they were the same kind of
+        work. They are not: writing questions is the job, and the other three are curation
+        you visit when something about the material is wrong. A flat list makes an author
+        weigh three irrelevant destinations every time they look at the nav.
+    Success: The questions link sits outside the admin section, and all three curation
+        links sit inside it, under the admin group heading.
+    Feature: Navigation — authoring is separated from curation.
+    """
+    body = client.get("/").text
+    nav = body[body.index("<nav"):body.index("</nav>")]
+    section = nav[nav.index('class="nav-section"'):]
+    assert 'href="/"' not in section
+    assert section.count('data-admin-area="true"') == 3
+    assert nav.count("nav-group-label") == 1
+
+
+def test_the_admin_boundary_is_drawn_in_the_layout(client):
+    """
+    Intent: Nothing enforces the boundary — there are no authorizations, and both areas
+        are reachable by anyone who can reach the service — so the layout is the only
+        thing that can tell an author which side of it they are on.
+    Success: The theme separates the admin section visually rather than relying on a
+        repeated label on each link.
+    Feature: Navigation — the boundary is visible.
+    """
+    css = client.get("/static/theme.css").text
+    rule = css[css.index(".nav-section {"):]
+    rule = rule[: rule.index("}")]
+    assert "border-top" in rule
 
 
 def test_a_tag_colour_means_exactly_one_thing(client):
