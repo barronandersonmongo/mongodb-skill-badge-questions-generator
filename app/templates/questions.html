@@ -53,10 +53,10 @@ per_page={{ pagination.per_page }}&
            id="progress-bar" data-progress-bar="true" style="width: 0%;">0%</div>
     </div>
     <div class="row row-cols-2 row-cols-md-4 g-2 small mb-2" data-progress-stats="true">
-      <div><div class="text-body-secondary">Sections</div><div data-stat="pages">—</div></div>
+      <div><div class="text-body-secondary">Chunks</div><div data-stat="pages">—</div></div>
       <div><div class="text-body-secondary">Questions</div><div data-stat="questions">—</div></div>
       <div><div class="text-body-secondary">Rate</div><div data-stat="rate">—</div></div>
-      <div><div class="text-body-secondary">Per page</div><div data-stat="per-page">—</div></div>
+      <div><div class="text-body-secondary">Per chunk</div><div data-stat="per-page">—</div></div>
       <div><div class="text-body-secondary">Elapsed</div><div class="font-monospace" data-stat="elapsed">—</div></div>
       <div><div class="text-body-secondary">Remaining</div><div data-stat="eta">—</div></div>
       <div><div class="text-body-secondary">Spent</div><div data-stat="spent">—</div></div>
@@ -113,7 +113,7 @@ per_page={{ pagination.per_page }}&
   {% if last_result.source == "badge-page-walk" %}
   <strong>Last run:</strong>
   {{ last_result.inserted }} question(s) stored from
-  {{ last_result.pages_done }} documentation page(s)
+  {{ last_result.pages_done }} documentation chunk(s)
   {% if last_result.cost and last_result.cost.dollars %}
   <span class="text-body-secondary" data-run-cost="true">
     — ${{ "%.3f"|format(last_result.cost.dollars) }} spent
@@ -141,13 +141,13 @@ per_page={{ pagination.per_page }}&
   {% endif %}
   {% if last_result.pages_available is not none %}
   <div class="mt-1 small text-body-secondary" data-pages-left="true">
-    {{ last_result.pages_available }} page(s) not yet written from remain for this badge.
+    {{ last_result.pages_available }} chunk(s) not yet written from remain for this badge.
   </div>
   {% endif %}
   {% if last_result.failure_count %}
   <details class="mt-1">
     <summary class="small" data-page-failures="true">
-      {{ last_result.failure_count }} page(s) produced nothing
+      {{ last_result.failure_count }} chunk(s) produced nothing
     </summary>
     <ul class="small mb-0 mt-2">
       {% for item in last_result.failures %}
@@ -183,7 +183,8 @@ per_page={{ pagination.per_page }}&
   {% endif %}
   {% if last_result.source_pages %}
   <div class="mt-1" data-source-pages="true">
-    Written from {{ last_result.source_pages | length }} stored documentation page(s).
+    Written from {{ last_result.source_pages | length }} stored documentation page(s)
+    — the pages those chunks came from.
     <details class="mt-1">
       <summary class="small">Show sources</summary>
       <ul class="small mb-0 mt-2">
@@ -497,11 +498,12 @@ per_page={{ pagination.per_page }}&
       </div>
       <div class="modal-body">
         <p class="small text-body-secondary">
-          A run walks the documentation pages a badge is about, one at a time, and writes
-          several questions from each. Pages already written from are skipped, so running
-          it again covers new material rather than repeating. Several badges are walked
-          one after another, each getting the full budget below. You can leave this page
-          open and it will report when done.
+          A run walks the documentation a badge is about one <strong>chunk</strong> at a
+          time — a heading and the passage under it, not a whole page — and writes several
+          questions from each. A page is a few chunks on average, and chunks already
+          written from are skipped, so running a badge again covers new material rather
+          than repeating. Several badges are walked one after another, each getting the
+          full budget below.
         </p>
         <label for="badge-picker" class="form-label">Skill badges</label>
         <select class="form-select" id="badge-picker" multiple size="8">
@@ -519,11 +521,11 @@ per_page={{ pagination.per_page }}&
 
         <div class="row g-3 mt-3">
           <div class="col">
-            <label for="max-pages" class="form-label">How many pages to walk</label>
+            <label for="max-pages" class="form-label">How many chunks to walk</label>
             <input class="form-control" id="max-pages" type="number" value="25" min="1" max="200">
           </div>
           <div class="col">
-            <label for="per-page" class="form-label">Questions per page</label>
+            <label for="per-page" class="form-label">Questions per chunk</label>
             <input class="form-control" id="per-page" type="number" value="3" min="1" max="10">
           </div>
         </div>
@@ -535,7 +537,7 @@ per_page={{ pagination.per_page }}&
         <div class="form-text">
           Per badge, not per run: each selected badge is walked with these numbers. A
           badge picks up where its last run stopped, so a badge with less unused material
-          contributes fewer pages than the maximum.
+          contributes fewer chunks than the maximum.
         </div>
 
         {# Spelled out because the multiplication is where the surprise was. It is a
@@ -646,7 +648,7 @@ const statsPanel = panel.querySelector("[data-progress-stats]");
 
 const PHASES = {
   resolving: "Working out which documentation this badge is about…",
-  writing: "Reading sections and writing questions…",
+  writing: "Reading chunks and writing questions…",
   stopped: "Stopped",
   done: "Finished",
 };
@@ -732,7 +734,7 @@ function showProgress(p) {
 
   setStat("pages", p.pages_total ? p.pages_done + " of " + p.pages_total : String(p.pages_done || 0));
   setStat("questions", String(p.inserted || 0)
-    + (p.failure_count ? " · " + p.failure_count + " page(s) failed" : ""));
+    + (p.failure_count ? " · " + p.failure_count + " chunk(s) failed" : ""));
   setStat("rate", p.pages_per_minute ? p.pages_per_minute.toFixed(1) + "/min" : "—");
   setStat("per-page", p.questions_per_page_actual === null || p.questions_per_page_actual === undefined
     ? "—" : p.questions_per_page_actual.toFixed(1));
@@ -759,7 +761,7 @@ function showProgress(p) {
   setStat("current-page", p.current_page
     ? "Reading: " + (p.current_page.title || p.current_page.url)
     : (p.pages_available !== null && p.pages_available !== undefined
-        ? p.pages_available + " page(s) not yet written from remain for this badge"
+        ? p.pages_available + " chunk(s) not yet written from remain for this badge"
         : "—"));
 }
 
@@ -943,9 +945,9 @@ function updateProjection() {
   const pagesTotal = badges * pages;
   const questions = pagesTotal * perPage;
   projection.textContent =
-    badges + (badges === 1 ? " badge × " : " badges × ") + pages + " pages × " +
-    perPage + " per page — up to " + questions.toLocaleString() + " questions from " +
-    pagesTotal.toLocaleString() + " pages. A ceiling, not an estimate: pages already " +
+    badges + (badges === 1 ? " badge × " : " badges × ") + pages + " chunks × " +
+    perPage + " per chunk — up to " + questions.toLocaleString() + " questions from " +
+    pagesTotal.toLocaleString() + " chunks. A ceiling, not an estimate: chunks already " +
     "written from are skipped, and stopping ends the whole run.";
 }
 

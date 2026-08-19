@@ -26,7 +26,7 @@
 <div class="row row-cols-2 row-cols-md-4 g-3" data-run-totals="true">
   <div><div class="meta">Runs</div><div class="fs-5 fw-semibold">{{ totals.runs }}</div></div>
   <div><div class="meta">Questions</div><div class="fs-5 fw-semibold">{{ totals.questions }}</div></div>
-  <div><div class="meta">Sections read</div><div class="fs-5 fw-semibold">{{ totals.pages }}</div></div>
+  <div><div class="meta">Chunks read</div><div class="fs-5 fw-semibold">{{ totals.pages }}</div></div>
   <div><div class="meta">Spent</div><div class="fs-5 fw-semibold">{{ totals.dollars | money }}</div></div>
   <div><div class="meta">Time</div><div>{{ totals.seconds | duration }}</div></div>
   <div><div class="meta">Questions/min</div><div>{{ totals.questions_per_minute | rate }}</div></div>
@@ -43,7 +43,7 @@
         <tr>
           <th>When</th>
           <th>Badge</th>
-          <th class="text-end">Sections</th>
+          <th class="text-end">Chunks</th>
           <th class="text-end">Questions</th>
           <th class="text-end">Per page</th>
           <th>Level</th>

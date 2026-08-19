@@ -682,7 +682,11 @@ def test_a_walk_reports_the_pages_it_wrote_from_and_what_is_left(
     body = client.get(PAGE).text
     assert "6 question(s) stored from" in body
     assert 'data-pages-left="true"' in body
-    assert "41 page(s) not yet written from" in body
+    # The unit this counts is a chunk — a heading and the passage under it — and calling
+    # it a page overstated the work by about four times, a page being a few chunks. The
+    # requirement recorded above is unchanged: what produced these questions, and whether
+    # running again would find anything new. Only the word for the unit is corrected.
+    assert "41 chunk(s) not yet written from" in body
     assert "https://x/a.md" in body
 
 

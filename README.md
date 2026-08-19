@@ -398,6 +398,21 @@ would delete everything it never reached.
 Navigation stubs are skipped by a byte floor: an index page listing links is not something
 a question can be written from.
 
+### Two units, and the words for them
+
+A **page** is a documentation page. A **chunk** is a heading and the passage under it —
+one page holds 3.8 of them on average across the stored corpus, and up to 253. A run reads
+one chunk per Claude call, so the chunk is the unit of everything a run is measured in, and
+every screen now says chunk for it.
+
+It did not, for a while: the generate form said "how many pages to walk", the progress panel
+and the run history said sections, and the material screen said articles — four words for
+one thing, three of them for the piece rather than the page. The form's number is the one
+that decides what a run costs, and calling it pages overstated the material by about four
+times. The stored run records still use `pages_done` / `pages_total` / `pages_available` as
+their keys: renaming them would orphan every run already recorded, and an old run is a
+record of what was known then.
+
 ### Splitting pages into sections
 
 A page is the wrong unit, and it took two failures to establish that. Sent whole, one

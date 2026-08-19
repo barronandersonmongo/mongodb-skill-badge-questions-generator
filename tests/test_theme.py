@@ -257,3 +257,21 @@ def test_the_correct_option_is_marked_by_more_than_weight(client):
     rule = css[css.index("li[data-correct] {"):]
     assert "var(--forest-wash)" in rule[: rule.index("}")]
     assert "li[data-correct]::marker" in css
+
+
+def test_one_word_is_used_for_the_unit_a_run_reads(client):
+    """
+    Intent: The unit a walk consumes was called a page on the generate form and the coverage
+        screen, a section in the progress panel and the run history, and an article on the
+        material screen — four words for one thing, which is a piece of a page rather than a
+        page. The form's number is what decides what a run costs, and calling it pages
+        overstated the material by about four times, a page being a few chunks on average.
+    Success: No screen labels that unit a section or an article; the pages that remain named
+        are the pages a chunk came from and the pages of a list.
+    Feature: Shared vocabulary — one word for a chunk.
+    """
+    for screen in ("/", "/coverage", "/runs", "/admin/material"):
+        body = client.get(screen).text
+        content = body[body.index("<main"):]
+        assert "Sections" not in content, screen
+        assert "Articles" not in content, screen

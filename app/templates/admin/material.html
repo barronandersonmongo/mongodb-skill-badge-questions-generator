@@ -8,10 +8,10 @@
 {% call ui.page_header(
     "Material per badge",
     "How much documentation each badge still has to draw on, and how concentrated it is. "
-    "Articles is the number that predicts saturation: a walk takes one section per article "
-    "before it takes a second from any of them, so a badge with 252 sections across 25 "
-    "articles has about 25 sections' worth of new material and 227 helpings of what it "
-    "already read.") %}
+    "A run reads one chunk at a time — a heading and the passage under it — and Pages is "
+    "the number that predicts saturation: a walk takes one chunk per page before it takes "
+    "a second from any of them, so a badge with 252 chunks across 25 pages has about 25 "
+    "chunks' worth of new material and 227 helpings of what it already read.") %}
   <button class="btn btn-primary" id="load-btn" type="button" data-load="true">
     Measure
   </button>
@@ -42,15 +42,15 @@
               {% endfor %}
             </select>
           {% endcall %}
-          {% call ui.field("Sections about", "filter-contains") %}
+          {% call ui.field("Chunks about", "filter-contains") %}
             <input class="form-control" id="filter-contains" data-filter="contains"
                    type="search" placeholder="e.g. voyage" style="min-width: 12rem;">
           {% endcall %}
         {% endcall %}
         <div class="form-text mb-0">
-          Matched against each section's heading, its article's title and the URL — not
-          the body, because a body mentions everything it relates to. Sections and
-          articles below count only what matches.
+          Matched against each chunk's heading, its page's title and the URL — not the
+          body, because a body mentions everything it relates to. Chunks and pages below
+          count only what matches.
         </div>
       </div>
     </div>
@@ -89,7 +89,7 @@
 <div class="panel mt-4">
   <div class="panel-body" id="material-body" data-material-body="true">
     <p class="text-body-secondary mb-0">
-      <strong>Measure</strong> resolves each badge's section set. That is dozens of vector
+      <strong>Measure</strong> resolves each badge's chunk set. That is dozens of vector
       searches per badge — a few seconds for one, tens of seconds for all 34 — so it is
       not done until asked for.
     </p>
@@ -132,7 +132,7 @@ async function load() {
   target.replaceChildren(
     Object.assign(document.createElement("p"), {
       className: "text-body-secondary mb-0",
-      textContent: "Resolving each badge's sections — this takes a few seconds.",
+      textContent: "Resolving each badge's chunks — this takes a few seconds.",
     })
   );
   const response = await fetch(API + "?" + params.toString());
@@ -157,11 +157,11 @@ async function load() {
   [
     ["Skill badge", ""],
     ["Questions", "text-end"],
-    ["Articles left", "text-end"],
-    ["Sections left", "text-end"],
-    ["Sections per article", "text-end"],
-    ["Biggest article", "text-end"],
-    ["Articles written from", "text-end"],
+    ["Pages left", "text-end"],
+    ["Chunks left", "text-end"],
+    ["Chunks per page", "text-end"],
+    ["Biggest page", "text-end"],
+    ["Pages written from", "text-end"],
     ["Saturation", ""],
   ].forEach(([label, className]) => {
     const th = document.createElement("th");
@@ -182,8 +182,8 @@ async function load() {
     name.append(link);
     tr.append(name);
     cell(tr, row.questions, "text-end");
-    // Articles first, and set in bold: it is the ceiling on new material, and putting
-    // the section count first is what made 252 read as plenty.
+    // Pages first, and set in bold: it is the ceiling on new material, and putting
+    // the chunk count first is what made 252 read as plenty.
     cell(tr, row.articles, "text-end fw-semibold");
     cell(tr, row.sections, "text-end");
     cell(tr, row.sections_per_article, "text-end");
