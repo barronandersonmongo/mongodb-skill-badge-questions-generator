@@ -1,23 +1,49 @@
 # mongodb-skill-badge-questions-generator
 
-A tool to generate questions for use with MongoDB Credly Skill Badge assessments.
-
-Internal authoring tool for the MongoDB teams who build skill badge quizzes. It
-generates, validates, stores, filters, and exports quiz questions. It is not a
+Internal authoring tool for the MongoDB teams who build Credly skill badge quizzes. It
+generates, validates, stores, filters and exports quiz questions. It is **not** a
 quiz-taking platform — no learners, no scoring, no attempts.
+
+## The problem, and why it is not "call an LLM in a loop"
+
+Volume is easy. Quality is the entire job, and three constraints make it hard.
+
+**A question has to discriminate.** Four options, exactly one defensibly correct, and
+three distractors that a competent practitioner might actually pick. A model asked for
+multiple-choice questions will happily produce one right answer and three obviously wrong
+ones, which tests nothing.
+
+**The bank has to be large enough that leaking a quiz does not compromise it.** The target
+is thousands of questions across 34 badges (and growing). That only holds if the questions
+are genuinely independent: knowing a leaked question's answer must not let someone answer
+another one *without knowing the material*. Same concept in a different scenario is fine —
+answering both needs the understanding the badge certifies. The same question reworded is
+fatal. So deduplication is a core requirement, not housekeeping.
+
+**Questions must be grounded and checkable.** A question written from the model's memory
+of MongoDB cannot be verified without redoing the research, so every question cites the
+documentation it came from, and the run that produced it is recorded.
+
+Everything below follows from those three.
 
 ## Stack
 
-Python 3.14 (stdlib `venv` + `pip`), FastAPI + Jinja2 server-rendered HTML,
-MongoDB Atlas, Claude via the `anthropic` SDK, Bootstrap 5 / vanilla JS from CDN.
-No Node, no bundler, no Docker, no task queue.
+Python 3.14 (stdlib `venv` + `pip`), FastAPI + Jinja2 server-rendered HTML, MongoDB Atlas,
+Claude via the `anthropic` SDK, Bootstrap 5 / vanilla JS from CDN. No Node, no bundler, no
+Docker, no task queue.
 
-## Setup
+## Getting started
+
+### 1. Build
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pip install -r requirements-dev.txt     # requirements.txt for runtime only
+```
 
+### 2. Configure
+
+```bash
 export PTM_HACKATHON_CONNECTION_STRING='mongodb+srv://...'   # Atlas: PTM-Hackathon cluster
 
 # Claude access — either a direct key:
@@ -27,62 +53,89 @@ export GROVE_PRIMARY_KEY='...'                               # secondary key use
 export GROVE_ANTHROPIC_BASE_URL='https://.../anthropic'      # part before /v1/messages
 ```
 
-`~/.profile` is read only by login shells, so a variable exported there is not
-visible to cron, systemd, or anything started as a service.
+`~/.profile` is read only by login shells, so a variable exported there is invisible to
+cron, systemd, or anything started as a service — source it explicitly when starting the
+server that way.
+
+Storage is the `skill-badge-questions` database on the `PTM-Hackathon` cluster.
 
 Optional overrides: `ANTHROPIC_MODEL`, `WEB_SEARCH_TOOL_TYPE`, `WEB_FETCH_TOOL_TYPE`,
 `SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`,
-`QUESTIONS_VECTOR_INDEX_NAME`, `DOC_PAGES_VECTOR_INDEX_NAME`, `DOCS_INDEX_URL`, `LOG_DIR`, `LOG_LEVEL`.
+`QUESTIONS_VECTOR_INDEX_NAME`, `DOC_PAGES_VECTOR_INDEX_NAME`, `DOCS_INDEX_URL`, `LOG_DIR`,
+`LOG_LEVEL`.
 
-**Atlas Search indexes are not created by this program** — their definitions live in
-Atlas. Three are needed: `skill-badge-description-vector` (autoEmbed on
-`description`), `questions_embedding_text_vector` (on `embedding_text`), and
-`doc_chunks_embed_text_vector` (on `embed_text` in `doc_chunks`). Until the last of
-those exists, documentation retrieval resolves nothing and every badge falls back to
-researching the web.
+Everything else lives in `app/config.py` rather than the environment, because each value
+is a measured judgement with the measurement written beside it — token prices, the
+relevance floor, the chunk band, the effort level. Read the comments there before changing
+one.
 
-Token prices (`cost_input_per_mtok`, `cost_output_per_mtok`,
-`cost_cache_read_per_mtok`, `cost_cache_write_per_mtok`) and page-walk tuning live in
-`app/config.py` rather than the environment, since each
-number is a measured judgement documented next to it: `doc_page_set_score_floor`
-(0.70), `doc_page_set_size` (400), `doc_reference_url_pattern`, `questions_per_page`
-(3), `max_pages_per_run` (25) and `page_author_effort` (`medium`).
+### 3. Create the Atlas Search indexes
 
-Storage target is the `skill-badge-questions` database on the `PTM-Hackathon`
-cluster (Atlas project "Barry Anderson").
+**This program does not create them**, and Atlas Search index definitions cannot be
+created through `create_index`. Three are needed, all using **autoEmbed** so the cluster
+embeds both the stored text and the query — this program stores no vectors and needs no
+embedding key:
 
-## Run
+| Index | Collection | Path |
+|---|---|---|
+| `doc_chunks_embed_text_vector` | `doc_chunks` | `embed_text` |
+| `questions_embedding_text_vector` | `questions` | `embedding_text` |
+| `skill-badge-description-vector` | `skill_badges` | `description` |
+
+Until the first exists, documentation retrieval resolves nothing and every badge silently
+falls back to researching the web. Note the ordering problem on a fresh cluster: the
+collection must have documents before Atlas's index wizard can inspect the field shape, so
+**refresh the corpus first, then build the index** — the crawl creates `doc_chunks` and
+fills it as it goes, and Atlas will index the rest as it arrives.
+
+### 4. Run
 
 ```bash
 .venv/bin/uvicorn app.main:app --reload
 ```
 
-Then open **<http://127.0.0.1:8000/>** — the questions screen, which is the main
-screen. The badge catalog is at `/admin`. API docs are at `/docs`.
+Open **<http://127.0.0.1:8000/>** — the questions screen. The badge catalog is under
+`/admin`; generated API docs are at `/docs`. If MongoDB is unreachable the screen still
+loads and names the problem instead of returning a stack trace.
 
-If MongoDB is unreachable the screen still loads and names the problem rather
-than returning a stack trace.
+### 5. First run, in order
+
+1. **`/admin/skill-badges`** → sync the badge catalog, if it is empty.
+2. **`/admin/docs`** → **Refresh documentation**. ~7,200 pages become ~27,000 sections in
+   about **71 minutes** (see [The corpus](#the-corpus) for why it is slow and why that is
+   fine).
+3. Create `doc_chunks_embed_text_vector` in Atlas and wait for it to build.
+4. **`/`** → **Generate questions**: pick a badge, how many sections to walk, how many
+   questions per section, and a skill level.
 
 ## Tests
 
-Every feature and function has automated tests. See **[tests/README.md](tests/README.md)**
-for how to run them, the suite layout, and the documentation convention.
-
 ```bash
-.venv/bin/python -m pytest
+.venv/bin/python -m pytest                                    # ~2,460 tests, ~9 seconds
 .venv/bin/python -m coverage run -m pytest && .venv/bin/python -m coverage report
+.venv/bin/python -m pytest tests/test_doc_chunking.py -q      # one file
+.venv/bin/python -m pytest -k "chunk and not repository"      # by name
 ```
 
-Each test carries an `Intent` / `Success` / `Feature` block recording why it
-exists, what passing proves, and which feature it protects. Those blocks are
-never edited — to change behavior, change the program.
+**Tests never touch Atlas or the Claude API.** An autouse fixture strips real credentials
+from the environment, MongoDB is an in-memory fake (`tests/fakes.py`), and the Anthropic
+client is a scripted double. That is why the suite runs in seconds and why it can be run
+without any configuration at all.
 
-Tests never touch Atlas or the Claude API: an autouse fixture strips real
-credentials from the environment, MongoDB is an in-memory fake
-(`tests/fakes.py`), and the Anthropic client is a scripted double.
+**Every test carries an `Intent` / `Success` / `Feature` block** recording why it exists,
+what passing proves, and which feature it protects. Those blocks are the recorded
+requirement and are **never edited**. To change behaviour, change the program; if a
+requirement genuinely changes, delete the old test and write a new one whose block says
+what changed and why. `tests/test_test_documentation.py` enforces the convention.
 
-> `mongomock` is deliberately not used — as of mongomock 4.3.0 / pymongo 4.17.0
-> its `bulk_write` path breaks on pymongo's newer `add_update()` signature.
+This matters more than it sounds. Several times in this codebase a test looked wrong and
+was actually recording a decision whose reason had been forgotten — the block is where the
+reason lives. See **[tests/README.md](tests/README.md)** for the suite layout.
+
+> `mongomock` is deliberately not used: as of mongomock 4.3.0 / pymongo 4.17.0 its
+> `bulk_write` path breaks on pymongo's newer `add_update()` signature. `tests/fakes.py`
+> implements only the operations this program actually issues, and raises
+> `NotImplementedError` for anything else rather than quietly returning nothing.
 
 ## Implementation strategies
 
@@ -106,10 +159,10 @@ bookmarked, shared in Slack, or cited from a question.
 | One documentation page | `/admin/docs/page?url=…` |
 | The live page behind a citation | `/admin/docs/render?url=…` |
 
-Consequences that are deliberate: switching a status tab preserves the badge and
-category filters; the export link is built from the same parameters as the screen, so
-it cannot disagree with what is displayed; and changing a filter navigates rather than
-mutating a hidden variable.
+Consequences that are deliberate: the export link is built from the same parameters as
+the screen, so it cannot disagree with what is displayed; the count polled during a run is
+scoped to the same parameters, so a filtered view does not reload for questions it is not
+showing; and changing a filter navigates rather than mutating a hidden variable.
 
 The rule for new screens: if a reader could want to send someone else *this*, it needs
 to be in the address bar.
@@ -273,56 +326,62 @@ mode before they have the information to choose with, and the safe one is strict
 informative. Where that pattern appeared — a dry run beside a real sweep — the
 destructive mode was removed rather than kept as an option.
 
-## Features
+## How it works
 
-### Two areas
+```
+llms.txt indexes ──crawl──▶ doc_pages ──split──▶ doc_chunks ──┐
+                                                              │ vector search
+skill_badges ──topic queries──────────────────────────────────┤ per badge
+                                                              ▼
+                                                     section set (ranked)
+                                                              │ one section, one call
+                                                              ▼
+                                          questions ──▶ duplicate sweep (on request)
+                                                              │
+                                          generation_runs ◀───┘ cost, timings, choices
+```
 
-| Area | What it is for |
-|---|---|
-| `/` | **Authoring** — write, browse, filter and export questions |
-| `/admin` | **Curation** — maintain the badge catalog the questions are scoped by |
+### The corpus
 
-The split is a logical boundary between two kinds of work, so each screen has one
-audience. **It is not a permission boundary**: there are no authorizations
-anywhere in this program, and anyone who can reach the service can reach both
-areas. Their JSON follows the same split — `/api/questions` and `/api/admin/...`.
+MongoDB publishes an agent-oriented index of its documentation (`llms.txt`) and serves
+every page as Markdown. That is the only enumerable route to the whole corpus: the MCP
+server's `search-knowledge` returns the best few chunks for a query and cannot be asked for
+everything — the right tool at authoring time, the wrong one for building a cache.
 
-### Questions
+**Refresh documentation** crawls it and chunks each batch as it lands: one action, not two.
+Measured 2026-08-19 — 7,158 pages (~75 MB) becoming 27,399 sections in **71 minutes**. Most
+of that hour is waiting, not transferring: the docs sit behind CloudFront, which starts
+answering **403** when a crawl asks for too much, and each refusal costs a growing back-off.
+It has not been optimised because it does not need to be — the corpus is refreshed about
+twice a year, so being politely slow is what keeps the crawl from being blocked outright.
 
-The main screen (`/`) is where questions are viewed and written.
+Being refused is handled rather than merely reported. `Retry-After` is honoured when sent;
+after enough consecutive refusals the crawl stops rather than prolonging the block, keeps
+everything it fetched, and says so. **Fill gaps** then fetches only what is missing and
+removes nothing — re-crawling seven thousand pages to recover a few hundred wastes an hour
+and invites another block. Pages are written in batches so a crawl that dies half way leaves
+the corpus it did fetch intact, and the sweep that removes withdrawn pages is skipped
+entirely if the crawl was refused or stored nothing, since sweeping on partial evidence
+would delete everything it never reached.
 
-**Generating: a badge is walked, not prompted.** A run is scoped to a skill badge,
-and the badge is first resolved to the set of documentation pages it is *about* —
-typically a few hundred. The run then walks that set one page at a time, asking for
-a few questions per page, storing each page's questions as they are written.
+Navigation stubs are skipped by a byte floor: an index page listing links is not something
+a question can be written from.
 
-This is the opposite direction from the obvious design. Cramming a badge's best
-pages into one prompt and asking for a batch of questions caps the badge at
-whatever fits in a single request — about fifteen pages — and asking the same badge
-again re-reads the same fifteen, so the second batch is variations on the first.
-Walking the badge's pages instead makes each page read exactly once, worth several
-questions, and makes coverage a counter against an enumerable list rather than a
-guess. A badge with 300 pages can support hundreds of genuinely distinct questions;
-the same badge in one prompt cannot.
+### Splitting pages into sections
 
-It also spreads the cost. Questions arrive per badge, when somebody asks for that
-badge, rather than as one sweep of the whole corpus — so the first badge tells you
-whether the output is any good before the other 33 are paid for.
+A page is the wrong unit, and it took two failures to establish that. Sent whole, one
+**1.7 MB** page — a driver tutorial repeating every example in a dozen languages — cost
+**$2.58 for three questions** (505,435 input tokens). Capping what a page contributes fixed
+the cost and created a worse problem: everything past the cap became unreachable, so a
+page's later material could never produce a question however often a badge was walked.
 
-**Questions are written from sections, not pages.** The corpus stores whole pages, and
-a page turned out to be the wrong unit twice over. Sent whole, one 1.7 MB page —
-a driver tutorial repeating every example in a dozen languages — cost **$2.58 for three
-questions**. Capped, everything past the cap became unreachable, so a page's later
-material could never produce a question however many times a badge was walked.
+So each page is split into **sections**, and a section is what gets embedded, retrieved and
+written from. Retrieval sharpens as a side effect: a section about `$search` stops being
+buried inside a page about aggregation.
 
-So each page is split into **sections**, and a section is what gets embedded, retrieved
-and written from. Retrieval sharpens as a side effect: a section about `$search` stops
-being buried inside a page about aggregation.
+**The band was measured, not guessed.** Over the 3,844 non-reference pages:
 
-**The band was measured, not guessed.** On 2026-08-19, over the 3,844 non-reference
-pages:
-
-| split | sections | median | under 500 |
+| split at | sections | median chars | under 500 |
 |---|---:|---:|---:|
 | H1–H2 | 26,125 | 642 | 44% |
 | H1–H3 | 40,561 | 545 | 47% |
@@ -330,773 +389,398 @@ pages:
 
 Sections are mostly *small*, so **merging matters more than splitting** — a naive
 split-on-headings corpus would be mostly heading stubs, which embed badly and support no
-question at all. Packing neighbours to a floor and a ceiling of 1,500/8,000 gives
-**18,421 chunks**: median 2,133 characters (~530 tokens), p90 7,603, nothing over the
-ceiling, 3.8% under 500. Enough material to write several distinct questions from, small
-enough that no single call is expensive.
+question at all. Three passes, in order: cut at headings to `chunk_heading_depth` (3); cut
+anything still over the ceiling on blank lines, and bluntly if a single paragraph is still
+too big (needed where the heading structure gives out inside a giant code block); then pack
+neighbours until each chunk clears the floor. At 1,500/8,000 that produced **27,399
+sections**, median 2,026 chars, p90 6,683, nothing over the ceiling, 5% under 500. Of those,
+33% sit under reference paths and are excluded from walks, leaving **18,434 to write from**.
 
-**What it actually produced**, on the live corpus on 2026-08-19: 7,158 pages became
-**27,399 sections** — median 2,026 characters, p90 6,683, nothing over the ceiling, 5.0%
-under 500. Of those, 8,965 (33%) are under reference paths and excluded from walks,
-leaving **18,434 sections** to write from, which is within a few of the 18,421 the
-simulation predicted from the non-reference pages.
+Every chunk carries its page and page title, the heading it sits under, the full heading
+path above it, its source index, position, size and content hash. The heading path **leads
+the embedded text**, because "Limitations" embedded bare matches every limitations section
+in the corpus, and means something only as "Atlas Vector Search > Filtering > Limitations".
+That is why a chunk has both `text` (what the model reads, what excerpts come from) and
+`embed_text` (the same with its context prepended): Atlas autoEmbed indexes one field path
+and cannot concatenate at index time.
 
-Three passes, in order: cut at headings to `chunk_heading_depth` (3); cut anything still
-over the ceiling on blank lines, and bluntly if a single paragraph is still too big —
-needed because a handful of sections run to hundreds of kilobytes where the heading
-structure gives out inside one giant code block; then pack neighbours until each chunk
-clears the floor. When a small section is absorbed, the earlier, broader heading stays
-the chunk's own.
+**Chunks are derived, not crawled**, and live in their own collection. **Re-chunk** on the
+corpus screen re-splits everything from stored pages in seconds, because the band is a
+judgement that will want re-tuning against real question quality and that should not cost
+another 71-minute crawl. Chunk ids key on page URL and position, so a rebuild of an
+unchanged page produces the same ids and questions written from it stay attributable.
+Chunks are stamped with the refresh that wrote them and swept the same way pages are — a
+chunk outliving its page is invisible and harmful, since retrieval keeps offering it and a
+question written from it cites a URL that now 404s.
 
-**Every chunk says where it came from and what it is about**: its page and page title,
-the heading it sits under and the full heading path above it, its source index, its
-position in the page, its size, and a content hash. The heading path leads the text that
-gets embedded — "Limitations" means nothing on its own and everything under "Atlas Vector
-Search > Filtering > Limitations".
+### Resolving a badge to its material
 
-**Chunks are derived, not crawled.** They live in their own collection, rebuilt from
-stored pages by **Re-chunk** on the corpus screen. The band is a judgement that will want
-re-tuning against real question quality, and trying a different one should cost seconds
-rather than an hour-long crawl and another round of CloudFront refusals. Chunk ids key
-on the page URL and position, so a rebuild of an unchanged page produces the same ids and
-questions written from it stay attributable. Chunks are stamped with the refresh that
-wrote them and swept the same way pages are — a chunk outliving its page is invisible and
-harmful, since retrieval keeps offering it and a question written from it cites a URL that
-now 404s.
+A badge document supplies a name, a description and topic areas. Those become one semantic
+search for the badge overall plus one per topic area, each with the badge name attached
+because "indexes" matches most of the corpus while "Atlas Search indexes" matches what the
+badge means by it. Candidates are then filtered three ways:
 
-**This needs a new Atlas index.** Retrieval runs on `doc_chunks_embed_text_vector`, over
-`embed_text`, with autoEmbed. It must be created in Atlas before any of this works; the
-old `doc_pages_text_vector` is now used only by the single-prompt fallback.
-
-**Drawing the chunk set.** The same per-topic semantic searches as before, but over
-sections and much wider, because the job changed: not "the best few pages that fit in one
-prompt" but "the sections that make up this badge's material". One search for the badge overall, then one per topic area
-with the badge name attached — "indexes" matches most of the corpus while "Atlas
-Search indexes" matches what the badge means by it.
-
-Candidates are then filtered three ways, and the filters matter more than the
-search:
-
-- **A relevance floor.** Topic areas come from Credly's skill tags, which are
-  marketing metadata rather than a syllabus. Measured on the live Cluster
-  Reliability badge, the tag "Cluster IP" — a Kubernetes term, and a tagging
-  artifact — pulled VPC peering and IP access lists into a reliability badge at
-  scores of 0.64-0.69, while pages plainly about the badge scored 0.70-0.86. The
+- **A relevance floor** (`doc_page_set_score_floor`, 0.70). Topic areas come from Credly's
+  skill tags, which are marketing metadata rather than a syllabus: on the live Cluster
+  Reliability badge the tag "Cluster IP" — a Kubernetes term — pulled VPC peering and IP
+  access lists in at 0.64–0.69, while pages plainly about the badge scored 0.70–0.86. The
   floor sits in that gap.
-- **Reference material is excluded.** Measured 2026-08-19, 3,318 of 7,162 stored
-  pages sit under `reference`, `cli`, `api` or `command` paths. A question written
-  from a parameter list tests whether a candidate can look up a flag, which is not
-  a skill the badges certify.
-- **Sections already written from are dropped.** This is what makes a walk resumable:
-  the set is derived from the `source_chunk_ids` of the badge's existing questions.
-  Section-level rather than page-level, because excluding a whole page would mean one
-  question written from a page's opening made the rest of that page unreachable
-  forever — the reverse of what chunking is for.
+- **Reference material is excluded.** A third of the corpus is parameter lists, CLI
+  synopses and command references. A question written from a parameter list tests whether
+  someone can look up a flag, which is not a skill the badges certify.
+- **Sections already written from are dropped**, derived from the `source_chunk_ids` of the
+  badge's existing questions. Section-level rather than page-level: excluding a whole page
+  would mean one question written from its opening made the rest of that page unreachable
+  forever, the reverse of the point.
 
-The set comes back in relevance order, so a run that walks only part of it walks
-the most relevant part.
+**Then no page may crowd out the others.** Sections are taken in rounds — the best from
+every page, then the second best — because relevance order alone is not enough when one
+page scores well throughout. Measured: a Vector Search Fundamentals run walked 25 sections
+drawn from **six pages**, since 85 of that badge's 252 sections were hard-split slices of
+one 1.7 MB page under an identical heading. Twenty of those 25 produced nothing, while
+`mongodb-overview` spread over 24 pages produced 72 from the same budget. With the rounds,
+that badge's first 25 sections come from 25 distinct pages. Sections held back by the
+per-page limit are appended rather than dropped: the limit reorders the set, it does not
+shrink it.
 
-**No page may crowd out the others.** Sections are then taken in rounds — the best
-section from every page, then the second best — because relevance order alone is not
-enough when one page scores well throughout. Measured on the live corpus: the 25 sections
-a Vector Search Fundamentals run walked came from **six pages**, since 85 of that badge's
-252 sections were hard-split slices of one 1.7 MB page, the same code sample repeated in a
-dozen languages under one heading. Twenty of those 25 produced no question at all, while
-`mongodb-overview`, spread across 24 pages, produced 72 from the same 25-section budget.
-With the rounds, that badge's first 25 sections come from 25 distinct pages.
+### Writing questions
 
-This is the same fairness the old page-level retrieval applied across topic queries. It
-was not carried over when the unit became a section, and the run above is what that cost.
-Sections held back by the per-page limit are appended rather than dropped: the limit
-reorders the set, it does not shrink it, or a badge whose material is genuinely
-concentrated would report itself exhausted with sections still unused.
+A run is scoped to a badge and **walks** its section set, one Claude call per section,
+storing as it goes. That is the opposite of the obvious design, and the reason is capacity:
+cramming a badge's best pages into one prompt caps it at whatever fits in a request, and
+asking the same badge again re-reads the same material, so the second batch is variations
+on the first. Walking makes each section read exactly once, worth several questions, with
+coverage a counter against an enumerable list. It also spreads the cost — questions arrive
+per badge when somebody asks for that badge, so the first badge tells you whether the
+output is any good before the other 33 are paid for.
 
-**A page's contribution is capped.** The corpus holds documentation pages up to
-**1.7 MB** — driver tutorials that repeat every example in a dozen languages — and one of
-those sent whole is about half a million input tokens. Measured on a real run on
-2026-08-19: 505,435 input tokens, **$2.58 for three questions**, roughly a hundred times
-the expected cost per question. `doc_context_page_chars` (24,000) now bounds what any one
-page contributes to a prompt, and the model is told the page was cut and not to assume
-what the rest says. The run records which pages were trimmed, so a thin result from a
-truncated page is not mistaken for thin documentation.
+**One section, one structured call.** Not the draft-then-extract pair the older
+research path uses: that earns its keep when a turn is doing research and benefits from
+thinking in prose first, but reading one section needs no tools, so a second pass would
+only pay output tokens again to restate questions already written. Badge attribution is
+folded into the same call for the same reason — the catalog is small and the model is
+already holding the question.
 
-This is also the argument for chunking the corpus rather than storing whole pages: with
-a cap, a 1.7 MB page contributes only its opening, and whatever is useful further down is
-unreachable.
+**Effort is tuned separately** (`page_author_effort`, `medium`) rather than inherited from
+the research path's `high`. Output tokens dominate a walk's cost and thinking dominates
+output, so this is the largest single cost lever in the program — and the least tested
+assumption in it.
 
-**One page, one call.** Each page is authored in a single structured-output call —
-not the draft-then-extract pair the badge-wide path uses. That pair earns its keep
-for a research turn, where thinking in prose first helps; reading one page needs no
-tools and no research, so a second pass would only pay output tokens again to
-restate questions already written. Badge attribution is folded into the same call
-for the same reason: the catalog is small, the model is already holding the
-question, and a separate pass re-sends every question to decide something it could
-have decided while writing.
+**Nothing is lost to one bad section.** Questions are stored section by section, so a
+failure on section eighteen keeps the first seventeen. A section that refuses, truncates or
+has vanished is recorded with its reason and stepped over. A walk can be stopped, and keeps
+what it wrote.
 
-Effort is tuned separately for page authoring (`page_author_effort`, default
-`medium`) rather than inherited from the research path's `high`. Output tokens —
-thinking most of all — dominate the cost of a walk, so this is the single largest
-cost lever in the program.
+**When a badge resolves to nothing**, two different situations get two different answers. A
+badge never walked has no material in the corpus, so the run falls back to the older
+single-prompt path with server-side web search and says so. A badge whose sections are all
+used up is *exhausted*: another run will not help, and the fix is a wider corpus or a lower
+floor, not another press of the button.
 
-**Nothing is lost to one bad page.** Questions are stored page by page, so a
-failure on page eighteen keeps the questions from the first seventeen. A page that
-refuses, truncates, or has vanished from the corpus is recorded with its reason and
-stepped over — one bad page says nothing about the next. A walk can also be stopped,
-and keeps what it has written.
+### What makes a question good
 
-**The status panel — one window, not two.** The same shape as the documentation
-refresh, because a walk is the same kind of job: a phase, a progress bar, and the
-numbers behind it. The run's message sits inside the panel and the panel takes the
-colour it would have carried, rather than sitting in a separate alert above it — two
-windows for one run meant two elapsed times, and the one on the panel was stale
-between polls. Elapsed now ticks in the browser against the server's start time, so it
-advances every second instead of jumping when a poll answers; the server's figure is
-still used for a run the browser never watched, since a page opened afterwards has no
-start time to count from.
+The prompt is the largest single artefact in the program and every rule in it is there
+because output was wrong without it.
 
-The panel carries: pages done of how many, questions written, pages per
-minute, actual questions per page, elapsed, time remaining, and the name of the page
-currently being read — that last one is what lets an author notice a walk spending its
-budget on material that does not belong to the badge.
+**The correct answer's position is randomised in code.** Measured on the first 125 questions
+produced: the correct answer was option A in **every single one**. A candidate who always
+answers A scores 100%, so the bank was worthless as a quiz. The cause is structural — a
+model filling four options into a schema writes the right one first — and asking it not to
+does not reliably work, so the options are shuffled after extraction and before storage
+where it cannot be forgotten. `GET /api/questions/answer-positions` reports the spread,
+which is the check that catches this recurring.
 
-The bar shows no percentage while the badge is still being resolved to its page set.
-The walk genuinely does not know how much work there is yet, and inventing a number
-would be worse than admitting it — so the phase says what is happening instead.
+**A mix of question forms.** Left alone the model writes everything as a scenario, which is
+exhausting to read and tests one narrow skill. The prompt names the forms and what each is
+for: *situational* (judgement, failure modes, debugging), *factual* (behaviour, limits,
+defaults — asked straight), *procedural* (order of operations), *best practice* (asked
+plainly; a practitioner recognises "which order should this compound index use" faster
+stated directly than buried in a story), *diagnostic* (given this output, what does it
+mean), *comparative* (when to use one thing over a similar thing, where the real confusions
+live). The material chooses the form, not a quota.
 
-**Throughput and unit cost.** Pages per minute describes the machinery; **questions per
-minute** describes the output, and it is what an author plans a session against — "34
-badges at this rate" is only answerable from it. **Cost per question** is the other
-derived figure, and the one that makes runs comparable: total spend depends on how many
-pages were walked, so it says nothing about whether a run went well, while cost per
-question says whether a prompt or effort change paid for itself. During a run the
-running average is also the best available projection of what the rest will cost. Both
-are absent rather than zero until there is something to divide by, since a rate of zero
-reads as a fact about a slow run rather than as "nothing has finished yet".
+**A developer's voice.** The audience is working engineers, and a question phrased like a
+technical writer's abstract announces that nobody who does the job wrote it. "Write
+naturally" does not fix that, because the machine-written register comes from a specific
+vocabulary — so the prompt bans it by name (*leverage*, *utilize*, *robust*, *seamless*,
+*crucial*, *delve*, *streamline*…), bans filler openings and stock stems ("Which of the
+following best describes…", "All of the above"), and requires specificity: real stage names,
+flags, field names and error strings rather than "the appropriate configuration". That last
+one is not only style — a question that will not name the flag is a question that tests
+nothing.
 
-The history's figures are derived from the totals rather than averaged over runs: a
-thirty-second run must not count for as much as an hour-long one.
+**A skill level**, using the scale every question already carries: `foundational`,
+`intermediate`, `advanced`, or mixed. Each level is *described* rather than named, because
+"advanced" alone is read as harder wording rather than harder judgement and yields obscure
+trivia — so advanced explicitly means failure modes, interactions between features, and the
+reasoning behind a recommendation, and explicitly not a version number nobody remembers.
+Mixed is an instruction to spread the levels, not the absence of one.
 
-**Cost is reported, not estimated.** Every response carries its token counts, so the
-panel adds up exactly what the run consumed and prices it: spend so far, and the
-projected total at the rate it is going. The projection is what makes stopping an
-informed decision rather than a guess — "$0.31 spent, about $2.60 by the end" is
-actionable in a way that a spinner is not. Nothing is projected until at least one
-page has finished, because a projection from zero reads as "this run is free" at
-exactly the wrong moment.
+**The format is enforced, not requested.** Four options, exactly one correct, no repeated or
+empty options, a non-empty stem. Anything failing is discarded with a reason rather than
+stored for a reviewer to find, and the reasons are reported: a run that quietly stored three
+of ten would look like a model with little to say.
 
-Prices live in `Settings` next to the model they apply to (`cost_input_per_mtok` and
-friends, Claude Opus 5 list prices as published 2026-08-19, with cached reads at a
-tenth and writes at 1.25x). Since the token counts are measured, the published price
-is the only thing here that can be wrong — update it alongside `model`. The finished
-run reports its cost too, because cost per badge is how an author decides whether the
-other 33 are worth it.
+**Badge slugs are checked against the catalog.** `skill_badges` is what the whole collection
+is filtered by, so a hallucinated slug would make a question unfindable under any real badge
+while looking correctly tagged. Unknown slugs are dropped; a question left with none falls
+back to the badge the run was scoped to.
 
-**Stopping.** A **Stop after this page** button appears on the panel while a walk
-runs. It is not a cancellation: the page in flight is already paid for, so it finishes
-and its questions are kept, and everything after it is skipped. That is the point —
-the reason to stop a walk is to stop it spending, not to undo it. A run stopped this
-way is labelled as stopped rather than done, so it cannot be mistaken for a badge that
-ran out of material, and the pages it did not reach are still there for the next run.
+### No review workflow
 
-**Skill level.** A run can be pitched at one level, or left mixed. The scale is the one
-every question already carries — `foundational`, `intermediate`, `advanced` — so asking
-for a level and filtering for it later use the same vocabulary.
+A question that passes the format check is stored and usable. There is no draft state, no
+approve step, no reject step. At thousands of questions nobody works a queue of drafts, so
+the gate was a bottleneck rather than a safeguard, and a question nobody had blessed was
+indistinguishable from one nobody wanted.
 
-Each level is *described* in the prompt rather than merely named, because "advanced" on
-its own is read as harder wording rather than harder judgement, and that produces obscure
-trivia instead of questions a senior engineer finds worth answering: foundational is
-someone a few weeks in, tested on what a feature does and when to reach for it;
-intermediate ships MongoDB in production, choosing between reasonable approaches and
-reading diagnostic output; advanced owns the deployment, and is tested on failure modes,
-interactions between features, and the reasoning behind a recommendation rather than the
-recommendation itself. A version number nobody remembers is not an advanced question.
+Deleting is the only editorial act, and it is guarded twice: the dialog shows the question
+again and the word *delete* has to be typed. Nothing can re-create a question, and the
+button sits next to no other control, so a misplaced click has nowhere else to land.
 
-**Mixed** is an instruction, not the absence of one: left silent the model pitches a whole
-page at one level of its own choosing, so a mixed run explicitly asks for a spread. The
-level requested is recorded with the run, since comparing two runs on a badge is
-meaningless without knowing one asked for foundational and the other for advanced.
+Each question shows when it was written, and while a run is going the screen polls a count
+endpoint and reloads as new questions arrive — a walk stores over many minutes, so a list
+left alone goes stale while its reader watches it being filled. The count is scoped to the
+filters on screen, and the reload is skipped while a dialog is open or the tab is hidden.
 
-**When a badge has no pages.** Two different situations, with two different answers.
-A badge that has *never* been walked and resolves to nothing has no material in the
-corpus — the run falls back to the older single-prompt path, which researches with
-server-side web search, and says so on screen. A badge whose pages have *all* been
-written from is exhausted: another run will not help, and the honest answer is to
-say so rather than research around it. The fix there is a wider corpus or a lower
-relevance floor, not another press of the button.
+### Cost, throughput and history
 
-**Run history.** Run state is a single in-process dict: enough to drive a screen while
-a run is going, and gone the moment the server restarts. The token counts and the wall
-clock are unrecoverable after the fact, so every finished run is written to
-`generation_runs` — which badge, the choices the author made (page cap,
-questions-per-page, instructions), the model, the effort, the relevance floor, how long
-it took, what it produced, what it cost, which pages it read, and anything that failed.
-Failed runs are recorded too: "we tried this badge and it broke" is exactly the thing
-that gets forgotten and retried.
+**Cost is reported, not estimated.** Every response carries its token counts, so a run adds
+up exactly what it consumed and prices it from rates that live next to the model in
+`Settings` — meaning the published price is the only thing here that can be wrong. The
+status panel shows spend so far and the projected total at the current rate, which is what
+makes **Stop after this page** an informed decision rather than a guess. Nothing is
+projected until a section has finished, because a projection from zero reads as "this run is
+free" at exactly the wrong moment.
 
-Kept in its own collection because a run is an event and a question is an artefact, with
-different lifetimes: deleting a bad batch of questions must not erase the record that
-the batch was generated, since that record is the evidence for why the prompt was
-changed afterwards. Questions carry the id of the run that wrote them, so a question
-leads back to its run and a run to its questions.
+**Questions per minute and cost per question** are the two derived figures worth watching.
+Total spend cannot be compared between runs because it depends on how much was walked; cost
+per question says whether a prompt or effort change paid for itself. Both are absent rather
+than zero until there is something to divide by.
 
-The **Run history** panel lists runs newest first with the cumulative totals across all
-of them. The cumulative figure is the one that matters: per-run cost is small enough to
-ignore individually and large enough to matter in aggregate, which is exactly the shape
-of spending that goes unnoticed.
+**Every finished run is recorded** in `generation_runs` — the badge, the choices made, the
+model, the effort, the relevance floor, the timings, the counts, the cost, the sections read
+and anything that failed. Failed runs too: "we tried this badge and it broke" is exactly
+what gets forgotten and retried. Run state itself is one in-process dict and dies with the
+process, and the token counts and wall clock are unrecoverable after the fact, so this is
+the only lasting record. It is a separate collection because a run is an event and a
+question is an artefact: deleting a bad batch must not erase the record that it was
+generated, which is the evidence for changing the prompt.
 
-The run summary on the screen is **dismissible**. Rendered from run state it otherwise
-sits there permanently until somebody starts another run, and dismissing loses nothing
-now that the run is recorded.
+**Coverage** lists every badge thinnest-first with its question count and how many sections
+it has left to walk. Because a badge's questions come from its documentation, a badge with
+little documentation gets few questions — this is what makes that a workflow rather than a
+defect. Few questions and many sections left means run it again; few questions and none left
+means the material is spent. Resolving every badge's section set is dozens of vector
+searches, so the panel is fetched on demand rather than rendered with the screen.
 
-**Coverage.** Because a badge's questions come from its documentation, a badge with
-little documentation gets few questions. The **Coverage** panel makes that a
-workflow rather than a defect: every badge, thinnest first, with its question count
-and how many pages it has left to walk. Few questions and many pages left
-means run it again; few questions and no pages left means the material is spent.
-Resolving every badge's page set is dozens of vector searches, so the panel is
-fetched on demand rather than rendered with the screen.
+### Duplicate detection
 
-**What kinds of question get asked.** Left to itself the model writes everything as a
-scenario — every question opens by painting a situation, which is exhausting to read
-and tests one narrow skill. So the prompt names the forms and says what each is for:
-**situational** (judgement, failure modes, debugging), **factual** (behaviour, limits,
-defaults — asked straight, with no scene-setting), **procedural** (the correct order of
-operations, where getting the order wrong breaks it), **best practice** (what you should
-do and why that rather than the alternative), **diagnostic** (given this output or
-error, what does it mean) and **comparative** (when to use one thing over a similar
-thing, which is where the real confusions live).
+One aggregation per question does both stages on the cluster: `$vectorSearch` over
+`embedding_text` shortlists the nearest questions, then `$rerank` re-scores each candidate
+with a cross-encoder that reads both texts together — which is what separates "the same
+question reworded" from "the same topic", something two independently embedded vectors
+cannot do. An earlier design asked Claude to judge each pair; it was accurate and cost a
+round trip per pair.
 
-The material chooses the form, not a quota: a page describing a sequence should yield
-procedural questions, and one defining behaviour should yield factual and diagnostic
-ones. Best practices in particular are asked plainly — a practitioner recognises "which
-order should this compound index use" faster stated directly than buried in a story
-about a slow query. A direct question is not a lesser question.
+Calibrated against `rerank-2.5` on the live collection:
 
-**How the questions read.** The audience is working software developers, and a
-question phrased like a technical writer's abstract announces that nobody who does the
-job wrote it. "Write naturally" does not fix that on its own, because the
-machine-written register comes from a specific and recognisable vocabulary — so the
-prompt names it and bans it: no *leverage*, *utilize*, *robust*, *seamless*,
-*crucial*, *delve*, *harness*, *streamline*, *comprehensive*; no "It is important to
-note that"; no "Which of the following best describes…" or "All of the above".
-
-What replaces it is specificity. A question puts the candidate in a real situation in
-the second person — "your replica set has one node lagging 40 seconds behind the
-primary" — and names actual stage names, commands, flags, field names and error
-strings. That is not only a style rule: a question that says "the appropriate
-configuration" instead of the actual flag is a question that tests nothing. Short
-sentences, active voice, contractions allowed, no stacked rhetorical triads, no
-hedging, options kept grammatically parallel and roughly equal in length so length is
-not a clue. The same voice applies to the option rationales, which is where textbook
-prose otherwise creeps back in.
-
-Grammar and spelling are held to normal standards throughout — the goal is a
-developer's vocabulary and sentence shapes, not informality for its own sake.
-
-**Questions must be independent, not merely distinct.** The bank is meant to be
-large enough that leaking the answers to a full quiz does not compromise the
-quizzes built from the rest of it — and that only holds if knowing one question's
-answer does not give away another. Same concept in a different scenario is fine:
-answering both requires the understanding the badge tests. The same question
-reworded is not. The prompt states this, and the walk's structure helps — questions
-written from different pages are unlikely to paraphrase one another.
-
-**Questions are filed under every badge they test.** A question written for one
-badge often tests others — skills overlap. So each finished question is reviewed
-against the whole badge catalog in a third pass, reading the stem, all four
-options and the explanation, because what a question really tests is often only
-visible in what separates the correct option from the wrong ones. Any badge whose
-subject matter it genuinely tests is added.
-
-That pass can only widen a question's reach, never narrow it: the badges it was
-written for are always kept, and a slug matching no stored badge is dropped. The
-run reports how many questions were cross-filed and why, so an over-eager pass is
-visible rather than silent. If the pass itself fails, the questions are still
-stored under the badges they were written for and the screen says the review did
-not run — an authoring turn is never discarded over a follow-up step.
-
-**The format is enforced, not requested.** Every stored question is multiple
-choice with exactly four options, exactly one correct, no repeated or empty
-options, and a non-empty stem. A question failing any of those is discarded and
-reported with the reason rather than stored for a reviewer to find. A malformed
-question never fails the batch it came in — the rest are kept.
-
-Badge attribution is also enforced: a badge slug outside the run's selection is
-dropped, and a question the model left untagged is attributed to the badges the
-run was scoped to. `skill_badges` is what the collection is filtered by, so a
-wrong value there would make a question unfindable.
-
-**Following a citation.** Each question links the documentation page it was written
-from. The visible text is the canonical `mongodb.com` URL, because that is what
-identifies the page — but the link goes through `/admin/docs/render`, which fetches that
-page from MongoDB now and renders it with the same Markdown viewer the stored copy uses.
-MongoDB serves these pages as raw Markdown, so following the URL directly lands on
-unformatted text; a citation nobody wants to read is a citation nobody checks.
-
-Live rather than stored, deliberately: the stored copy is the snapshot the question was
-written from and the live page is what MongoDB publishes today, and after a docs refresh
-the two can differ. The view says which one you are looking at and offers the stored copy
-alongside, so a divergence reads as a divergence rather than as a wrong question. A page
-the corpus no longer holds still renders, and says no question came from it.
-
-**That route is host-pinned.** It fetches a caller-supplied URL server-side, which is a
-server-side request forgery hole unless the host is fixed — an arbitrary URL would reach
-anything the server can reach, including a cloud metadata endpoint, and hand the response
-back. Only `https` pages on `docs_domain` (`www.mongodb.com`) are fetched, checked on the
-parsed hostname rather than by prefix, since `https://www.mongodb.com.evil.example/`
-starts with the right string and is not the right host. The check is enforced in the
-fetcher as well as the route, so a future caller cannot bypass it by forgetting.
-
-**Questions show when they were written**, from the `created_at` they have always
-carried. The list is newest first, but without a time an author cannot tell which
-questions came out of the run they just watched, or — once a prompt has changed — which
-side of that change a question is from. That comparison is the point of keeping run
-history, and it needs to be visible on the question itself.
-
-**New questions appear as they are stored.** A walk stores section by section over many
-minutes, so a list left alone goes stale while its reader watches it being filled — the
-questions exist in the database and not on the screen. While a run is going the screen
-polls `/api/questions/count` and reloads when it grows. Reloaded rather than patched in
-place, because the question card is a Jinja template and rebuilding it in JavaScript would
-be a second copy of it to keep in step. The count is scoped to the filters on screen, so a
-badge-filtered list does not reload every time some other badge gains a question, and the
-reload is skipped while a dialog is open or the tab is hidden — pulling the page out from
-under someone reading a delete confirmation is worse than a slightly stale list.
-
-**Reading a question's tags.** Three kinds of tag sit together on each question, so they
-are told apart by colour as well as by position: a solid chip for the difficulty, gold
-for the skill badges the question is filed under — the badge artwork is gold, so the
-association is already made — and green for the topic areas it exercises. Each also says its kind in its title text, because colour alone is not a
-label — it fails for anyone who cannot separate the two hues, and it fails in a
-screenshot.
-
-Badge tags are links to that badge's row on `/admin/skill-badges`. A slug is not
-self-explanatory — `secure-mongodb-self-managed-authn-authz` does not say what it covers
-— and checking should be one click rather than a hunt through a 34-row table for a row
-whose name differs from its slug. Topic areas are deliberately not links: they are
-free-text labels with no definition anywhere, and linking one would promise a page that
-does not exist.
-
-**No review workflow.** A question that passes the format check is stored and
-usable — there is no draft state, no approve step and no reject step. At thousands of
-questions nobody works a queue of drafts, so the gate was a bottleneck rather than a
-safeguard, and a question nobody had blessed was indistinguishable from one nobody
-wanted. That leaves one list, one count, and no tabs.
-
-The screen still shows everything needed to judge a question: the stem, all four
-options with the correct one marked, each option's rationale, the explanation, the
-difficulty, the badges and categories, and the source pages.
-
-**Deletion is the only editorial act, and it is guarded.** Nothing can re-create a
-question, and the button now sits next to no other control, so a misplaced click has
-nowhere else to land. Deleting opens a dialog that shows the question again and
-requires the word *delete* to be typed before the confirming button enables. Two
-deliberate acts, because the first one is one click away from a list of thousands.
-
-Questions written before the workflow was dropped still carry a `status` field, which
-would ride along in the JSON export and tell whoever consumes it that a question is an
-unfinished draft. `POST /api/questions/drop-status` strips it, and is safe to re-run.
-
-**Embedding text for vector search.** Every stored question carries
-`embedding_text`, the stem and explanation as one labelled block:
-
-```
-Question: Which stage filters documents first in an aggregation pipeline?
-Explanation: $match placed before $project lets the index be used.
-```
-
-That is the path to point an Atlas Vector Search index at. Use **autoEmbed**, so
-Atlas embeds both the stored text and the query — this program stores no vectors,
-the same arrangement as the badge `description` index. The labels are part of the
-embedded string deliberately: an unlabelled concatenation reads as one run-on
-sentence and loses the cue about which part is the question and which is the
-reasoning behind its answer. An absent explanation drops its section rather than
-embedding a dangling label.
-
-The field is composed on write, so a question is embeddable the moment it lands.
-For questions written before the field existed, `POST
-/api/questions/backfill-embedding-text` composes it — safe to re-run, and it only
-writes documents whose text is missing or has drifted from the current stem and
-explanation, so autoEmbed is not asked to re-embed unchanged text.
-
-The index in use is **`questions_embedding_text_vector`** (autoEmbed,
-`voyage-4-large`), overridable with `QUESTIONS_VECTOR_INDEX_NAME`. It drives two
-things: duplicate screening at generation time, and the search box on the main
-screen.
-
-**Duplicate detection — an ad-hoc sweep, no LLM, no API key.** **Find duplicates** on
-the main screen compares the questions already stored. Generation runs do not
-screen: an LLM judging every candidate pair was accurate but slow and expensive, and
-the cost fell on authoring, the one step a person waits for. A duplicate costs
-nothing until someone builds a quiz, so it is found on request instead.
-
-One aggregation per question does both stages on the cluster:
-
-```
-$vectorSearch  index: questions_embedding_text_vector, path: embedding_text
-$rerank        path: embedding_text, query: {text: …}, model: rerank-2.5
-$project       score: {$meta: "score"}
-```
-
-`$vectorSearch` shortlists cheaply; `$rerank` re-scores each candidate with a
-cross-encoder that reads both texts together — which is what separates "the same
-question reworded" from "the same topic", something two independently embedded
-vectors cannot do. Native reranking needs MongoDB **8.3+**; this cluster runs 8.3.8.
-
-**The threshold is measured.** Against `rerank-2.5` on the live collection:
-
-| pair | rerank score |
-|---|---|
+| pair | score |
+|---|---:|
 | genuinely distinct questions | 0.379 – 0.512 |
 | deliberately reworded copy | 0.945 |
 | identical text | 0.941 |
 
-`question_rerank_delete_threshold` is **0.85**, inside that gap. Note the reranker
-does not return 1.0 for identical text, so a threshold near 1.0 would never fire.
+`question_rerank_delete_threshold` is **0.85**, inside that gap. Note the reranker does not
+return 1.0 for identical text, so a threshold near 1.0 would never fire.
 
-**Finding never deletes.** Pairs at or above the threshold are *flagged*, with the
-question this program would drop and the one it would keep both named — more badges
-beats fewer, then older beats newer — and the pairs below it are listed too, so the
-threshold stays visible as a judgement rather than a fact. Nothing is removed until
-someone unticks the pairs they consider genuinely different questions and confirms the
-rest by typing the word.
+**Finding never deletes.** Pairs at or above the threshold are *flagged*, with the question
+this program would drop and the one it would keep both named — more badges beats fewer, then
+older beats newer — and pairs below it are listed too, so the threshold stays visible as a
+judgement rather than a fact. Deleting is a separate act on that list: each flagged pair has
+its own tickbox, so a pair judged to be two genuinely different questions is left alone
+rather than decided by the threshold again, and the ticked set goes through the same typed
+confirmation a single delete uses.
 
-That demotes the threshold from deciding which questions die to shortlisting the ones
-worth looking at, which is the right weight for a number measured on six questions. It
-also removes the old dry-run button: two controls where one was the same thing but
-irreversible made the operator pick a mode before seeing the collection, and since
-reporting is strictly more informative, nobody should ever have pressed the other
-first.
+That demotes 0.85 from deciding which questions die to shortlisting the ones worth reading,
+which is the right weight for a number measured on six questions. It also removed the old
+dry-run button — see strategy 15.
 
-Cost is bounded by `question_duplicate_neighbours` (5), since comparing every pair
-grows as the square of the collection.
+### Citations
 
-**Search by meaning.** The box on the main screen ranks questions by similarity to
-what you type, so "joining data from another collection" finds the `$lookup`
-questions whether or not they use that word. Scores are shown, so a weak match
-reads as one. The badge, category and status filters then narrow those matches
-rather than the whole collection, and the query lives in the URL. An index that is
-not queryable yet is reported as such rather than returning an empty result that
-reads as "we have nothing on that".
+Each question links the section's page. The visible text is the canonical `mongodb.com`
+URL, but the link goes through `/admin/docs/render`, which fetches that page now and renders
+it with the same Markdown viewer the stored copy uses: MongoDB serves these as raw Markdown,
+so following the URL directly lands on unformatted text, and a citation nobody wants to read
+is a citation nobody checks.
 
-**Filtering and export.** Filter by skill badge, category and status; the filters
-intersect and live in the URL, so a view can be shared. **Export JSON** returns
-exactly the filtered set from the same endpoint the screen reads.
+Live rather than stored, deliberately — the stored copy is the snapshot the question was
+written from and the live page is what MongoDB publishes today. The view says which one is
+on screen and offers the stored copy beside it, so a divergence reads as a divergence rather
+than a wrong question.
 
-| Method | Path | Purpose |
+**That route is host-pinned.** It fetches a caller-supplied URL server-side, which is a
+server-side request forgery hole unless the host is fixed: an arbitrary URL would reach
+anything the server can reach — an internal service, a cloud metadata endpoint — and hand
+the response back. Only `https` pages on `docs_domain` are fetched, checked on the parsed
+hostname rather than by prefix, since `https://www.mongodb.com.evil.example/` starts with
+the right string and is not the right host. The check lives in the fetcher as well as the
+route, so a later caller cannot bypass it by forgetting.
+
+### The badge catalog
+
+Badges are discovered rather than hand-listed, because the set grows. Credly's collection
+endpoint returns the badge set as JSON, so the list is a deterministic fetch rather than a
+research result; Claude then fills in descriptions, topic areas and reference links. The
+badge artwork title is canonical for naming — every other source disagrees with it — and
+slugs derive from it.
+
+Hand edits are protected: a corrected title or a curated link is never overwritten by a
+later sync. Badge review keeps the workflow questions no longer have (candidate / approved /
+retired), because a badge is a claim about what MongoDB certifies and a wrong one
+mis-scopes every question written against it.
+
+## Screens
+
+| Address | What it is |
+|---|---|
+| `/` | **Authoring** — write, browse, filter, export questions |
+| `/admin/skill-badges` | Badge catalog and review |
+| `/admin/docs` | Documentation corpus: refresh, fill gaps, re-chunk |
+| `/admin/docs/search?q=` | Semantic search over every stored section |
+| `/admin/docs/source?source=` | Sections in one documentation source |
+| `/admin/docs/page?url=` | One stored page, rendered |
+| `/admin/docs/render?url=` | The canonical page, fetched live and rendered |
+| `/admin/logs` | Log viewer |
+
+## API
+
+Questions, under `/api/questions`:
+
+| | | |
 |---|---|---|
-| `GET` | `/` | The main screen; `?status=`, `?skill_badge=`, `?category=` |
-| `POST` | `/api/questions/generate` | Start a walk: `skill_badges`, `max_pages`, `questions_per_page`, `difficulty` |
-| `GET` | `/api/questions/generate/status` | Poll a run — phase, pages, cost, page in flight |
-| `POST` | `/api/questions/generate/stop` | Stop the walk after the page it is on |
-| `GET` | `/api/questions/coverage` | Per-badge question counts and pages left to walk |
-| `GET` | `/api/questions` | List / export questions, same filters |
-| `GET` | `/api/questions/search?q=&limit=` | Questions ranked by similarity to `q` |
-| `GET` | `/api/questions/runs` | Recorded runs, newest first, with cumulative totals |
-| `GET` | `/api/questions/runs/{run_id}` | One recorded run in full |
-| `POST` | `/api/questions/generate/dismiss` | Clear the last run's notice from the screen |
-| `POST` | `/api/questions/duplicates/sweep` | Find duplicate candidates; deletes nothing |
-| `POST` | `/api/questions/duplicates/delete` | Delete questions chosen from that report |
-| `POST` | `/api/questions/backfill-embedding-text` | Compose `embedding_text` where missing or stale |
-| `POST` | `/api/questions/drop-status` | Strip the legacy review field from stored questions |
-| `DELETE` | `/api/questions/{id}` | Delete a question |
+| `POST` | `/generate` | Start a walk: `skill_badges`, `max_pages`, `questions_per_page`, `difficulty` |
+| `GET` | `/generate/status` | Poll — phase, sections, cost, section in flight |
+| `POST` | `/generate/stop` | Stop after the section in flight |
+| `POST` | `/generate/dismiss` | Clear the last run's notice |
+| `GET` | `` | List / export, filtered by `skill_badge` and `category` |
+| `GET` | `/count?skill_badge=&category=` | How many match — polled during a run |
+| `GET` | `/search?q=&limit=` | Questions ranked by similarity |
+| `GET` | `/coverage` | Per-badge counts and sections left |
+| `GET` | `/runs`, `/runs/{id}` | Run history, and one run in full |
+| `GET` | `/answer-positions` | Where the correct answer sits |
+| `POST` | `/shuffle-options` | Re-order stored questions' options |
+| `POST` | `/duplicates/sweep` | Find duplicate candidates; deletes nothing |
+| `POST` | `/duplicates/delete` | Delete questions chosen from that report |
+| `POST` | `/backfill-embedding-text` | Compose `embedding_text` where missing |
+| `POST` | `/drop-status` | Strip the legacy review field |
+| `DELETE` | `/{id}` | Delete a question |
 
-### Documentation corpus
+Documentation and badges, under `/api/admin`:
 
-`/admin/docs` keeps a stored copy of MongoDB's documentation. Question authoring
-reads its source material from here rather than fetching the web mid-run — which is
-where most of a run's wall-clock time used to go, and why two runs on the same badge
-saw different source text. See **Generating** above for how a run selects from it.
-
-Pages come from MongoDB's published agent index (`llms.txt`), which names each page
-and serves it as Markdown. That is the only enumerable route to the corpus: the MCP
-server's `search-knowledge` answers a query with its best few chunks and cannot be
-asked for everything, which makes it the right tool at authoring time and the wrong
-one for building a cache.
-
-**Refresh documentation** replaces the corpus with what MongoDB publishes now, and
-chunks each batch as it lands — one action, not two. Measured on 2026-08-19:
-**7,158 pages** (~75 MB) becoming **27,399 sections**, in **71 minutes**.
-
-That is far longer than fetching 7,000 pages should take, and most of it is spent
-waiting rather than transferring: the docs are behind CloudFront, which refuses a crawl
-that asks for too much, and each refusal costs a growing back-off. It has not been
-optimised because it does not need to be — the corpus is expected to be refreshed about
-twice a year, so an hour is cheap and being politely slow is what keeps the crawl from
-being blocked outright.
-
-**Fill gaps** fetches only pages the corpus does not already have, and removes nothing.
-This is the recovery path: the docs are served through CloudFront, which starts answering
-**403** when a crawl asks for too much too fast, and re-crawling seven thousand pages to
-recover the few hundred that were refused wastes an hour and invites another block.
-
-Being refused is handled rather than merely reported:
-
-- A 403, 429 or 5xx is retried with a growing pause, and a `Retry-After` header wins over
-  our own backoff — it is the server saying how long it wants to be left alone.
-- After `docs_block_threshold` (25) consecutive refusals the crawl **stops**. Continuing
-  would produce thousands of identical failures and prolong the block. What was fetched is
-  kept, and the screen says to use **Fill gaps** later.
-- A refused crawl never sweeps. Pages it never reached are not treated as withdrawn —
-  otherwise a crawl blocked a third of the way through would delete two thirds of the
-  corpus and report a successful replacement.
-
-- Pages are stamped with the run that wrote them, and anything left from an earlier
-  run is deleted at the end. Same end state as emptying the collection first, except a
-  crawl that dies half way through leaves the previous corpus in place rather than
-  nothing.
-- If a crawl stores no pages at all — a moved index, no network — nothing is swept and
-  the run says so. That is the one case where a blind replace would destroy the corpus
-  and report success.
-- A page is only rewritten when its content hash changed, so most of a re-run is
-  cheap and `updated` means something.
-- Per-page failures are collected, not fatal: across 10,000 requests to a site this
-  program does not own, some will fail, and aborting would mean the crawl never
-  finishes. The reported list is capped at 50 with a true count.
-- Oversized pages (>2 MB) are skipped — generated API dumps, not prose.
-- **Navigation stubs are skipped.** A page that is a title and a list of links is not
-  something a question can be written from: `drivers/csharp-drivers.md` is 108 bytes and
-  only points at the real C# driver docs. Anything under `docs_min_page_bytes` (500) is
-  excluded, counted separately from failures, since skipping one is the intended
-  outcome. The floor is deliberately conservative — stubs continue up to roughly 900
-  bytes, but so do a few genuinely short pages, and dropping real content is the worse
-  mistake. `POST /api/admin/docs/prune-stubs` removes ones stored before the floor
-  existed, without waiting for a full crawl.
-- **Progress is reported in detail.** The crawl reads every index first, so before
-  fetching a single page it knows how many there are. The panel then shows the phase,
-  a percentage, pages done of the total, the rate in pages per second, elapsed time and
-  the time remaining at that rate, plus new/updated/unchanged/failed counts. During the
-  planning phase no percentage or estimate is shown — the crawl does not know yet, and a
-  confident "0%, 0s remaining" reads as a stalled run.
-- The run is timed on the server, so leaving the screen and returning does not restart
-  the timer.
-- A page named by two indexes is fetched and counted once, so the total is a real
-  denominator.
-
-**Search the whole corpus.** `/admin/docs/search` searches every stored page by meaning,
-ranked, with an excerpt around the match. Corpus-wide on purpose: which of the 74
-sources holds a topic is not something an author knows — the C# driver's real
-documentation is not under the `drivers` index, it is under its own, 81 pages of it —
-so a per-source search would only work for someone who already knew where to look.
-
-Semantic, not keyword: an author knows the topic and not the wording. "How do I model a
-one-to-many relationship" has to reach the embedded-versus-referenced page, which never
-uses that phrase — a keyword search returns nothing for it. The cost is that a
-term-for-term match is no longer guaranteed to rank first, which is the right trade for
-a corpus read for meaning rather than grepped.
-
-It runs on the `doc_pages_text_vector` Atlas Vector Search index, configured with
-autoEmbed on `text`. Atlas embeds both the stored pages and the query, so this program
-stores no vectors and needs no embedding key — the same arrangement as the badge and
-question indexes. The definition lives in Atlas, not here: `ensure_indexes` creates no
-text index, and the index name is overridable with `DOC_PAGES_VECTOR_INDEX_NAME`.
-
-**Reading what is stored.** The source table is not just an inventory — open a source
-to list its pages, then open a page to read it. Long sources are capped at 500 rows
-with a filter over titles and URLs, and the screen says how many of the total it is
-showing rather than quietly truncating.
-
-A page is rendered as Markdown (`marked`, sanitised through `DOMPurify`, both pinned
-by SRI), with a **Markdown** toggle for the stored source text and a link to the page
-on MongoDB's own site — the corpus can be stale, and comparing against what is
-published now is the point of that link. The page text is passed into the template as
-JSON and sanitised before it reaches the document: it is fetched content, so nothing
-in it gets to be parsed as part of this application.
-
-Nothing schedules this; it is refreshed on demand. `DOCS_INDEX_URL` overrides the
-index location.
-
-| Method | Path | Purpose |
+| | | |
 |---|---|---|
-| `GET` | `/admin/docs` | The corpus screen |
-| `GET` | `/admin/docs/search?q=` | Keyword search across every stored page |
-| `GET` | `/api/admin/docs/search?q=&limit=` | The same search, as JSON |
-| `POST` | `/api/admin/docs/prune-stubs` | Delete navigation stubs already stored |
-| `GET` | `/admin/docs/source?source=&q=` | Pages in one source, filterable |
-| `GET` | `/admin/docs/page?url=` | One stored page, rendered as Markdown |
-| `GET` | `/admin/docs/render?url=` | The canonical page, fetched live and rendered |
-| `POST` | `/api/admin/docs/rechunk` | Re-split stored pages into sections; fetches nothing |
-| `GET` | `/api/admin/docs/chunks` | How the corpus is currently chunked |
-| `GET` | `/api/admin/docs/chunks/page?url=` | One page's sections, in order |
-| `POST` | `/api/admin/docs/refresh?mode=replace` | Replace the corpus with a fresh crawl |
-| `POST` | `/api/admin/docs/refresh?mode=fill` | Fetch only missing pages; remove nothing |
-| `GET` | `/api/admin/docs/refresh/status` | Poll a crawl, with progress |
-| `GET` | `/api/admin/docs/sources` | Stored sources, upstream sources, totals |
-| `GET` | `/api/admin/docs/pages?source=` | Stored pages, without their text |
-| `GET` | `/api/admin/docs/page?url=` | One page, with its text |
-
-### Logging
-
-Everything the service logs goes to `logs/app.log`, rotating at **100 MB** and
-keeping **10 files** (the active file plus nine backups, ~1 GB at most). `LOG_DIR`
-and `LOG_LEVEL` override the location and verbosity.
-
-Logging is configured from the environment rather than from `Settings`, because
-`Settings` requires a MongoDB connection string — and "cannot reach Atlas" is
-exactly what someone will come to the log to find out.
-
-**Log viewer** at `/admin/logs` shows the tail of the current file, with a
-selectable line count and a **Follow** toggle that refreshes every few seconds.
-Only the active file is served and the endpoint accepts no path, so the viewer
-cannot be turned into a way to read arbitrary files off the server — there are no
-authorizations here. Rotated files are listed by name and size so it is clear what
-history exists on disk.
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/admin/logs` | The log viewer |
-| `GET` | `/api/admin/logs?lines=` | Tail of the active log, plus rotated history |
-
-### Badge synchronisation
-
-**Sync from catalog** reads the published Credly collection
-(`.../collections/mongodb-skill-badges/badge_templates`, JSON) — that is the
-authoritative list of badges. Each sync then:
-
-1. **Reads the title from each badge's artwork** using Claude vision. The artwork
-   title is the canonical name: Credly, learn.mongodb.com and the collection API
-   all name these badges differently, and only the artwork is consistent.
-2. **Derives the slug from that title** (lowercase, hyphenated, punctuation
-   dropped), so badge identity follows the name a reviewer sees.
-3. **Reconciles with existing records** — identical canonical URLs settle identity
-   outright; otherwise Claude compares descriptions so a renamed or hand-corrected
-   badge is updated rather than duplicated.
-4. **Downloads the artwork** into the badge document (served back by this app, not
-   hotlinked).
-5. **Verifies the Credly page title** from that page's own markup.
-6. **Looks up the learn.mongodb.com title** via site-restricted search — those
-   course pages render in the browser, so no fetcher can read them directly.
-
-**Research with Claude** is the older path: web search plus fetch, for badges the
-collection may not list yet. Anything without evidence on the catalog domain is
-rejected and reported.
-
-### Duplicate detection
-
-**Find duplicates** uses the Atlas Vector Search index (`autoEmbed` on
-`description`, so Atlas embeds both documents and queries — this app stores no
-vectors). For each badge it takes the nearest neighbours, drops anything below the
-score floor, and asks Claude whether the pair is the same badge. Confident
-duplicates merge automatically; the rest surface with a **Merge** button. Pairs
-sharing a canonical URL are merged without a model call.
-
-A merge keeps the record carrying review work, fills gaps from the other, and
-remembers the dropped slug as an alias so a later sync does not re-create it.
-
-### Admin area
-
-The badge catalog, server-rendered at `/admin/skill-badges` (Jinja2 + Bootstrap 5
-from CDN, no build step):
-
-- Review table with badge artwork, and every name source labelled — **Credly
-  name**, **MongoDB name**, **Artwork name**, **Catalog name** — plus the
-  description and cited links.
-- Tabs and counts per review state; long-running actions show an elapsed timer.
-- Per badge: edit the title, curate the reference links, approve / retire /
-  re-open, and delete (retired badges only).
-- Hand edits are protected: a corrected title or curated links are never
-  overwritten by a later sync.
-- **Normalise slugs** re-applies the artwork-title slug rule to existing records.
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/admin/skill-badges` | The review screen, `?status=` to filter |
-| `POST` | `/api/admin/skill-badges/sync-catalog` | Sync from the Credly collection |
-| `POST` | `/api/admin/skill-badges/discover` | Research with Claude |
-| `POST` | `/api/admin/skill-badges/duplicates/scan` | Find and merge duplicates |
-| `POST` | `/api/admin/skill-badges/merge` | Merge one badge into another |
-| `POST` | `/api/admin/skill-badges/normalise-slugs` | Re-derive slugs from artwork titles |
-| `GET` | `/api/admin/skill-badges/discover/status` | Poll a run |
-| `GET` | `/api/admin/skill-badges?status=` | List badges |
-| `GET` | `/api/admin/skill-badges/{slug}/image` | Badge artwork |
-| `POST` | `/api/admin/skill-badges/{slug}/name` | Correct a title (locks it) |
-| `POST` | `/api/admin/skill-badges/{slug}/sources` | Curate links (locks them) |
-| `POST` | `/api/admin/skill-badges/{slug}/status` | Set review status |
-| `DELETE` | `/api/admin/skill-badges/{slug}` | Delete a retired badge |
+| `POST` | `/docs/refresh?mode=replace\|fill` | Crawl and chunk |
+| `GET` | `/docs/refresh/status` | Poll a crawl |
+| `POST` | `/docs/rechunk` | Re-split stored pages; fetches nothing |
+| `GET` | `/docs/chunks` | How the corpus is currently chunked |
+| `GET` | `/docs/chunks/page?url=` | One page's sections, in order |
+| `GET` | `/docs/sources`, `/docs/pages`, `/docs/page` | Stored inventory |
+| `GET` | `/docs/search?q=` | Section search |
+| `POST` | `/docs/prune-stubs` | Remove navigation stubs stored before the floor existed |
+| `POST` | `/skill-badges/sync` | Discover and refresh the catalog |
+| `POST` | `/skill-badges/{slug}/status` | Set review status |
+| `GET` | `/logs/tail` | Log tail |
 
 ## Layout
 
 ```
-app/config.py                        environment-driven settings
-app/logging_config.py                rotating file log, and reading it back
-app/db.py                            Mongo client (one per process)
-app/models/skill_badge.py            Pydantic schemas (Claude output + stored doc)
-app/models/question.py               question schemas (Claude output + stored doc)
-app/services/badge_discovery.py      the two Claude passes
-app/services/question_generation.py  the Claude passes for questions
-app/services/doc_chunking.py         splits a page into the sections questions come from
-app/repositories/doc_chunks.py       chunk storage, search, totals
-app/services/doc_retrieval.py        resolves a badge to the sections it is about
-app/services/run_cost.py             prices a run from the tokens it reported
-app/services/question_duplicates.py  the ad-hoc duplicate sweep ($vectorSearch + $rerank)
-app/services/discover_cli.py         shell entry point
-app/repositories/runs.py             run history: record, list, totals
-app/repositories/skill_badges.py     upsert / list / status, indexes
-app/repositories/questions.py        insert / filter / status, indexes
-app/repositories/doc_pages.py        the stored documentation corpus
-app/routers/questions.py             question JSON endpoints under /api/questions
-app/routers/pages.py                 the questions screen, served at /
-app/routers/admin_skill_badges.py    badge JSON endpoints under /api/admin
-app/routers/admin_pages.py           server-rendered pages under /admin
-app/routers/admin_logs.py            log tail endpoint under /api/admin
-app/routers/admin_docs.py            documentation corpus endpoints
-app/services/doc_corpus.py           crawls the published docs index
-app/templates/base.html              nav shell shared by every screen
-app/templates/questions.html         the main screen: review and generate
-app/templates/admin/skill_badges.html  badge review screen
-app/templates/admin/logs.html        log viewer
-app/templates/admin/docs.html        documentation corpus screen
-app/templates/admin/docs_search.html corpus-wide semantic search
-app/templates/admin/docs_source.html pages in one source
-app/templates/admin/docs_page.html   Markdown viewer for one page
-tests/                               pytest suite + fakes (see tests/README.md)
+app/main.py                            FastAPI app; mounts the routers, configures logging
+app/config.py                          settings; measured constants with their measurements
+app/db.py                              Mongo client (one per process)
+app/logging_config.py                  rotating file log, and reading it back
+
+app/models/question.py                 question schemas (Claude output + stored doc)
+app/models/skill_badge.py              badge schemas
+
+app/services/doc_corpus.py             crawls the published docs index; rebuilds chunks
+app/services/doc_chunking.py           splits a page into sections  ← the band lives here
+app/services/doc_retrieval.py          resolves a badge to the sections it is about
+app/services/question_generation.py    the prompts and the walk    ← the biggest file
+app/services/question_duplicates.py    $vectorSearch + $rerank sweep
+app/services/run_cost.py               prices a run from the tokens it reported
+app/services/badge_discovery.py        the two Claude passes for badges
+app/services/badge_art.py              reads the title out of the badge artwork
+app/services/badge_titles.py           the four name sources, and which wins
+app/services/badge_matching.py         matching a discovered badge to a stored one
+app/services/credly_catalog.py         the badge set, as JSON from Credly
+app/services/credly_page.py            one badge's Credly page
+app/services/mongodb_page.py           one badge's learn.mongodb.com page
+app/services/duplicates.py             badge duplicate detection
+app/services/discover_cli.py           shell entry point
+
+app/repositories/doc_pages.py          crawled pages
+app/repositories/doc_chunks.py         sections: storage, search, totals
+app/repositories/questions.py          insert / filter / count / delete, indexes
+app/repositories/runs.py               run history: record, list, totals
+app/repositories/skill_badges.py       upsert / list / status, indexes
+
+app/routers/pages.py                   the questions screen, served at /
+app/routers/questions.py               /api/questions
+app/routers/admin_pages.py             server-rendered /admin screens
+app/routers/admin_docs.py              /api/admin/docs
+app/routers/admin_skill_badges.py      /api/admin/skill-badges
+app/routers/admin_logs.py              /api/admin/logs
+
+app/templates/                         base shell + one template per screen
+tests/                                 pytest suite + fakes (see tests/README.md)
 ```
+
+Reading order for someone new: `app/config.py` (the comments are the design rationale),
+then `doc_chunking.py`, `doc_retrieval.py`, `question_generation.py` — that is the pipeline
+in order.
 
 ## Known limitations
 
-- A walk runs one page at a time, in series, and only one run at a time — run state
-  is a single in-process dict. Walking 34 badges means supervising it. The Message
-  Batches API is the natural fit (independent requests, nobody waiting, half price);
-  whether the Grove gateway exposes it is unprobed.
+- **A walk is serial and single-run.** One section at a time, one run at a time, run state
+  in a single in-process dict. Walking 34 badges means supervising it, and a restart loses
+  the live state (finished runs survive in `generation_runs`). The Message Batches API is
+  the natural fit — independent requests, nobody waiting, half price — but whether the
+  Grove gateway exposes it is unprobed.
 
-- The relevance floor and the reference exclusion are the only screening on a page
-  set. A cheap per-candidate classification pass would judge relevance better than a
-  similarity score can, and the page set should be reviewable on screen before a run
-  spends anything against it.
+- **`page_author_effort` is set on reasoning, not measurement.** Output tokens dominate a
+  walk's cost and thinking dominates output, so this is the program's largest untested cost
+  assumption. Twenty sections at each effort level would settle it.
 
-- `page_author_effort` is set to `medium` on reasoning, not measurement. Output
-  tokens dominate a walk's cost and thinking dominates output, so this is the
-  program's largest untested cost assumption; twenty pages at each effort level would
-  settle it.
+- **Relevance screening is a similarity floor and a URL pattern.** A cheap per-candidate
+  classification pass would judge "is this section really about this badge" better than a
+  score can, and the section set should be reviewable on screen before a run spends against
+  it.
 
-- Retrieval selects whole pages, not passages. A page relevant in one paragraph
-  spends its whole share of the context budget, so the material given to an
-  authoring turn is broader and blunter than chunk-level retrieval would be.
+- **Nothing checks for duplicates at generation time.** The sweep is on request, over what
+  is stored. At the current scale that is the right trade; at tens of thousands it may not
+  be.
 
-- Run state is in-process; it needs to move into MongoDB before running multiple
-  uvicorn workers. Badge runs and question runs hold separate state, so one of
-  each can run at a time. Run start and finish times are recorded on the server,
-  so the elapsed timer is correct across a page reload — but a restart still loses
-  the state.
-- The log viewer shows only the active file. Reading a rotated file still means
-  going to the disk.
-- Nothing checks whether a newly generated question duplicates an existing one.
-  The vector-search machinery used for badge duplicates would transfer, but is
-  not wired up for questions.
-- The generation path has never run against the live Claude API; the tests prove
-  the control flow, not that the prompt produces good questions.
-- `learn.mongodb.com` course pages are client-rendered, so their titles come from
-  the search index rather than the page. Three badges have no title available by
-  any headless method; a rendering browser (e.g. Playwright) would be needed.
-- One badge has no readable artwork title, so its name and slug fall back to the
-  reviewed title.
-- A wipe-and-rebuild reproduces everything machine-derived (badges, slugs, all
-  four name sources, artwork, links) but **not** reviewed titles, approvals, or
-  curated links. Back up before testing that.
+- **The duplicate threshold is calibrated on six questions.** It is a shortlist filter
+  rather than a delete decision, which is why that is tolerable — but it wants recalibrating
+  once the bank spans many badges, and the "would a leaked answer give this one away"
+  criterion is sharper than similarity and not directly measured.
+
+- **The log viewer shows only the active file.** Reading a rotated file means going to disk.
+
+- **`learn.mongodb.com` course pages are client-rendered**, so their titles come from the
+  search index rather than the page. Three badges have no title available by any headless
+  method; a rendering browser (e.g. Playwright) would be needed. One badge has no readable
+  artwork title, so its name and slug fall back to the reviewed title.
+
+- **A wipe-and-rebuild reproduces everything machine-derived** (badges, slugs, name
+  sources, artwork, links) but **not** reviewed titles, approvals or curated links. Back up
+  before testing that.
 
 ## Open questions
 
-- Which skill badge to target first (determines the doc corpus).
-- Whether the MongoDB MCP server exposes documentation search. The MCP server is
-  configured read-only in `.mcp.json` and is not yet authorized.
-- Embedding provider for duplicate detection (Voyage AI is the current lean).
+- Whether the MongoDB MCP server exposes documentation search. It is configured read-only
+  in `.mcp.json` and is not yet authorized.
+- Whether the Grove gateway exposes the Batches API, which would halve bulk generation cost
+  and remove the supervision problem.
+- Whether chunk-level retrieval wants a reranking pass of its own, as duplicate detection
+  has: the section set is currently ordered by embedding similarity alone.
