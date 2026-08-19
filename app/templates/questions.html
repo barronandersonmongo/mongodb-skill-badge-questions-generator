@@ -375,14 +375,15 @@
             <span class="badge text-bg-{{ difficulty_styles.get(question.difficulty, 'secondary') }}"
                   data-difficulty="true">{{ question.difficulty }}</span>
             {# Three kinds of tag sit side by side, so they are told apart by colour as
-               well as by order: a solid chip for difficulty, blue for the badges a
-               question is filed under, green for the topic areas it exercises. The
+               well as by order: a solid chip for difficulty, gold for the badges a
+               question is filed under — the badge artwork is gold, so the association
+               is already made — and green for the topic areas it exercises. The
                title carries the same distinction in words, since colour alone is not a
                label. Badge tags link to the badge's definition — a slug is not
                self-explanatory, and checking what it covers should not mean hunting
                through the admin screen for it. #}
             {% for slug in question.skill_badges %}
-            <a class="badge text-primary-emphasis bg-primary-subtle border border-primary-subtle text-decoration-none"
+            <a class="badge text-warning-emphasis bg-warning-subtle border border-warning-subtle text-decoration-none"
                href="/admin/skill-badges#badge-{{ slug }}"
                title="Skill badge: {{ slug }} — open its definition"
                data-badge-tag="{{ slug }}">{{ slug }}</a>

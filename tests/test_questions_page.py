@@ -1175,7 +1175,7 @@ def test_badge_and_category_tags_are_coloured_differently(
     """
     seed_question(skill_badges=["atlas-search"], categories=["search"])
     body = client.get(PAGE).text
-    assert "bg-primary-subtle" in body
+    assert "bg-warning-subtle" in body
     assert "bg-success-subtle" in body
 
 
