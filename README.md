@@ -328,6 +328,19 @@ search:
 The set comes back in relevance order, so a run that walks only part of it walks
 the most relevant part.
 
+**A page's contribution is capped.** The corpus holds documentation pages up to
+**1.7 MB** — driver tutorials that repeat every example in a dozen languages — and one of
+those sent whole is about half a million input tokens. Measured on a real run on
+2026-08-19: 505,435 input tokens, **$2.58 for three questions**, roughly a hundred times
+the expected cost per question. `doc_context_page_chars` (24,000) now bounds what any one
+page contributes to a prompt, and the model is told the page was cut and not to assume
+what the rest says. The run records which pages were trimmed, so a thin result from a
+truncated page is not mistaken for thin documentation.
+
+This is also the argument for chunking the corpus rather than storing whole pages: with
+a cap, a 1.7 MB page contributes only its opening, and whatever is useful further down is
+unreachable.
+
 **One page, one call.** Each page is authored in a single structured-output call —
 not the draft-then-extract pair the badge-wide path uses. That pair earns its keep
 for a research turn, where thinking in prose first helps; reading one page needs no

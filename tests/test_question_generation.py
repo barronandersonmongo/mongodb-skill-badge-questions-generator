@@ -1787,3 +1787,81 @@ def test_the_level_asked_for_is_recorded_with_the_run(
         "atlas-search", difficulty="intermediate", settings=walk_settings
     )
     assert result["requested"]["difficulty"] == "intermediate"
+
+
+# --- a huge page must not cost a fortune ---
+
+
+def test_a_huge_page_is_cut_short_before_it_is_sent(fake_client, walk_settings):
+    """
+    Intent: Measured on a real run on 2026-08-19: the corpus holds documentation pages up to
+        1.7 MB — driver tutorials repeating every example in a dozen languages — and one sent
+        whole was 505,435 input tokens, $2.58 for three questions, about a hundred times the
+        expected cost per question. The per-page cap existed for the single-prompt path and was
+        never applied to the walk.
+    Success: Only the first `doc_context_page_chars` of a page reach the prompt.
+    Feature: Question generation — a page's contribution to a prompt is bounded.
+    """
+    # A filler that cannot occur anywhere else in the prompt, so the count is the
+    # page's contribution and nothing else's — "x" also appears in the fixture URL.
+    huge = {**PAGE, "text": "Q" * 500_000}
+    capped = replace(walk_settings, doc_context_page_chars=1000)
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(huge, BADGE, [BADGE], settings=capped)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "Q" * 1000 in prompt
+    assert "Q" * 1001 not in prompt
+
+
+def test_a_cut_page_tells_the_author_it_was_cut(fake_client, walk_settings):
+    """
+    Intent: A model shown a page truncated mid-sentence can reasonably conclude the feature has
+        no more to it, and write a question asserting something the full page contradicts. It
+        has to be told, and told not to guess at the rest.
+    Success: A truncated page is marked as cut short, with an instruction not to assume the
+        remainder.
+    Feature: Question generation — truncation is disclosed to the author model.
+    """
+    huge = {**PAGE, "text": "Q" * 500_000}
+    capped = replace(walk_settings, doc_context_page_chars=1000)
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(huge, BADGE, [BADGE], settings=capped)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "cut short" in prompt
+    assert "do not assume what the rest says" in prompt
+
+
+def test_a_page_within_the_cap_is_sent_whole(fake_client, walk_settings):
+    """
+    Intent: The cap is a guard against outliers, not a summariser. Most pages are a few
+        thousand characters, and quietly trimming them would lose material for no benefit —
+        and would make the truncation notice a lie on nearly every page.
+    Success: A page shorter than the cap arrives complete and unmarked.
+    Feature: Question generation — an ordinary page is not truncated.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert PAGE["text"] in prompt
+    assert "cut short" not in prompt
+
+
+def test_a_run_reports_which_pages_were_cut(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A page that contributed only its first few thousand characters produced questions
+        from a fraction of its material. Reported the same as a page read whole, a thin result
+        looks like thin documentation rather than a page the cap trimmed.
+    Success: The run's source pages record the size and whether the page was cut.
+    Feature: Run history — truncated source pages are identifiable.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([{**PAGE, "text": "Atlas Search indexes. " + "x" * 5000}])
+    capped = replace(walk_settings, doc_context_page_chars=100)
+    fake_client(parsed_by_format=walk_run())
+    result = question_generation.generate_for_badge("atlas-search", settings=capped)
+    assert result["source_pages"][0]["truncated"] is True
+    assert result["source_pages"][0]["bytes"] > 100

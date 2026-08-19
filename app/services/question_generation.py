@@ -715,8 +715,10 @@ def build_page_prompt(
     *,
     difficulty: str | None = None,
     extra_instructions: str | None = None,
+    settings: Settings | None = None,
 ) -> str:
     """Assemble the request for one page. Kept separate so it can be asserted on."""
+    settings = settings or get_settings()
     badge_lines = [
         f"- {b['slug']}: {b.get('name')} — {b.get('description') or ''}" for b in catalog
     ]
@@ -736,10 +738,23 @@ def build_page_prompt(
         )
     if extra_instructions:
         prompt += f"Additional instructions from the author:\n{extra_instructions}\n\n"
-    return prompt + (
-        f"### {page.get('title') or page['url']}\n"
-        f"Source: {page['url']}\n\n{page.get('text') or ''}"
-    )
+
+    # Capped, and the cap matters more than it looks: the corpus holds pages up to 1.7 MB
+    # — driver tutorials that repeat every example in a dozen languages — and one of them
+    # sent whole is half a million input tokens, about $2.50 for a single page. Measured
+    # on a real run, 2026-08-19. A page cut short is still usable material to write from;
+    # a page that costs more than the rest of the badge put together is not.
+    text = page.get("text") or ""
+    limit = settings.doc_context_page_chars
+    truncated = len(text) > limit
+    body = text[:limit]
+    header = f"### {page.get('title') or page['url']}\nSource: {page['url']}"
+    if truncated:
+        header += (
+            "\n(This page is longer than shown; it has been cut short. Write only from "
+            "what is here — do not assume what the rest says.)"
+        )
+    return prompt + f"{header}\n\n{body}"
 
 
 @dataclass
@@ -799,6 +814,7 @@ def questions_from_page(
                         count,
                         difficulty=difficulty,
                         extra_instructions=extra_instructions,
+                        settings=settings,
                     ),
                 }
             ],
@@ -1023,6 +1039,10 @@ def generate_for_badge(
                 "url": page["url"],
                 "title": page.get("title"),
                 "questions": stored["inserted"],
+                "bytes": page.get("bytes"),
+                # Visible on the run so a page that only contributed its first few
+                # thousand characters is not mistaken for one that was read whole.
+                "truncated": len(page.get("text") or "") > settings.doc_context_page_chars,
             }
         )
         summary["pages_done"] += 1
