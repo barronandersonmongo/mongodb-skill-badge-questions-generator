@@ -629,6 +629,15 @@ Total spend cannot be compared between runs because it depends on how much was w
 per question says whether a prompt or effort change paid for itself. Both are absent rather
 than zero until there is something to divide by.
 
+The history has its own screen at `/runs`, server-rendered like every other list. It was a
+dialog on the questions screen, filled in by JavaScript when it opened — which made the one
+lasting record of what has been spent the least reachable thing here: it could not be linked
+to, could not be read beside the questions a run produced, and did not exist for a browser
+that had not run the script. The cumulative totals sit above the runs, because per-run cost
+is small enough to ignore individually and large enough to matter in aggregate. Runs
+recorded before a figure was measured do not carry it and show it as absent; the collection
+is never migrated, since an old run is a record of what was known then.
+
 **Every finished run is recorded** in `generation_runs` — the badge, the choices made, the
 model, the effort, the relevance floor, the timings, the counts, the cost, the sections read
 and anything that failed. Failed runs too: "we tried this badge and it broke" is exactly

@@ -10,6 +10,7 @@ The list is rendered server-side so it is readable without JavaScript; JS only
 drives the generate button's polling, the review buttons and the filter menus.
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -18,12 +19,71 @@ from pymongo.errors import PyMongoError
 
 from app.config import get_settings
 from app.repositories import questions as questions_repo
+from app.repositories import runs as runs_repo
 from app.repositories import skill_badges
 from app.routers.questions import run_state
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
 router = APIRouter(tags=["ui"])
+
+
+# Figures a person reads rather than a machine parses. Registered as filters because
+# the alternative — formatting in the route and passing strings — makes the template
+# unable to say what a number is, and every screen would format money its own way.
+def _number(value: object) -> float | None:
+    """The value as a number, or None if there isn't one.
+
+    An older run predates fields a newer one records, so a template asking for one gets
+    Jinja's Undefined rather than None — and formatting that raises. Anything that is
+    not a number is absent, which is what an em dash says.
+    """
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _money(value: object) -> str:
+    number = _number(value)
+    return "—" if number is None else f"${number:,.2f}"
+
+
+def _unit_cost(value: object) -> str:
+    """Cost per question. Four places, because it is fractions of a cent."""
+    number = _number(value)
+    return "—" if number is None else f"${number:,.4f}"
+
+
+def _duration(seconds: object) -> str:
+    number = _number(seconds)
+    if number is None:
+        return "—"
+    total = max(0, round(number))
+    if total < 60:
+        return f"{total}s"
+    minutes, remainder = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {remainder:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def _when(epoch_seconds: object) -> str:
+    """A recorded time, in UTC. The server's zone is the only one it can know."""
+    number = _number(epoch_seconds)
+    if not number:
+        return "—"
+    return datetime.fromtimestamp(number, tz=timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+
+
+def _rate(value: object) -> str:
+    number = _number(value)
+    return "—" if number is None else f"{number:.1f}"
+
+
+templates.env.filters["money"] = _money
+templates.env.filters["unit_cost"] = _unit_cost
+templates.env.filters["duration"] = _duration
+templates.env.filters["when"] = _when
+templates.env.filters["rate"] = _rate
 
 # No status tabs: there is no review workflow, so every stored question is a
 # question in use. The only count worth a heading is how many are in scope.
@@ -270,5 +330,40 @@ def duplicates_page(request: Request):
             "last_traceback": state["last_traceback"],
             "running": state["running"],
             "storage_error": None,
+        },
+    )
+
+
+@router.get("/runs")
+def runs_page(request: Request):
+    """Every recorded generation run, newest first, with the cumulative totals.
+
+    Its own screen rather than a dialog on the questions list. A dialog cannot be
+    linked to, could not be read beside the questions a run produced, and was fetched
+    by JavaScript on open — so the one lasting record of what has been spent was the
+    least reachable thing in the program. Run state itself does not survive a restart;
+    this collection is why the history does.
+
+    Rendered server-side like every other list: what it costs to keep the bank growing
+    is a number someone may need to paste into a message, and it should not depend on
+    a script having run.
+    """
+    history: list[dict] = []
+    totals: dict = {}
+    storage_error: str | None = None
+    try:
+        history = runs_repo.list_runs(limit=200)
+        totals = runs_repo.totals()
+    except PyMongoError as exc:
+        storage_error = str(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "runs.html",
+        {
+            "active_page": "runs",
+            "runs": history,
+            "totals": totals,
+            "storage_error": storage_error,
         },
     )

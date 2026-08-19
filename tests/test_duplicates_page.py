@@ -187,7 +187,7 @@ def test_each_question_in_a_pair_is_named_by_its_identifier(client):
 # --- the screen exists so the report is not on the questions screen ---
 
 
-def test_the_questions_screen_does_not_show_a_sweep_report(client):
+def test_the_questions_screen_does_not_show_a_sweep_report(client, fake_collection, fake_questions):
     """
     Intent: Every entry in the report links to a question, and while the report sat on the
         questions screen those links led back to the page the report was on — a link that
@@ -201,7 +201,7 @@ def test_the_questions_screen_does_not_show_a_sweep_report(client):
     assert 'data-sweep-below="true"' not in body
 
 
-def test_the_questions_screen_leads_here(client):
+def test_the_questions_screen_leads_here(client, fake_collection, fake_questions):
     """
     Intent: Moving the report must not hide it. Finding duplicates is something an author
         thinks of while looking at questions, so the route to it starts there.

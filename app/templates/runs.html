@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}Run history — Skill Badge Questions{% endblock %}
+
+{% block content %}
+{% import "_ui.html" as ui %}
+
+{% call ui.page_header(
+    "Run history",
+    "Every recorded generation run, newest first — what was asked for, what it produced, "
+    "how long it took and what it cost. Run state itself is in memory and does not "
+    "survive a restart, so this is the only lasting record.") %}{% endcall %}
+
+{% if storage_error %}
+<div class="alert alert-danger">
+  <strong>Cannot reach MongoDB.</strong>
+  <div class="small font-monospace mt-1">{{ storage_error }}</div>
+</div>
+{% endif %}
+
+{# The cumulative spend, first. Per-run cost is small enough to ignore individually and
+   large enough to matter in aggregate, which is exactly the shape of cost that goes
+   unnoticed until someone asks what this has cost. #}
+{% if totals.runs %}
+{% call ui.panel() %}
+<div class="row row-cols-2 row-cols-md-4 g-3" data-run-totals="true">
+  <div><div class="meta">Runs</div><div class="fs-5 fw-semibold">{{ totals.runs }}</div></div>
+  <div><div class="meta">Questions</div><div class="fs-5 fw-semibold">{{ totals.questions }}</div></div>
+  <div><div class="meta">Sections read</div><div class="fs-5 fw-semibold">{{ totals.pages }}</div></div>
+  <div><div class="meta">Spent</div><div class="fs-5 fw-semibold">{{ totals.dollars | money }}</div></div>
+  <div><div class="meta">Time</div><div>{{ totals.seconds | duration }}</div></div>
+  <div><div class="meta">Questions/min</div><div>{{ totals.questions_per_minute | rate }}</div></div>
+  <div><div class="meta">Per question</div><div>{{ totals.dollars_per_question | unit_cost }}</div></div>
+</div>
+{% endcall %}
+{% endif %}
+
+<div class="panel mt-3">
+  {% if runs %}
+  <div class="table-responsive">
+    <table class="table align-middle mb-0" data-run-table="true">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Badge</th>
+          <th class="text-end">Sections</th>
+          <th class="text-end">Questions</th>
+          <th class="text-end">Per page</th>
+          <th>Level</th>
+          <th>Effort</th>
+          <th class="text-end">Q/min</th>
+          <th class="text-end">Took</th>
+          <th class="text-end">Cost</th>
+          <th class="text-end">Per question</th>
+          <th>Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for run in runs %}
+        <tr data-run-id="{{ run.run_id }}">
+          <td class="text-nowrap">{{ run.finished_at | when }}</td>
+          <td>{{ run.badge_name or (run.skill_badges or []) | join(", ") or "—" }}</td>
+          <td class="text-end">
+            {{ run.pages_done or 0 }}{% if run.pages_total %} / {{ run.pages_total }}{% endif %}
+          </td>
+          <td class="text-end">{{ run.inserted or 0 }}</td>
+          <td class="text-end">{{ (run.requested or {}).get("questions_per_page") or "—" }}</td>
+          <td>{{ (run.requested or {}).get("difficulty") or "mixed" }}</td>
+          <td>{{ run.effort or "—" }}</td>
+          <td class="text-end">{{ run.questions_per_minute | rate }}</td>
+          <td class="text-end">{{ run.elapsed_seconds | duration }}</td>
+          <td class="text-end">{{ (run.cost or {}).get("dollars") | money }}</td>
+          <td class="text-end">{{ (run.cost or {}).get("dollars_per_question") | unit_cost }}</td>
+          {# A failed run is the one row worth finding at a glance, and its message is
+             why it failed — which is the whole of what the row has to say. #}
+          <td class="{% if run.error %}text-danger{% endif %}" data-outcome="true">
+            {% if run.error %}
+            <span title="{{ run.error }}">failed</span>
+            {% else %}
+            {{ run.phase or "—" }}
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  {% call ui.empty_state() %}
+    No runs recorded yet. A run is recorded when it finishes, whether it succeeded or not.
+  {% endcall %}
+  {% endif %}
+</div>
+{% endblock %}

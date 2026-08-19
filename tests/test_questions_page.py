@@ -971,19 +971,6 @@ def test_the_run_summary_can_be_closed(client, fake_collection, fake_questions):
     assert 'data-dismiss-result="true"' in body
 
 
-def test_the_screen_offers_the_run_history(client, fake_collection, fake_questions):
-    """
-    Intent: Run history exists to make a prompt change assessable — what we did, what it
-        cost, what it produced. Reachable only as an API call it would never be looked at,
-        which is the same as not recording it.
-    Success: The screen offers a run-history panel.
-    Feature: Run history — reachable from the authoring screen.
-    """
-    body = client.get(PAGE).text
-    assert 'id="history-btn"' in body
-    assert 'id="history-modal"' in body
-
-
 # --- skill level, rate and unit cost on screen ---
 
 
