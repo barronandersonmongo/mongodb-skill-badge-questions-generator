@@ -5,8 +5,10 @@ the authoring surface this tool exists for, while /admin holds the functions tha
 curate the badge catalog behind it. Nothing enforces that boundary — there are no
 authorizations — it separates the two kinds of work.
 
-Generation is a long-running Claude call (web search, then authoring — minutes
-not seconds), so it runs in a background task and the page polls for status.
+Generation walks the documentation pages a badge is about, one Claude call per
+page — many minutes, not seconds — so it runs in a background task and the page
+polls for status. Progress is reported per page, as the documentation refresh
+does, because a walk is unreadable without it.
 
 Run state is separate from the badge run state: generating questions and syncing
 badges are unrelated jobs, and one must not report the other's result.
@@ -23,13 +25,15 @@ from pydantic import BaseModel, Field
 from pymongo.errors import PyMongoError
 
 from app.repositories import questions
-from app.services.question_generation import generate_questions
+from app.services.question_generation import generate_for_badge
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/questions", tags=["questions"])
 
-MAX_QUESTIONS_PER_RUN = 25
+# A walk is bounded by pages, not questions: one page is worth several questions and
+# the cap is really "how long am I prepared to wait for this badge".
+MAX_PAGES_PER_RUN = 200
 
 # Single-process run state, as for badge discovery. Good enough for one internal
 # authoring tool; if this ever runs multi-worker, move it into Mongo.
@@ -51,9 +55,16 @@ def run_state() -> dict:
 
 
 class GenerateRequest(BaseModel):
+    """A request for more questions on one or more badges.
+
+    Sized in pages rather than questions: a run walks the badge's documentation and
+    each page is worth several questions, so "how many pages" is the thing an author
+    can trade against how long they are willing to wait.
+    """
+
     skill_badges: list[str] = Field(min_length=1, max_length=25)
-    count: int = Field(default=5, ge=1, le=MAX_QUESTIONS_PER_RUN)
-    source_material: str | None = None
+    max_pages: int = Field(default=25, ge=1, le=MAX_PAGES_PER_RUN)
+    questions_per_page: int = Field(default=3, ge=1, le=10)
     extra_instructions: str | None = None
 
 
@@ -72,16 +83,30 @@ def _run_generation(request: GenerateRequest) -> None:
         finished_at=None,
     )
     logger.info(
-        "Generation run started: %d question(s) for %s",
-        request.count,
+        "Generation run started: up to %d page(s) each for %s",
+        request.max_pages,
         ", ".join(request.skill_badges),
     )
+
+    def progress(state: dict) -> None:
+        # Written straight onto the run state, so the polling endpoint reports the
+        # walk as it happens rather than only when it ends.
+        _run_state["last_result"] = state
+
     try:
-        _run_state["last_result"] = generate_questions(
-            request.skill_badges,
-            request.count,
-            source_material=request.source_material,
-            extra_instructions=request.extra_instructions,
+        results = []
+        for slug in request.skill_badges:
+            results.append(
+                generate_for_badge(
+                    slug,
+                    max_pages=request.max_pages,
+                    questions_per_page=request.questions_per_page,
+                    extra_instructions=request.extra_instructions,
+                    progress=progress,
+                )
+            )
+        _run_state["last_result"] = (
+            results[0] if len(results) == 1 else _combine(results, request)
         )
         logger.info(
             "Generation run finished: %s stored, %s discarded",
@@ -97,6 +122,71 @@ def _run_generation(request: GenerateRequest) -> None:
     finally:
         _run_state["running"] = False
         _run_state["finished_at"] = time.time()
+
+
+def _combine(results: list[dict], request: GenerateRequest) -> dict:
+    """One summary for a run that walked several badges.
+
+    Reported as a single run because that is what the author asked for; the per-badge
+    numbers are kept so a badge that produced nothing is still visible as such.
+    """
+    combined: dict = {
+        "source": "badge-page-walk",
+        "skill_badges": [r["skill_badge"] for r in results],
+        "per_badge": [
+            {
+                "skill_badge": r["skill_badge"],
+                "badge_name": r.get("badge_name"),
+                "inserted": r["inserted"],
+                "pages_done": r["pages_done"],
+                "pages_available": r["pages_available"],
+            }
+            for r in results
+        ],
+        "questions_per_page": request.questions_per_page,
+    }
+    for field in ("pages_total", "pages_done", "inserted", "generated"):
+        combined[field] = sum(r.get(field) or 0 for r in results)
+    for field in ("rejected", "failures", "source_pages", "question_ids"):
+        combined[field] = [item for r in results for item in (r.get(field) or [])]
+    combined["failure_count"] = len(combined["failures"])
+    return combined
+
+
+@router.get("/coverage")
+def coverage() -> list[dict]:
+    """Per-badge question counts, plus how much documentation each badge still has.
+
+    This is the screen that makes a thin badge actionable: a badge with 17 questions
+    and 300 unused pages needs another walk, while one with 17 questions and no unused
+    pages has exhausted its material and needs the corpus widened instead.
+    """
+    from app.repositories import skill_badges
+    from app.services import doc_retrieval
+
+    counts = questions.counts_by_badge()
+    rows = []
+    for badge in skill_badges.list_badges():
+        slug = badge["slug"]
+        row = {
+            "skill_badge": slug,
+            "name": badge.get("name"),
+            **counts.get(slug, {"draft": 0, "approved": 0, "rejected": 0, "total": 0}),
+        }
+        try:
+            used = questions.source_urls_for_badge(slug)
+            row["pages_used"] = len(used)
+            row["pages_available"] = len(
+                doc_retrieval.page_set_for_badge(badge, exclude_urls=used)
+            )
+        except PyMongoError as exc:
+            # The page set needs the Atlas index. Counts are still worth showing
+            # without it, so this reports "unknown" rather than failing the screen.
+            logger.warning("Coverage could not resolve pages for %s: %s", slug, exc)
+            row["pages_used"] = None
+            row["pages_available"] = None
+        rows.append(row)
+    return sorted(rows, key=lambda r: (r["total"], r["name"] or ""))
 
 
 @router.post("/generate")

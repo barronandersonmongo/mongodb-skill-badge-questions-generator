@@ -248,6 +248,48 @@ def backfill_embedding_text() -> dict[str, Any]:
     return {"written": written, "already_correct": already_correct}
 
 
+def source_urls_for_badge(slug: str) -> set[str]:
+    """Every documentation page this badge already has questions from.
+
+    This is what makes the page walk resumable: a run skips the pages already written
+    from, so walking a badge twice covers new material instead of re-mining the same
+    pages. Read as one projection — the set is the whole answer, and asking per page
+    would be one round trip per candidate.
+    """
+    return {
+        url
+        for doc in collection().find(
+            {"skill_badges": slug}, {"_id": False, "source_urls": True}
+        )
+        for url in (doc.get("source_urls") or [])
+    }
+
+
+def counts_by_badge() -> dict[str, dict[str, int]]:
+    """Per-badge question counts by status, for the coverage screen.
+
+    A question filed under several badges counts once for each, because the question
+    that matters is "does this badge have enough", not "how many questions exist".
+    """
+    pipeline = [
+        {"$unwind": "$skill_badges"},
+        {
+            "$group": {
+                "_id": {"slug": "$skill_badges", "status": "$status"},
+                "n": {"$sum": 1},
+            }
+        },
+    ]
+    counts: dict[str, dict[str, int]] = {}
+    for row in collection().aggregate(pipeline):
+        slug = row["_id"]["slug"]
+        status = row["_id"].get("status") or "draft"
+        entry = counts.setdefault(slug, {"draft": 0, "approved": 0, "rejected": 0, "total": 0})
+        entry[status] = entry.get(status, 0) + row["n"]
+        entry["total"] += row["n"]
+    return counts
+
+
 def categories_in_use() -> list[str]:
     """Every category any stored question carries, sorted, for the filter menu."""
     found: set[str] = set()

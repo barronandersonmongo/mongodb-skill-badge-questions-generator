@@ -81,6 +81,37 @@ class Settings:
     # an authoring turn that will not fit is not.
     doc_context_page_chars: int = 24_000
     doc_context_char_budget: int = 360_000
+    # --- badge-scoped page walk ---
+    # Questions are written one documentation page at a time, over the set of pages
+    # that belong to a badge. A badge is resolved to that set first, then walked: each
+    # page is read once, yields several questions, and coverage is a counter against an
+    # enumerable list rather than a guess. Cost then arrives per badge, when someone
+    # asks for that badge, instead of as one sweep of the whole corpus.
+    #
+    # How wide the set is drawn. Deliberately much wider than the old single-prompt
+    # retrieval: the point is to enumerate a badge's material, not to pick the best few
+    # pages that fit in one request.
+    doc_page_set_per_topic: int = 60
+    doc_page_set_size: int = 400
+    # Pages further away than this are not this badge's material. Measured against the
+    # Atlas index (voyage-4-large) on the Cluster Reliability badge: pages plainly about
+    # the badge scored 0.70-0.86, while the noise its Credly tags dragged in — IP access
+    # lists, VPC peering — sat at 0.64-0.69.
+    doc_page_set_score_floor: float = 0.70
+    # Reference material is excluded from question material. Measured 2026-08-19:
+    # 3,318 of 7,162 stored pages are parameter lists, CLI synopses and command
+    # references, and a question written from a parameter list tests lookup, not skill.
+    doc_reference_url_pattern: str = r"/reference/|/cli/|/api/|/command/"
+    # How many questions one page is asked for, and how many pages a single run walks.
+    # The page cap bounds a run's wall clock and cost; the walk resumes where it left
+    # off, because pages already written from are skipped.
+    questions_per_page: int = 3
+    # Reading one page and writing three questions from it is a bounded task, not the
+    # open-ended research the badge-wide path does. Output tokens — thinking most of
+    # all — dominate the cost of a walk, so the effort is tuned separately here rather
+    # than inheriting the `high` used for research.
+    page_author_effort: str = "medium"
+    max_pages_per_run: int = 25
     # MongoDB publishes an agent-oriented index of its documentation, and serves
     # every page as Markdown. That is the only enumerable route to the whole corpus:
     # search-knowledge returns the best chunks for a query and cannot be asked "give

@@ -20,6 +20,10 @@
             {% if not badges %}disabled{% endif %}>
       Generate questions
     </button>
+    <button class="btn btn-outline-secondary" id="coverage-btn" type="button"
+            data-bs-toggle="modal" data-bs-target="#coverage-modal">
+      Coverage
+    </button>
     <button class="btn btn-outline-secondary" id="sweep-btn" type="button">
       Find duplicates
     </button>
@@ -66,6 +70,40 @@
 <div class="alert alert-success">
   {% if last_result.source == "question-duplicate-sweep" %}
   <strong>Last duplicate sweep.</strong>
+  {% elif last_result.source == "badge-page-walk" %}
+  <strong>Last run:</strong>
+  {{ last_result.inserted }} question(s) stored from
+  {{ last_result.pages_done }} documentation page(s)
+  {% if last_result.exhausted %}
+  <div class="mt-1 small" data-exhausted="true">
+    Every page that resolves to this badge has already been written from. Widen the
+    documentation corpus, or lower the relevance floor, to find more material.
+  </div>
+  {% endif %}
+  {% if last_result.fell_back_to_research %}
+  <div class="mt-1 small" data-fell-back="true">
+    No stored documentation resolved to this badge, so this run researched instead of
+    walking pages. <a href="/admin/docs">Refresh the documentation corpus</a> to make
+    runs repeatable.
+  </div>
+  {% endif %}
+  {% if last_result.pages_available is not none %}
+  <div class="mt-1 small text-body-secondary" data-pages-left="true">
+    {{ last_result.pages_available }} page(s) not yet written from remain for this badge.
+  </div>
+  {% endif %}
+  {% if last_result.failure_count %}
+  <details class="mt-1">
+    <summary class="small" data-page-failures="true">
+      {{ last_result.failure_count }} page(s) produced nothing
+    </summary>
+    <ul class="small mb-0 mt-2">
+      {% for item in last_result.failures %}
+      <li><span class="font-monospace">{{ item.url }}</span> — {{ item.error }}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
   {% else %}
   <strong>Last run:</strong>
   {{ last_result.inserted }} question(s) stored
@@ -98,7 +136,12 @@
       <summary class="small">Show sources</summary>
       <ul class="small mb-0 mt-2">
         {% for page in last_result.source_pages %}
-        <li><a href="{{ page.url }}" target="_blank" rel="noopener">{{ page.title or page.url }}</a></li>
+        <li>
+          <a href="{{ page.url }}" target="_blank" rel="noopener">{{ page.title or page.url }}</a>
+          {% if page.questions is not none %}
+          <span class="text-body-secondary">— {{ page.questions }} question(s)</span>
+          {% endif %}
+        </li>
         {% endfor %}
       </ul>
     </details>
@@ -330,6 +373,29 @@
   <strong>Export JSON</strong> returns exactly the questions matching the filters above.
 </p>
 
+<div class="modal fade" id="coverage-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5">Coverage by skill badge</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-body-secondary">
+          Thinnest badges first. <strong>Pages left</strong> is how much documentation
+          resolves to the badge and has not been written from yet — a badge with few
+          questions and many pages left needs another run, while one with no pages left
+          has exhausted its material.
+        </p>
+        <div id="coverage-body" class="small text-body-secondary">Loading…</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="generate-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-lg">
     <div class="modal-content">
@@ -339,9 +405,10 @@
       </div>
       <div class="modal-body">
         <p class="small text-body-secondary">
-          Claude drafts the questions, then they are validated into the four-option
-          format before being stored. This takes minutes, not seconds — you can
-          leave this page open and it will report when done.
+          A run walks the documentation pages this badge is about, one at a time, and
+          writes several questions from each. Pages already written from are skipped,
+          so running it again covers new material rather than repeating. This takes
+          minutes — you can leave this page open and it will report when done.
         </p>
         <label for="badge-picker" class="form-label">Skill badges</label>
         <select class="form-select" id="badge-picker" multiple size="8">
@@ -357,17 +424,19 @@
           catalog and also filed under any other badge it genuinely tests.
         </div>
 
-        <label for="count" class="form-label mt-3">How many questions</label>
-        <input class="form-control" id="count" type="number" value="5" min="1" max="25">
-
-        <label for="source-material" class="form-label mt-3">
-          Source material (optional)
-        </label>
-        <textarea class="form-control" id="source-material" rows="6"
-                  placeholder="Paste training material, course notes, or reference text to write from."></textarea>
+        <div class="row g-3 mt-3">
+          <div class="col">
+            <label for="max-pages" class="form-label">How many pages to walk</label>
+            <input class="form-control" id="max-pages" type="number" value="25" min="1" max="200">
+          </div>
+          <div class="col">
+            <label for="per-page" class="form-label">Questions per page</label>
+            <input class="form-control" id="per-page" type="number" value="3" min="1" max="10">
+          </div>
+        </div>
         <div class="form-text">
-          Preferred over anything Claude finds on its own. This is where internal
-          training content goes — the server cannot reach Glean or a cluster itself.
+          25 pages at 3 questions each is up to 75 questions, and a few minutes per
+          page. A run picks up where the last one stopped.
         </div>
 
         <label for="instructions" class="form-label mt-3">
@@ -458,7 +527,23 @@ async function pollStatus() {
   const state = await response.json();
   adoptServerClock(state);
   if (state.running) {
-    showAlert("info", "Writing questions — this takes a few minutes…", {timed: true});
+    // The walk reports per page, so the message says where it is rather than only
+    // that something is happening. A walk of 25 pages is far too long for a spinner.
+    const at = state.last_result || {};
+    let message = "Writing questions — this takes a few minutes…";
+    if (at.pages_total) {
+      message =
+        "Page " + (at.pages_done || 0) + " of " + at.pages_total +
+        (at.badge_name ? " for " + at.badge_name : "") +
+        " — " + (at.inserted || 0) + " question(s) written so far";
+      if (at.percent !== null && at.percent !== undefined) {
+        message += " (" + at.percent + "%)";
+      }
+      if (at.eta_seconds) {
+        message += ", about " + formatElapsed(at.eta_seconds * 1000) + " left";
+      }
+    }
+    showAlert("info", message + "…", {timed: true});
     setTimeout(pollStatus, 3000);
     return;
   }
@@ -501,6 +586,57 @@ document.querySelectorAll("[data-filter]").forEach((select) => {
   });
 });
 
+// Coverage is fetched when the panel opens, not rendered with the page: resolving
+// every badge's page set is dozens of vector searches, far too slow to sit in the
+// path of an ordinary page load.
+let coverageLoaded = false;
+document.getElementById("coverage-modal").addEventListener("show.bs.modal", async () => {
+  if (coverageLoaded) return;
+  const target = document.getElementById("coverage-body");
+  const response = await fetch(API + "/coverage");
+  if (!response.ok) {
+    target.textContent = "Could not load coverage (HTTP " + response.status + ").";
+    return;
+  }
+  const rows = await response.json();
+  coverageLoaded = true;
+  target.textContent = "";
+  const table = document.createElement("table");
+  table.className = "table table-sm align-middle mb-0";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  ["Skill badge", "Draft", "Approved", "Total", "Pages left"].forEach((label, i) => {
+    const th = document.createElement("th");
+    th.textContent = label;
+    if (i > 0) th.className = "text-end";
+    headRow.append(th);
+  });
+  head.append(headRow);
+  const tbody = document.createElement("tbody");
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    const link = document.createElement("a");
+    link.href = "?skill_badge=" + encodeURIComponent(row.skill_badge);
+    link.textContent = row.name || row.skill_badge;
+    name.append(link);
+    tr.append(name);
+    [row.draft, row.approved, row.total].forEach((value) => {
+      const td = document.createElement("td");
+      td.className = "text-end";
+      td.textContent = value;
+      tr.append(td);
+    });
+    const left = document.createElement("td");
+    left.className = "text-end";
+    left.textContent = row.pages_available === null ? "—" : row.pages_available;
+    tr.append(left);
+    tbody.append(tr);
+  });
+  table.append(head, tbody);
+  target.append(table);
+});
+
 document.getElementById("start-run").addEventListener("click", async () => {
   const picker = document.getElementById("badge-picker");
   const slugs = Array.from(picker.selectedOptions).map((o) => o.value);
@@ -514,8 +650,8 @@ document.getElementById("start-run").addEventListener("click", async () => {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({
       skill_badges: slugs,
-      count: Number(document.getElementById("count").value),
-      source_material: document.getElementById("source-material").value.trim() || null,
+      max_pages: Number(document.getElementById("max-pages").value),
+      questions_per_page: Number(document.getElementById("per-page").value),
       extra_instructions: document.getElementById("instructions").value.trim() || null,
     }),
   });

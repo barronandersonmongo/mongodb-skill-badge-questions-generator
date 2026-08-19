@@ -218,7 +218,9 @@ def excerpt(text: str, terms: list[str]) -> str:
     return prefix + " ".join(window.split()) + suffix
 
 
-def _vector_search(query: str, limit: int) -> list[dict[str, Any]]:
+def _vector_search(
+    query: str, limit: int, *, include_text: bool = True
+) -> list[dict[str, Any]]:
     """Pages semantically closest to a query, best match first, text included.
 
     The Atlas index is configured with autoEmbed on `text`, so the query sent is the
@@ -239,9 +241,14 @@ def _vector_search(query: str, limit: int) -> list[dict[str, Any]]:
         "title": True,
         "bytes": True,
         "fetched_at": True,
-        "text": True,
+        "text": include_text,
         "score": {"$meta": "vectorSearchScore"},
     }
+    if not include_text:
+        # An exclusion of one field inside an inclusion projection is rejected, so the
+        # key is dropped rather than set to False. Resolving a badge to its page set
+        # ranks several hundred pages and needs none of their text.
+        projection.pop("text")
     return list(
         collection().aggregate(
             [
@@ -297,6 +304,24 @@ def search_page_texts(query: str, *, limit: int = 5) -> list[dict[str, Any]]:
     if not query:
         return []
     return _vector_search(query, limit)
+
+
+def search_page_refs(query: str, *, limit: int = 60) -> list[dict[str, Any]]:
+    """The same ranking, carrying only what identifies and scores a page.
+
+    Resolving a badge to its page set ranks several hundred candidates and decides
+    which belong. Reading their text to do that would move tens of megabytes to
+    answer a question about relevance.
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+    return _vector_search(query, limit, include_text=False)
+
+
+def page_by_url(url: str) -> dict[str, Any] | None:
+    """One stored page with its text, or None. The unit the page walk reads."""
+    return collection().find_one({"url": url}, {"_id": False})
 
 
 def delete_stubs(smaller_than: int) -> int:

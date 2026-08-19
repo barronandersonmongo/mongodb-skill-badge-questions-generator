@@ -1,4 +1,16 @@
-"""Assemble a badge's source material out of the stored documentation corpus.
+"""Resolve a skill badge to the documentation pages its questions come from.
+
+Two things live here. `page_set_for_badge` enumerates a badge's material — the set
+of stored pages that badge's questions should be written from, which the page walk
+then reads one at a time. `pages_for_badges` is the older single-prompt selection,
+kept for the case where a badge resolves to no pages at all.
+
+The page set is the important one. Asking a model for a badge's worth of questions
+out of one prompt caps it at whatever fits in a request; enumerating the badge's
+pages instead turns "write questions for this badge" into a walk over a list, where
+each page is read once, is worth several questions, and coverage is a counter rather
+than a guess. It also means the cost of a badge arrives when somebody asks for that
+badge, not as one sweep of the whole corpus.
 
 Question authoring used to research each run with server-side web search: minutes
 of wall clock spent waiting, and no two runs on the same badge reading the same
@@ -18,6 +30,7 @@ the slow way, not a reason to refuse to write questions.
 """
 
 import logging
+import re
 from typing import Any
 
 from app.config import Settings, get_settings
@@ -42,6 +55,73 @@ def queries_for_badge(badge: dict[str, Any]) -> list[str]:
         if category:
             queries.append(f"{name} {category}".strip())
     return list(dict.fromkeys(queries))
+
+
+def is_reference_url(url: str, settings: Settings | None = None) -> bool:
+    """Whether a URL names reference material rather than something to teach from.
+
+    Roughly half the corpus is parameter lists, CLI synopses and command references.
+    A question written from a parameter list tests whether the candidate can look up a
+    flag, which is not a skill the badges claim to certify — and it is the failure mode
+    the Cluster Reliability page set showed most of.
+    """
+    settings = settings or get_settings()
+    return bool(re.search(settings.doc_reference_url_pattern, url or ""))
+
+
+def page_set_for_badge(
+    badge: dict[str, Any],
+    *,
+    exclude_urls: set[str] | None = None,
+    settings: Settings | None = None,
+) -> list[dict[str, Any]]:
+    """The pages this badge's questions are written from, best match first.
+
+    Drawn from the same per-topic searches as before but much wider, because the job
+    changed: not "the best few pages that fit in one prompt" but "this badge's
+    material". Candidates are then filtered three ways — a similarity floor, so a tag
+    like "Cluster IP" cannot drag VPC peering into a reliability badge; the reference
+    exclusion; and any page already written from, so a walk resumes rather than
+    repeating.
+
+    Returned in relevance order, so a run that walks only part of the set walks the
+    most relevant part of it.
+    """
+    settings = settings or get_settings()
+    exclude_urls = exclude_urls or set()
+
+    best: dict[str, dict[str, Any]] = {}
+    for query in queries_for_badge(badge):
+        try:
+            found = doc_pages.search_page_refs(
+                query, limit=settings.doc_page_set_per_topic
+            )
+        except Exception as exc:
+            # Never fatal: the caller reports an unresolvable page set rather than
+            # failing, and can still fall back to the single-prompt path.
+            logger.warning("Page set search failed for %r: %s", query, exc)
+            return []
+        for page in found:
+            url = page.get("url")
+            score = page.get("score") or 0.0
+            if not url or url in exclude_urls:
+                continue
+            if score < settings.doc_page_set_score_floor:
+                continue
+            if is_reference_url(url, settings):
+                continue
+            # A page found by several topic queries keeps its best score: it is as
+            # relevant as its strongest match, not its weakest.
+            if url not in best or score > best[url]["score"]:
+                best[url] = {
+                    "url": url,
+                    "title": page.get("title"),
+                    "source": page.get("source"),
+                    "score": score,
+                }
+
+    ranked = sorted(best.values(), key=lambda p: p["score"], reverse=True)
+    return ranked[: settings.doc_page_set_size]
 
 
 def pages_for_badges(

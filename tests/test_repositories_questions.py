@@ -443,3 +443,72 @@ def test_the_reranked_search_asks_the_reranker_for_every_shortlisted_document(fa
         captured["pipeline"][1]["$rerank"]["numDocsToRerank"]
         == captured["pipeline"][0]["$vectorSearch"]["limit"]
     )
+
+
+# --- what a badge has already been written from ---
+
+
+def test_the_pages_a_badge_has_been_written_from_are_queryable(fake_questions):
+    """
+    Intent: A walk resumes by skipping the pages a badge already has questions from, so
+        that set has to be derivable from the questions themselves. Kept anywhere else it
+        could disagree with what was actually stored.
+    Success: The source URLs of a badge's questions come back as a set.
+    Feature: Question coverage — the pages a badge has been written from.
+    """
+    fake_questions.docs.extend([
+        {"skill_badges": ["atlas-search"], "source_urls": ["https://x/a.md"]},
+        {"skill_badges": ["atlas-search"], "source_urls": ["https://x/b.md", "https://x/a.md"]},
+        {"skill_badges": ["indexing"], "source_urls": ["https://x/c.md"]},
+    ])
+    assert questions.source_urls_for_badge("atlas-search") == {
+        "https://x/a.md",
+        "https://x/b.md",
+    }
+
+
+def test_a_badge_with_no_questions_has_used_no_pages(fake_questions):
+    """
+    Intent: The first walk of a badge must not be blocked by an empty result being
+        mistaken for an error. An empty set is the correct answer, not a missing one.
+    Success: A badge with no questions returns an empty set.
+    Feature: Question coverage — a badge that has never been walked.
+    """
+    assert questions.source_urls_for_badge("atlas-search") == set()
+
+
+def test_questions_are_counted_per_badge_and_status(fake_questions):
+    """
+    Intent: The coverage screen exists to show which badges are thin. A single total is
+        not enough — a badge with 200 rejected questions and 4 approved is thin, and
+        would look healthy on a total alone.
+    Success: Counts come back per badge, split by status, with a total.
+    Feature: Question coverage — per-badge counts by status.
+    """
+    fake_questions.docs.extend([
+        {"skill_badges": ["atlas-search"], "status": "draft"},
+        {"skill_badges": ["atlas-search"], "status": "approved"},
+        {"skill_badges": ["indexing"], "status": "rejected"},
+    ])
+    counts = questions.counts_by_badge()
+    assert counts["atlas-search"]["draft"] == 1
+    assert counts["atlas-search"]["approved"] == 1
+    assert counts["atlas-search"]["total"] == 2
+    assert counts["indexing"]["rejected"] == 1
+
+
+def test_a_cross_filed_question_counts_for_every_badge_it_tests(fake_questions):
+    """
+    Intent: Questions are deliberately filed under every badge they test. The question the
+        coverage screen answers is "does this badge have enough", so a question serving
+        two badges has to count towards both — counting it once would understate every
+        badge it was cross-filed into.
+    Success: A question filed under two badges counts for both.
+    Feature: Question coverage — cross-filed questions count for each badge.
+    """
+    fake_questions.docs.append(
+        {"skill_badges": ["atlas-search", "indexing"], "status": "draft"}
+    )
+    counts = questions.counts_by_badge()
+    assert counts["atlas-search"]["total"] == 1
+    assert counts["indexing"]["total"] == 1

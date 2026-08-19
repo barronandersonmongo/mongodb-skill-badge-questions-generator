@@ -381,21 +381,23 @@ def test_the_generate_form_offers_every_badge(client, fake_collection, fake_ques
     assert "Atlas Search" in body
 
 
-def test_the_generate_form_takes_a_count_material_and_instructions(
+def test_the_generate_form_takes_a_walk_size_and_instructions(
     client, fake_collection, fake_questions
 ):
     """
-    Intent: Batch size, pasted training material and free-text steering are the three
-        controls an author has over a run. Missing from the form, they are unreachable
-        however well the API supports them.
-    Success: All three inputs are present on the page.
+    Intent: Replaces a test requiring a question-count box and a pasted-source-material
+        box. A run is now sized in pages of documentation walked and questions taken per
+        page, and the source material is the corpus rather than something pasted in — so
+        those are the controls that have to be reachable on the screen.
+    Success: The page cap, questions-per-page and instruction inputs are all present.
     Feature: Question generation — author controls on the screen.
     """
     seed_badge()
     body = client.get(PAGE).text
-    assert 'id="count"' in body
-    assert 'id="source-material"' in body
+    assert 'id="max-pages"' in body
+    assert 'id="per-page"' in body
     assert 'id="instructions"' in body
+
 
 
 def test_generation_is_not_offered_when_there_are_no_badges(
@@ -849,3 +851,119 @@ def test_a_run_that_fell_back_to_the_web_says_so(client, fake_collection, fake_q
     body = client.get(PAGE).text
     assert 'data-researched-the-web="true"' in body
     assert "/admin/docs" in body
+
+
+# --- the page walk on screen ---
+
+
+def test_the_screen_offers_the_coverage_panel(client, fake_collection, fake_questions):
+    """
+    Intent: Coverage is proportional to how much documentation a badge has, so some badges
+        come out thin. That is only a workflow rather than a defect if the author can see
+        which ones — otherwise the imbalance is invisible until someone builds a quiz.
+    Success: The screen offers a coverage panel.
+    Feature: Question coverage — reachable from the authoring screen.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'id="coverage-btn"' in body
+    assert 'id="coverage-modal"' in body
+
+
+def test_a_walk_reports_the_pages_it_wrote_from_and_what_is_left(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: After a walk the author needs two things: which pages produced these questions,
+        and whether running it again would find anything new. Without the second, deciding
+        whether to run again is guesswork.
+    Success: The alert reports pages walked, per-page question counts, and pages remaining.
+    Feature: Question generation — a walk's result on screen.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 6,
+        "pages_done": 2,
+        "pages_available": 41,
+        "rejected": [],
+        "source_pages": [
+            {"url": "https://x/a.md", "title": "Replication", "questions": 3},
+            {"url": "https://x/b.md", "title": "Failover", "questions": 3},
+        ],
+    }
+    body = client.get(PAGE).text
+    assert "6 question(s) stored from" in body
+    assert 'data-pages-left="true"' in body
+    assert "41 page(s) not yet written from" in body
+    assert "https://x/a.md" in body
+
+
+def test_a_badge_whose_material_is_used_up_says_so_on_screen(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: An exhausted badge and a badge that simply produced nothing look identical
+        without this. The actionable fact is that another run will not help — the corpus
+        needs widening — and an author who is not told will keep pressing the button.
+    Success: The alert says every page has been written from already.
+    Feature: Question generation — exhausted material is visible.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 0,
+        "pages_done": 0,
+        "pages_available": 0,
+        "rejected": [],
+        "exhausted": True,
+        "source_pages": [],
+    }
+    body = client.get(PAGE).text
+    assert 'data-exhausted="true"' in body
+    assert "already been written from" in body
+
+
+def test_a_walk_that_researched_instead_says_so_on_screen(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: A run that researched the web is slower and not repeatable, and the fix —
+        refresh the corpus — is only actionable if the author is told rather than left
+        assuming the documentation was walked.
+    Success: The alert reports the fallback and links to the corpus screen.
+    Feature: Question generation — the research fallback is visible.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 3,
+        "pages_done": 0,
+        "pages_available": 0,
+        "rejected": [],
+        "fell_back_to_research": True,
+        "source_pages": [],
+    }
+    body = client.get(PAGE).text
+    assert 'data-fell-back="true"' in body
+    assert "/admin/docs" in body
+
+
+def test_pages_that_produced_nothing_are_listed(client, fake_collection, fake_questions):
+    """
+    Intent: A walk steps over a page that refuses or truncates rather than failing. Left
+        unreported those pages are invisible, and a badge whose material is systematically
+        refused would look like a badge with thin documentation.
+    Success: The alert reports how many pages produced nothing, with their reasons.
+    Feature: Question generation — pages that produced nothing are reported.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 3,
+        "pages_done": 3,
+        "pages_available": 10,
+        "rejected": [],
+        "source_pages": [],
+        "failure_count": 1,
+        "failures": [{"url": "https://x/bad.md", "error": "refused"}],
+    }
+    body = client.get(PAGE).text
+    assert 'data-page-failures="true"' in body
+    assert "https://x/bad.md" in body and "refused" in body

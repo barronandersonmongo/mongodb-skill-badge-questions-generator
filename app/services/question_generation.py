@@ -23,6 +23,8 @@ minutes a run used to spend waiting on fetches are gone.
 """
 
 import logging
+import time
+from collections.abc import Callable
 from typing import Any
 
 from app.config import Settings, get_settings
@@ -105,6 +107,60 @@ in doubt, leave the badge out.
 Use only slugs from the badge list given to you — never invent one, and never \
 alter one. Always include the badges the question was written for. Say briefly \
 why any additional badge applies."""
+
+PAGE_AUTHOR_SYSTEM = """\
+You write assessment questions for MongoDB's skill badge quizzes, on behalf of \
+the team that authors them. The reader is a practitioner earning a badge, not a \
+beginner being introduced to MongoDB.
+
+You are given ONE page of MongoDB's official documentation and the skill badge \
+the page was selected for. Write questions that this page supports. The page is \
+your source: if the page does not establish something, do not write a question \
+that depends on it, and never fall back on your own memory of how a feature \
+behaves.
+
+Mine the page. It is being read once, and a page that covers several ideas should \
+yield a question about each of them rather than several questions about the first. \
+If the page genuinely supports fewer questions than asked for, write fewer — a \
+padded question is worse than a missing one.
+
+Every question is multiple choice with exactly FOUR options and exactly ONE \
+correct answer.
+
+What makes these questions good — this is the whole point of the exercise:
+
+1. Test understanding, not recall of a sentence. A question whose answer is \
+   found by matching a phrase from the page tests reading, not skill. Prefer \
+   questions that put the candidate in a situation and ask what to do, or what \
+   will happen, or why an approach fails.
+2. Every wrong option must be a mistake a real practitioner would actually make \
+   — a plausible misreading, a confusion between two similar features, an \
+   approach that works in a different situation. Never pad the option list with \
+   an answer nobody would pick.
+3. Exactly one option is defensibly correct. If two options could both be \
+   argued, the question is broken: rewrite it.
+4. The stem must be answerable on its own, before the options are read.
+5. Do not signal the answer by making the correct option the longest, the most \
+   qualified, or the only grammatical fit.
+6. No trick questions, no trivia about version numbers or default port numbers, \
+   no questions about the badge or the quiz itself.
+7. Questions must be independent of each other. Knowing the answer to one must \
+   not give away another: these go into a bank large enough that a leaked quiz \
+   does not compromise the rest, and that only holds if the questions do not \
+   paraphrase one another.
+
+For each option give a short rationale: for the correct one, why it is right; \
+for a wrong one, the specific misconception it catches.
+
+File each question under every badge from the supplied catalog whose subject \
+matter it genuinely tests — always including the badge the page was selected \
+for. Use only slugs from that catalog, never invent or alter one. Include a \
+badge only when someone earning it would be expected to answer the question and \
+answering it needs knowledge that badge covers; not because the question mentions \
+a term in the badge's description, and not because the badge is adjacent or a \
+prerequisite. Over-tagging is worse than under-tagging.
+
+Set source_urls to the page's Source URL."""
 
 EXTRACT_SYSTEM = """\
 Convert the drafted questions into structured records. Carry over every \
@@ -547,3 +603,279 @@ def _attribute_or_keep_going(
             "Badge attribution failed; questions keep their requested badges: %s", exc
         )
         return {"cross_tagged": 0, "attribution_error": str(exc)}
+
+
+# --- the badge-scoped page walk ---
+
+
+def build_page_prompt(
+    page: dict[str, Any],
+    badge: dict[str, Any],
+    catalog: list[dict[str, Any]],
+    count: int,
+    *,
+    extra_instructions: str | None = None,
+) -> str:
+    """Assemble the request for one page. Kept separate so it can be asserted on."""
+    badge_lines = [
+        f"- {b['slug']}: {b.get('name')} — {b.get('description') or ''}" for b in catalog
+    ]
+    prompt = (
+        f"Write up to {count} question(s) from the documentation page below.\n\n"
+        f"The page was selected for this badge:\n{_badge_brief(badge)}\n\n"
+        "Every MongoDB skill badge, by slug — file each question under every one it "
+        "genuinely tests:\n" + "\n".join(badge_lines) + "\n\n"
+    )
+    if extra_instructions:
+        prompt += f"Additional instructions from the author:\n{extra_instructions}\n\n"
+    return prompt + (
+        f"### {page.get('title') or page['url']}\n"
+        f"Source: {page['url']}\n\n{page.get('text') or ''}"
+    )
+
+
+def questions_from_page(
+    page: dict[str, Any],
+    badge: dict[str, Any],
+    catalog: list[dict[str, Any]],
+    *,
+    count: int | None = None,
+    extra_instructions: str | None = None,
+    settings: Settings | None = None,
+) -> list[GeneratedQuestion]:
+    """Questions this one page supports, structured, in a single Claude call.
+
+    One pass, not the draft-then-extract pair the badge-wide path uses. That pair
+    exists because a research turn benefits from thinking in prose before being made
+    structured, and because tool use and structured output did not sit well together.
+    Reading one page needs no tools and no research, so the second pass would only pay
+    output tokens a second time to restate questions already written.
+
+    Badge attribution is folded in for the same reason: the catalog is small, the model
+    is already holding the question, and a separate pass would re-send every question
+    to decide something it could have decided when it wrote it.
+    """
+    from app.services.badge_discovery import _client, _translate_auth_error
+
+    settings = settings or get_settings()
+    count = count or settings.questions_per_page
+
+    try:
+        response = _client(settings).messages.parse(
+            model=settings.model,
+            max_tokens=16000,
+            system=PAGE_AUTHOR_SYSTEM,
+            output_format=GeneratedQuestions,
+            output_config={"effort": settings.page_author_effort},
+            messages=[
+                {
+                    "role": "user",
+                    "content": build_page_prompt(
+                        page,
+                        badge,
+                        catalog,
+                        count,
+                        extra_instructions=extra_instructions,
+                    ),
+                }
+            ],
+        )
+    except Exception as exc:
+        _translate_auth_error(exc)
+        raise
+    if response.parsed_output is None:
+        raise RuntimeError(
+            f"Page authoring produced no structured output (stop_reason="
+            f"{response.stop_reason}, details={response.stop_details})."
+        )
+    return response.parsed_output.questions
+
+
+def generate_for_badge(
+    slug: str,
+    *,
+    max_pages: int | None = None,
+    questions_per_page: int | None = None,
+    extra_instructions: str | None = None,
+    settings: Settings | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+    stop: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Write questions for one badge by walking the pages that badge is about.
+
+    The badge is resolved to its page set, the pages already written from are dropped,
+    and what is left is read one page at a time. Each page's questions are stored as
+    they are written rather than at the end: a walk runs for many minutes, and a run
+    that failed on page 18 should keep the questions from the first 17.
+
+    Progress is reported per page, and a failing page is recorded and stepped over.
+    One unreadable page, or one refusal, is not a reason to abandon a walk.
+    """
+    from app.repositories import questions as questions_repo
+    from app.repositories import skill_badges
+    from app.services import doc_retrieval
+
+    settings = settings or get_settings()
+    max_pages = max_pages or settings.max_pages_per_run
+    questions_per_page = questions_per_page or settings.questions_per_page
+
+    catalog = skill_badges.list_badges()
+    known = {b["slug"]: b for b in catalog}
+    if slug not in known:
+        raise ValueError(f"No skill badge with slug {slug!r}.")
+    badge = known[slug]
+
+    already = questions_repo.source_urls_for_badge(slug)
+    page_set = doc_retrieval.page_set_for_badge(
+        badge, exclude_urls=already, settings=settings
+    )
+    started = time.monotonic()
+
+    summary: dict[str, Any] = {
+        "source": "badge-page-walk",
+        "skill_badge": slug,
+        "badge_name": badge.get("name"),
+        "skill_badges": [slug],
+        "pages_available": len(page_set),
+        "pages_already_used": len(already),
+        "pages_total": min(len(page_set), max_pages),
+        "pages_done": 0,
+        "questions_per_page": questions_per_page,
+        "inserted": 0,
+        "generated": 0,
+        "rejected": [],
+        "failures": [],
+        "source_pages": [],
+        "question_ids": [],
+        "stopped_early": False,
+    }
+
+    def report() -> None:
+        if not progress:
+            return
+        elapsed = time.monotonic() - started
+        done = summary["pages_done"]
+        total = summary["pages_total"]
+        rate = done / elapsed if elapsed > 0 and done else 0.0
+        state = dict(summary)
+        state["elapsed_seconds"] = round(elapsed, 1)
+        state["pages_per_minute"] = round(rate * 60, 1)
+        # No confident estimate before any page has finished: "0%, 0 seconds left" is
+        # worse than saying nothing.
+        state["percent"] = round(done / total * 100, 1) if total else None
+        state["eta_seconds"] = round((total - done) / rate) if rate and total else None
+        progress(state)
+
+    report()
+    if not page_set:
+        # Nothing left to walk. If the badge has never been walked, its material was
+        # never in the corpus in the first place — so fall back to the single-prompt
+        # path, which researches the web. If it has been walked, the material really is
+        # used up, and the honest answer is to say so rather than research around it.
+        if already:
+            logger.info(
+                "Every documentation page for %s has been written from already; "
+                "nothing new to walk.",
+                slug,
+            )
+            summary["exhausted"] = True
+            return summary
+        logger.warning(
+            "No documentation pages resolve to %s; falling back to a single "
+            "research run. Refresh the documentation corpus to walk pages instead.",
+            slug,
+        )
+        fallback = generate_questions(
+            [slug],
+            questions_per_page,
+            extra_instructions=extra_instructions,
+            settings=settings,
+        )
+        fallback["skill_badge"] = slug
+        fallback["badge_name"] = badge.get("name")
+        fallback["pages_available"] = 0
+        fallback["pages_done"] = 0
+        fallback["pages_total"] = 0
+        fallback["fell_back_to_research"] = True
+        return fallback
+
+    for page_ref in page_set[:max_pages]:
+        if stop and stop():
+            summary["stopped_early"] = True
+            break
+
+        page = doc_pages_page(page_ref["url"])
+        if page is None:
+            summary["failures"].append(
+                {"url": page_ref["url"], "error": "page is no longer in the corpus"}
+            )
+            summary["pages_done"] += 1
+            report()
+            continue
+
+        try:
+            written = questions_from_page(
+                page,
+                badge,
+                catalog,
+                count=questions_per_page,
+                extra_instructions=extra_instructions,
+                settings=settings,
+            )
+        except Exception as exc:
+            # Recorded per page, not raised: a badge's walk is worth more than any one
+            # page in it, and a refusal on one page says nothing about the next.
+            logger.warning("Page %s produced no questions: %s", page_ref["url"], exc)
+            summary["failures"].append({"url": page_ref["url"], "error": str(exc)})
+            summary["pages_done"] += 1
+            report()
+            continue
+
+        _drop_unknown_badges(written, set(known), [slug])
+        _ensure_source_url(written, page["url"])
+        kept, rejected = split_well_formed(written)
+        stored = questions_repo.insert_questions(kept)
+
+        summary["generated"] += len(written)
+        summary["inserted"] += stored["inserted"]
+        summary["question_ids"].extend(stored["question_ids"])
+        summary["rejected"].extend(rejected)
+        summary["source_pages"].append(
+            {
+                "url": page["url"],
+                "title": page.get("title"),
+                "questions": stored["inserted"],
+            }
+        )
+        summary["pages_done"] += 1
+        report()
+
+    summary["failure_count"] = len(summary["failures"])
+    logger.info(
+        "Badge walk finished for %s: %d question(s) from %d page(s), %d page(s) failed",
+        slug,
+        summary["inserted"],
+        summary["pages_done"],
+        len(summary["failures"]),
+    )
+    return summary
+
+
+def doc_pages_page(url: str) -> dict[str, Any] | None:
+    """One page by URL. Indirected so a test can stand in for the corpus."""
+    from app.repositories import doc_pages
+
+    return doc_pages.page_by_url(url)
+
+
+def _ensure_source_url(questions: list[GeneratedQuestion], url: str) -> None:
+    """Guarantee every question cites the page it was written from.
+
+    The prompt asks for it, but a citation is the only way a reviewer can check a
+    question without re-reading the corpus — and it is what makes the walk resumable,
+    since "pages already written from" is derived from these URLs. Too load-bearing to
+    leave to the model remembering.
+    """
+    for question in questions:
+        if url not in question.source_urls:
+            question.source_urls = [url, *question.source_urls]

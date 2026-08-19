@@ -5,6 +5,8 @@ recorded requirement and are never edited: if behavior must change, the
 program changes, or a new test is added alongside with its own block.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from app.models.question import (
@@ -1065,3 +1067,338 @@ def test_a_run_with_no_stored_documentation_says_it_researched_the_web(
     result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
     assert result["source_pages"] == []
     assert result["researched_the_web"] is True
+
+
+# --- the badge-scoped page walk ---
+
+
+@pytest.fixture
+def walk_settings(settings):
+    """Settings with the page-set relevance floor open.
+
+    The floor is calibrated against the real Atlas index, where a page plainly about a
+    badge scores 0.70-0.86. The in-memory stand-in approximates similarity with word
+    overlap on short fixture text, which lands well below that — so a walk test using
+    the production floor would resolve to no pages at all and test nothing. The floor
+    itself is exercised in tests/test_doc_retrieval.py.
+    """
+    return replace(settings, doc_page_set_score_floor=0.0)
+
+
+PAGE = {
+    "url": "https://x/a.md",
+    "title": "Atlas Search indexes",
+    "source": "ix-1",
+    "text": "An Atlas Search index defines how fields are analysed.",
+}
+
+
+def walk_run(questions=ONE_QUESTION) -> dict:
+    """A page walk makes one parse() call per page, against the question schema."""
+    return {GeneratedQuestions: questions}
+
+
+def test_a_page_and_its_badge_reach_the_authoring_call(fake_client, walk_settings):
+    """
+    Intent: The page is the source and the badge is the scope. If either is missing from
+        the prompt the model writes from memory or outside the syllabus, which is the
+        whole thing the walk exists to prevent.
+    Success: The page text, its source URL and the badge slug all reach the prompt.
+    Feature: Question generation — one page authored at a time.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "An Atlas Search index defines how fields are analysed." in prompt
+    assert "https://x/a.md" in prompt
+    assert "atlas-search" in prompt
+
+
+def test_the_badge_catalog_reaches_the_authoring_call(fake_client, walk_settings):
+    """
+    Intent: Badge attribution is folded into the same call rather than run as a separate
+        pass — the model already holds the question, and re-sending every question to a
+        second pass pays output tokens twice to decide something it could have decided
+        while writing. That only works if the catalog is in front of it.
+    Success: Every badge slug in the catalog is offered in the prompt.
+    Feature: Question generation — attribution folded into page authoring.
+    """
+    other = {"slug": "indexing", "name": "Indexing", "description": "Index design."}
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE, other], settings=walk_settings)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "indexing" in prompt and "atlas-search" in prompt
+
+
+def test_page_authoring_is_one_pass_not_two(fake_client, walk_settings):
+    """
+    Intent: The badge-wide path drafts prose then extracts it, which is worth it for a
+        research turn. Reading one page needs no tools and no research, so a second pass
+        would only pay output tokens again to restate questions already written.
+    Success: One page produces questions in a single call, with no web tools.
+    Feature: Question generation — a single structured pass per page.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    assert len(client.messages.parse_calls) == 1
+    assert client.messages.stream_calls == []
+    assert "tools" not in client.messages.parse_calls[0]
+
+
+def test_page_authoring_effort_is_tuned_separately(fake_client, walk_settings):
+    """
+    Intent: Output tokens — thinking most of all — dominate the cost of a walk, and
+        reading one page to write three questions is a bounded task rather than the
+        open-ended research the badge-wide path does. Inheriting that path's effort would
+        be the single largest avoidable cost at thousands of questions.
+    Success: The call uses the configured page-authoring effort.
+    Feature: Question generation — effort tuned for page authoring.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    call = client.messages.parse_calls[0]
+    assert call["output_config"]["effort"] == walk_settings.page_author_effort
+
+
+def test_a_truncated_page_authoring_response_is_reported(fake_client, walk_settings):
+    """
+    Intent: A pass that returns no structured output has produced nothing. Treated as an
+        empty list it would look like a page with no questions in it, and the walk would
+        step over material that is actually fine.
+    Success: Missing structured output raises rather than returning nothing.
+    Feature: Question generation — a failed page pass is not silent.
+    """
+    client = fake_client()
+    client.messages.parsed = FakeParsedResponse(None, stop_reason="max_tokens")
+    client.messages.parsed_by_format = None
+    with pytest.raises(RuntimeError, match="no structured output"):
+        question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+
+
+def test_every_question_cites_the_page_it_came_from(fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings):
+    """
+    Intent: The citation is load-bearing twice over: it is how a reviewer checks a
+        question without re-reading the corpus, and it is what "pages already written
+        from" is derived from — so a walk that lost it would repeat itself forever.
+        Too important to leave to the model remembering to include it.
+    Success: A stored question carries the URL of the page it was written from, even
+        though the model returned none.
+    Feature: Question generation — the source page is always recorded.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE])
+    fake_client(parsed_by_format=walk_run(GeneratedQuestions(questions=[make(source_urls=[])])))
+    question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    assert fake_questions.docs[0]["source_urls"] == ["https://x/a.md"]
+
+
+def test_a_walk_stores_questions_page_by_page(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A walk runs for many minutes. Storing only at the end would mean a failure on
+        page eighteen discarded the questions from the first seventeen — an hour of work
+        and spend lost to one bad page.
+    Success: Questions from each page are stored, and the summary counts the pages walked.
+    Feature: Question generation — a walk stores as it goes.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([
+        PAGE,
+        {**PAGE, "url": "https://x/b.md", "title": "Atlas Search analysers"},
+    ])
+    fake_client(parsed_by_format=walk_run())
+    result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    assert result["pages_done"] == 2
+    assert result["inserted"] == 2
+    assert len(fake_questions.docs) == 2
+
+
+def test_a_walk_skips_pages_it_has_already_written_from(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: Running a badge twice must cover new material, not re-mine the same pages.
+        This is the property that turns fifteen pages of source material into hundreds,
+        and without it a second run produces near-duplicates by construction.
+    Success: A page cited by an existing question is not walked again.
+    Feature: Question generation — a walk resumes where it stopped.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    fake_questions.docs.append(
+        {"skill_badges": ["atlas-search"], "source_urls": ["https://x/a.md"]}
+    )
+    fake_client(parsed_by_format=walk_run())
+    result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    assert [p["url"] for p in result["source_pages"]] == ["https://x/b.md"]
+    assert result["pages_already_used"] == 1
+
+
+def test_a_walk_is_bounded_by_its_page_cap(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: The cap is how an author trades questions against how long they will wait,
+        and it is the only bound on a run's spend. Ignored, a badge with 300 pages would
+        run for hours on a request the author thought was small.
+    Success: A walk reads no more pages than the cap allows.
+    Feature: Question generation — a bounded walk.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([
+        {**PAGE, "url": f"https://x/{n}.md"} for n in range(6)
+    ])
+    fake_client(parsed_by_format=walk_run())
+    result = question_generation.generate_for_badge(
+        "atlas-search", max_pages=2, settings=walk_settings
+    )
+    assert result["pages_done"] == 2
+
+
+def test_one_bad_page_does_not_end_the_walk(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A refusal or a truncated response on one page says nothing about the next,
+        and a badge's walk is worth far more than any single page in it. Raising would
+        throw away everything after the first bad page.
+    Success: A failing page is recorded with its reason and the walk continues.
+    Feature: Question generation — a walk steps over a failing page.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    fake_client(parsed_by_format=walk_run())
+    calls = {"n": 0}
+    original = question_generation.questions_from_page
+
+    def flaky(page, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("refused")
+        return original(page, *args, **kwargs)
+
+    question_generation.questions_from_page = flaky
+    try:
+        result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    finally:
+        question_generation.questions_from_page = original
+    assert result["failure_count"] == 1
+    assert "refused" in result["failures"][0]["error"]
+    assert result["inserted"] == 1
+
+
+def test_a_walk_reports_progress_page_by_page(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A walk of 25 pages takes many minutes. Without per-page progress the screen
+        can only show a spinner, and an author cannot tell a slow run from a stuck one.
+    Success: A progress callback is given the pages done, the total and the running
+        question count.
+    Feature: Question generation — a walk reports its progress.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    fake_client(parsed_by_format=walk_run())
+    seen = []
+    question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    assert [s["pages_done"] for s in seen] == [0, 1, 2]
+    assert seen[-1]["pages_total"] == 2
+    assert seen[-1]["inserted"] == 2
+
+
+def test_a_walk_can_be_stopped(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A run of 200 pages is a long commitment and an author who started the wrong
+        one should not have to wait it out or restart the server. Stopping must keep what
+        has been written rather than discarding it.
+    Success: A walk asked to stop reports it stopped early and keeps its questions.
+    Feature: Question generation — a walk can be stopped without losing work.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE, {**PAGE, "url": "https://x/b.md"}])
+    fake_client(parsed_by_format=walk_run())
+    calls = {"n": 0}
+
+    def stop() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    result = question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, stop=stop
+    )
+    assert result["stopped_early"] is True
+    assert result["inserted"] == 1
+
+
+def test_a_badge_with_no_documentation_falls_back_to_research(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A badge whose material was never crawled is a reason to research the slow
+        way, not a reason to refuse. The walk cannot walk an empty set, so the old
+        single-prompt path is what answers instead — and the author has to be told,
+        because that run is slower and not repeatable.
+    Success: With no pages, the run researches instead and says so.
+    Feature: Question generation — an uncrawled badge still produces questions.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
+    result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    assert result["fell_back_to_research"] is True
+    assert result["inserted"] == 1
+
+
+def test_a_badge_whose_pages_are_used_up_says_so(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: "No pages left" and "no pages ever" need different answers. A badge that has
+        been walked to exhaustion should not quietly research the web — the actionable
+        fact is that its material is spent, and the fix is a wider corpus, not another
+        run.
+    Success: A badge with every page already used reports exhaustion and writes nothing.
+    Feature: Question generation — exhausted material is reported, not worked around.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    doc_pages.upsert_pages([PAGE])
+    fake_questions.docs.append(
+        {"skill_badges": ["atlas-search"], "source_urls": ["https://x/a.md"]}
+    )
+    fake_client(parsed_by_format=walk_run())
+    result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    assert result["exhausted"] is True
+    assert result["inserted"] == 0
+
+
+def test_walking_an_unknown_badge_is_refused(fake_collection, fake_questions, walk_settings):
+    """
+    Intent: An unknown slug cannot be resolved to a page set, and questions filed under
+        it would be findable from no badge at all. Better refused than stored somewhere
+        nothing looks.
+    Success: A slug matching no stored badge raises before anything is spent.
+    Feature: Question generation — an unknown badge is refused.
+    """
+    with pytest.raises(ValueError, match="No skill badge"):
+        question_generation.generate_for_badge("not-a-badge", settings=walk_settings)

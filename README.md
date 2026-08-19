@@ -34,6 +34,11 @@ Optional overrides: `ANTHROPIC_MODEL`, `WEB_SEARCH_TOOL_TYPE`, `WEB_FETCH_TOOL_T
 `SKILL_BADGE_CATALOG_URL`, `CREDLY_COLLECTION_URL`, `VECTOR_INDEX_NAME`,
 `QUESTIONS_VECTOR_INDEX_NAME`, `DOC_PAGES_VECTOR_INDEX_NAME`, `DOCS_INDEX_URL`, `LOG_DIR`, `LOG_LEVEL`.
 
+Page-walk tuning lives in `app/config.py` rather than the environment, since each
+number is a measured judgement documented next to it: `doc_page_set_score_floor`
+(0.70), `doc_page_set_size` (400), `doc_reference_url_pattern`, `questions_per_page`
+(3), `max_pages_per_run` (25) and `page_author_effort` (`medium`).
+
 Storage target is the `skill-badge-questions` database on the `PTM-Hackathon`
 cluster (Atlas project "Barry Anderson").
 
@@ -270,54 +275,96 @@ areas. Their JSON follows the same split — `/api/questions` and `/api/admin/..
 
 The main screen (`/`) is where questions are viewed and written.
 
-**Generating.** A run is scoped to one or more skill badges: the badge decides
-what is in subject matter. Two Claude passes, as with badge discovery — an
-authoring pass that reads the selected badges (title, coverage, topic areas and
-curated reference links), any material the author pasted in, and the documentation
-pages retrieved for those badges out of the stored corpus; then an extraction pass
-that turns the draft into validated records. The draft is kept on the run summary
-so a weak batch can be diagnosed.
+**Generating: a badge is walked, not prompted.** A run is scoped to a skill badge,
+and the badge is first resolved to the set of documentation pages it is *about* —
+typically a few hundred. The run then walks that set one page at a time, asking for
+a few questions per page, storing each page's questions as they are written.
 
-**Source material comes from the corpus, not the web.** A run that researched the
-web spent most of its wall clock waiting on fetches, and no two runs on the same
-badge read the same text — so a batch that came out badly could not be told from a
-different day's search results. Authoring now reads `doc_pages` instead, and a run
-is repeatable.
+This is the opposite direction from the obvious design. Cramming a badge's best
+pages into one prompt and asking for a batch of questions caps the badge at
+whatever fits in a single request — about fifteen pages — and asking the same badge
+again re-reads the same fifteen, so the second batch is variations on the first.
+Walking the badge's pages instead makes each page read exactly once, worth several
+questions, and makes coverage a counter against an enumerable list rather than a
+guess. A badge with 300 pages can support hundreds of genuinely distinct questions;
+the same badge in one prompt cannot.
 
-Retrieval is **one semantic search per topic area**, not one per badge. A single
-badge-wide query returns its top pages clustered on whichever topic embeds closest
-to the badge description, and five questions written off one page is exactly the
-outcome this tool exists to avoid; searching each of the badge's categories spreads
-the material across the syllabus the badge claims to cover. The category is queried
-with the badge name attached, because "indexes" matches most of the corpus while
-"Atlas Search indexes" matches what the badge means by it.
+It also spreads the cost. Questions arrive per badge, when somebody asks for that
+badge, rather than as one sweep of the whole corpus — so the first badge tells you
+whether the output is any good before the other 33 are paid for.
 
-Pages are then taken in **rounds** — the best page for every query, then the second
-best for every query — until the character budget runs out. Filling the budget in
-query order would spend it all on the first topic area and leave the last with
-nothing, which is the imbalance the per-topic search was for. Long pages are cut
-short rather than dropped, and the model is told when a page has been cut, so it
-does not conclude a feature has no more to it than it can see.
+**Drawing the page set.** The same per-topic semantic searches as before, but much
+wider, because the job changed: not "the best few pages that fit in one prompt" but
+"this badge's material". One search for the badge overall, then one per topic area
+with the badge name attached — "indexes" matches most of the corpus while "Atlas
+Search indexes" matches what the badge means by it.
 
-Each page is labelled with its URL, and the prompt asks for the source of each
-question. The run summary lists what it read, so a reviewer can open the page
-instead of re-researching the question.
+Candidates are then filtered three ways, and the filters matter more than the
+search:
 
-**The web is the fallback, not the default.** If the corpus is empty for these
-badges, or its Atlas index is missing or still building, the run falls back to
-server-side web search and fetch and says so on screen. Left available *alongside*
-retrieved pages the web tools get used anyway, so a run with corpus material is
-given no tools at all — grounding only holds if the web is not also on offer. A
-badge whose docs have not been crawled yet is a reason to research the slow way,
-not a reason to refuse to write questions.
+- **A relevance floor.** Topic areas come from Credly's skill tags, which are
+  marketing metadata rather than a syllabus. Measured on the live Cluster
+  Reliability badge, the tag "Cluster IP" — a Kubernetes term, and a tagging
+  artifact — pulled VPC peering and IP access lists into a reliability badge at
+  scores of 0.64-0.69, while pages plainly about the badge scored 0.70-0.86. The
+  floor sits in that gap.
+- **Reference material is excluded.** Measured 2026-08-19, 3,318 of 7,162 stored
+  pages sit under `reference`, `cli`, `api` or `command` paths. A question written
+  from a parameter list tests whether a candidate can look up a flag, which is not
+  a skill the badges certify.
+- **Pages already written from are dropped.** This is what makes a walk resumable:
+  the set is derived from the `source_urls` of the badge's existing questions, so
+  running a badge again covers new material instead of re-mining the same pages.
 
-Runs happen in the background with the page polling for status and showing an
-elapsed timer, because an authoring turn takes minutes.
+The set comes back in relevance order, so a run that walks only part of it walks
+the most relevant part.
 
-The badges scope the questions but are not the whole source. Deeper material —
-internal training content, live cluster behaviour — is pasted into **Source
-material** and preferred over anything Claude finds itself: the server has no
-Glean or MongoDB MCP access of its own.
+**One page, one call.** Each page is authored in a single structured-output call —
+not the draft-then-extract pair the badge-wide path uses. That pair earns its keep
+for a research turn, where thinking in prose first helps; reading one page needs no
+tools and no research, so a second pass would only pay output tokens again to
+restate questions already written. Badge attribution is folded into the same call
+for the same reason: the catalog is small, the model is already holding the
+question, and a separate pass re-sends every question to decide something it could
+have decided while writing.
+
+Effort is tuned separately for page authoring (`page_author_effort`, default
+`medium`) rather than inherited from the research path's `high`. Output tokens —
+thinking most of all — dominate the cost of a walk, so this is the single largest
+cost lever in the program.
+
+**Nothing is lost to one bad page.** Questions are stored page by page, so a
+failure on page eighteen keeps the questions from the first seventeen. A page that
+refuses, truncates, or has vanished from the corpus is recorded with its reason and
+stepped over — one bad page says nothing about the next. A walk can also be stopped,
+and keeps what it has written.
+
+Progress is reported per page: which page of how many, questions written so far, the
+rate and the time left. A walk of 25 pages is far too long for a spinner.
+
+**When a badge has no pages.** Two different situations, with two different answers.
+A badge that has *never* been walked and resolves to nothing has no material in the
+corpus — the run falls back to the older single-prompt path, which researches with
+server-side web search, and says so on screen. A badge whose pages have *all* been
+written from is exhausted: another run will not help, and the honest answer is to
+say so rather than research around it. The fix there is a wider corpus or a lower
+relevance floor, not another press of the button.
+
+**Coverage.** Because a badge's questions come from its documentation, a badge with
+little documentation gets few questions. The **Coverage** panel makes that a
+workflow rather than a defect: every badge, thinnest first, with draft and approved
+counts and how many pages it has left to walk. Few questions and many pages left
+means run it again; few questions and no pages left means the material is spent.
+Resolving every badge's page set is dozens of vector searches, so the panel is
+fetched on demand rather than rendered with the screen.
+
+**Questions must be independent, not merely distinct.** The bank is meant to be
+large enough that leaking the answers to a full quiz does not compromise the
+quizzes built from the rest of it — and that only holds if knowing one question's
+answer does not give away another. Same concept in a different scenario is fine:
+answering both requires the understanding the badge tests. The same question
+reworded is not. The prompt states this, and the walk's structure helps — questions
+written from different pages are unlikely to paraphrase one another.
 
 **Questions are filed under every badge they test.** A question written for one
 badge often tests others — skills overlap. So each finished question is reviewed
@@ -428,8 +475,9 @@ exactly the filtered set from the same endpoint the screen reads.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/` | The main screen; `?status=`, `?skill_badge=`, `?category=` |
-| `POST` | `/api/questions/generate` | Start a generation run |
-| `GET` | `/api/questions/generate/status` | Poll a run |
+| `POST` | `/api/questions/generate` | Start a walk: `skill_badges`, `max_pages`, `questions_per_page` |
+| `GET` | `/api/questions/generate/status` | Poll a run — reports the page it is on |
+| `GET` | `/api/questions/coverage` | Per-badge question counts and pages left to walk |
 | `GET` | `/api/questions` | List / export questions, same filters |
 | `GET` | `/api/questions/search?q=&limit=` | Questions ranked by similarity to `q` |
 | `POST` | `/api/questions/duplicates/sweep?dry_run=` | Find duplicates; delete the clear ones |
@@ -649,7 +697,7 @@ app/models/skill_badge.py            Pydantic schemas (Claude output + stored do
 app/models/question.py               question schemas (Claude output + stored doc)
 app/services/badge_discovery.py      the two Claude passes
 app/services/question_generation.py  the Claude passes for questions
-app/services/doc_retrieval.py        selects a badge's source material from the corpus
+app/services/doc_retrieval.py        resolves a badge to the pages it is about
 app/services/question_duplicates.py  the ad-hoc duplicate sweep ($vectorSearch + $rerank)
 app/services/discover_cli.py         shell entry point
 app/repositories/skill_badges.py     upsert / list / status, indexes
@@ -674,6 +722,21 @@ tests/                               pytest suite + fakes (see tests/README.md)
 ```
 
 ## Known limitations
+
+- A walk runs one page at a time, in series, and only one run at a time — run state
+  is a single in-process dict. Walking 34 badges means supervising it. The Message
+  Batches API is the natural fit (independent requests, nobody waiting, half price);
+  whether the Grove gateway exposes it is unprobed.
+
+- The relevance floor and the reference exclusion are the only screening on a page
+  set. A cheap per-candidate classification pass would judge relevance better than a
+  similarity score can, and the page set should be reviewable on screen before a run
+  spends anything against it.
+
+- `page_author_effort` is set to `medium` on reasoning, not measurement. Output
+  tokens dominate a walk's cost and thinking dominates output, so this is the
+  program's largest untested cost assumption; twenty pages at each effort level would
+  settle it.
 
 - Retrieval selects whole pages, not passages. A page relevant in one paragraph
   spends its whole share of the context budget, so the material given to an

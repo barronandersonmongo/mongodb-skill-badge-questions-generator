@@ -71,43 +71,47 @@ def test_generation_runs_in_the_background(client, monkeypatch, fake_questions):
     """
     calls: list[tuple] = []
     monkeypatch.setattr(
-        api_module, "generate_questions", lambda *a, **k: calls.append((a, k)) or {}
+        api_module, "generate_for_badge", lambda *a, **k: calls.append((a, k)) or {}
     )
-    response = client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 2})
+    response = client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 2})
     assert response.status_code == 200
     assert response.json() == {"started": True}
     assert calls  # the background task ran when the TestClient closed the request
 
 
-def test_the_selected_badges_and_count_reach_the_generator(client, monkeypatch, fake_questions):
+def test_the_selected_badges_and_walk_size_reach_the_generator(client, monkeypatch, fake_questions):
     """
-    Intent: The picker and the count are the author's only control over a run. If the
-        endpoint dropped them the run would silently generate something else.
-    Success: The badge slugs, count, material and instructions all arrive as given.
+    Intent: Replaces a test that passed a question count. A run is now sized in pages —
+        the badge's documentation is walked a page at a time and each page is worth
+        several questions — so pages and questions-per-page are the author's controls,
+        and a dropped one would silently walk a different amount of material.
+    Success: Each selected badge is walked, with the page cap, questions per page and
+        instructions arriving as given.
     Feature: Question generation — the author's selection is honoured.
     """
-    seen: dict = {}
+    seen: list = []
 
-    def record(slugs, count, **kwargs):
-        seen.update(slugs=slugs, count=count, **kwargs)
-        return {}
+    def record(slug, **kwargs):
+        seen.append((slug, kwargs))
+        return {"skill_badge": slug, "inserted": 0, "pages_done": 0, "pages_available": 0}
 
-    monkeypatch.setattr(api_module, "generate_questions", record)
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
     client.post(
         API + "/generate",
         json={
             "skill_badges": ["atlas-search", "aggregation"],
-            "count": 4,
-            "source_material": "lesson text",
+            "max_pages": 4,
+            "questions_per_page": 2,
             "extra_instructions": "advanced only",
         },
     )
-    assert seen == {
-        "slugs": ["atlas-search", "aggregation"],
-        "count": 4,
-        "source_material": "lesson text",
-        "extra_instructions": "advanced only",
-    }
+    assert [slug for slug, _ in seen] == ["atlas-search", "aggregation"]
+    assert all(
+        kwargs["max_pages"] == 4
+        and kwargs["questions_per_page"] == 2
+        and kwargs["extra_instructions"] == "advanced only"
+        for _, kwargs in seen
+    )
 
 
 def test_a_run_without_a_badge_is_rejected_before_it_starts(client, fake_questions):
@@ -117,20 +121,22 @@ def test_a_run_without_a_badge_is_rejected_before_it_starts(client, fake_questio
     Success: POST /generate with an empty badge list is a validation error.
     Feature: Question generation — a badge scope is required.
     """
-    response = client.post(API + "/generate", json={"skill_badges": [], "count": 3})
+    response = client.post(API + "/generate", json={"skill_badges": [], "max_pages": 3})
     assert response.status_code == 422
 
 
-@pytest.mark.parametrize("count", [0, 26], ids=["none", "too-many"])
-def test_an_unreasonable_batch_size_is_rejected(client, fake_questions, count):
+@pytest.mark.parametrize("max_pages", [0, 201], ids=["none", "too-many"])
+def test_an_unreasonable_walk_size_is_rejected(client, fake_questions, max_pages):
     """
-    Intent: Zero questions is a pointless run, and an unbounded count is an unbounded
-        bill and a turn that will not finish. Both must be refused at the boundary.
-    Success: A count outside 1–25 is a validation error.
-    Feature: Question generation — bounded batch size.
+    Intent: Replaces a test bounding a question count at 25. A run is now bounded by
+        pages, and the old ceiling would cap a badge at 25 questions when a badge needs
+        hundreds. Zero pages is still a pointless run, and an unbounded walk is still an
+        unbounded bill and a run that will not finish.
+    Success: A page count outside 1–200 is a validation error.
+    Feature: Question generation — bounded walk size.
     """
     response = client.post(
-        API + "/generate", json={"skill_badges": ["atlas-search"], "count": count}
+        API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": max_pages}
     )
     assert response.status_code == 422
 
@@ -143,7 +149,7 @@ def test_a_second_run_is_refused_while_one_is_in_progress(client, fake_questions
     Feature: Question generation — one run at a time.
     """
     api_module._run_state["running"] = True
-    response = client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 1})
+    response = client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
     assert response.status_code == 409
 
 
@@ -159,8 +165,8 @@ def test_a_failed_run_is_reported_with_its_traceback(client, monkeypatch, fake_q
     def explode(*args, **kwargs):
         raise RuntimeError("no credentials")
 
-    monkeypatch.setattr(api_module, "generate_questions", explode)
-    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 1})
+    monkeypatch.setattr(api_module, "generate_for_badge", explode)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
     state = client.get(API + "/generate/status").json()
     assert state["running"] is False
     assert "no credentials" in state["last_error"]
@@ -174,8 +180,8 @@ def test_the_status_endpoint_reports_a_finished_runs_result(client, monkeypatch,
     Success: A completed run's summary is returned with no error.
     Feature: Question generation — run status polling.
     """
-    monkeypatch.setattr(api_module, "generate_questions", lambda *a, **k: {"inserted": 3})
-    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 3})
+    monkeypatch.setattr(api_module, "generate_for_badge", lambda *a, **k: {"inserted": 3})
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 3})
     state = client.get(API + "/generate/status").json()
     assert state["last_result"] == {"inserted": 3}
     assert state["last_error"] is None
@@ -300,9 +306,9 @@ def test_a_running_run_reports_when_it_started(client, monkeypatch, fake_questio
         started["running"] = api_module._run_state["running"]
         return {}
 
-    monkeypatch.setattr(api_module, "generate_questions", slow)
+    monkeypatch.setattr(api_module, "generate_for_badge", slow)
     before = time.time()
-    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 1})
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
     assert started["running"] is True
     assert before <= started["at"] <= time.time()
 
@@ -328,8 +334,8 @@ def test_a_finished_run_reports_when_it_finished(client, monkeypatch, fake_quest
         running.
     Feature: Question generation — a finished run reports its real duration.
     """
-    monkeypatch.setattr(api_module, "generate_questions", lambda *a, **k: {"inserted": 1})
-    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 1})
+    monkeypatch.setattr(api_module, "generate_for_badge", lambda *a, **k: {"inserted": 1})
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
     state = client.get(API + "/generate/status").json()
     assert state["running"] is False
     assert state["finished_at"] >= state["started_at"]
@@ -345,8 +351,8 @@ def test_a_new_run_does_not_inherit_the_previous_runs_start_time(
     Success: The second run's start time is later than the first run's.
     Feature: Question generation — each run is timed from its own start.
     """
-    monkeypatch.setattr(api_module, "generate_questions", lambda *a, **k: {"inserted": 1})
-    payload = {"skill_badges": ["atlas-search"], "count": 1}
+    monkeypatch.setattr(api_module, "generate_for_badge", lambda *a, **k: {"inserted": 1})
+    payload = {"skill_badges": ["atlas-search"], "max_pages": 1}
     client.post(API + "/generate", json=payload)
     first = client.get(API + "/generate/status").json()["started_at"]
     client.post(API + "/generate", json=payload)
@@ -518,3 +524,72 @@ def test_the_sweep_is_timed_like_any_other_run(client, monkeypatch, fake_questio
     client.post(API + "/duplicates/sweep")
     state = client.get(API + "/generate/status").json()
     assert state["finished_at"] >= state["started_at"]
+
+
+# --- coverage ---
+
+
+def test_coverage_reports_every_badge(client, fake_collection, fake_questions, fake_doc_pages):
+    """
+    Intent: A badge with no questions is exactly the one an author needs to find, and it
+        is the one that would be missing if coverage were built from the questions rather
+        than the catalog.
+    Success: A badge with no questions appears with zero counts.
+    Feature: Question coverage — every badge is listed, including the empty ones.
+    """
+    fake_collection.docs.append(
+        {"slug": "atlas-search", "name": "Atlas Search", "status": "approved"}
+    )
+    rows = client.get(API + "/coverage").json()
+    assert [r["skill_badge"] for r in rows] == ["atlas-search"]
+    assert rows[0]["total"] == 0 and rows[0]["draft"] == 0
+
+
+def test_coverage_lists_the_thinnest_badge_first(client, fake_collection, fake_questions, fake_doc_pages):
+    """
+    Intent: The screen exists to answer "where do I spend the next run". Sorted by name
+        it would answer "what is alphabetically first", and the author would have to scan
+        34 rows to find the thin ones.
+    Success: Badges come back in ascending order of total questions.
+    Feature: Question coverage — thinnest badges first.
+    """
+    fake_collection.docs.extend([
+        {"slug": "busy", "name": "Busy", "status": "approved"},
+        {"slug": "thin", "name": "Thin", "status": "approved"},
+    ])
+    fake_questions.docs.extend([
+        {"skill_badges": ["busy"], "status": "draft"},
+        {"skill_badges": ["busy"], "status": "draft"},
+        {"skill_badges": ["thin"], "status": "draft"},
+    ])
+    rows = client.get(API + "/coverage").json()
+    assert [r["skill_badge"] for r in rows] == ["thin", "busy"]
+
+
+def test_coverage_says_how_much_material_a_badge_has_left(
+    client, fake_collection, fake_questions, fake_doc_pages
+):
+    """
+    Intent: "Few questions" is not actionable on its own — a badge with 300 unused pages
+        needs another run, while one with none has exhausted its material and needs the
+        corpus widened instead. The two look identical without this number.
+    Success: Coverage reports the pages a badge has used and how many remain unused.
+    Feature: Question coverage — remaining documentation per badge.
+    """
+    from app.repositories import doc_pages
+
+    fake_collection.docs.append(
+        {
+            "slug": "atlas-search",
+            "name": "Atlas Search",
+            "status": "approved",
+            "categories": ["indexes"],
+        }
+    )
+    doc_pages.upsert_pages([
+        {"url": "https://x/a.md", "source": "ix", "title": "Atlas Search indexes",
+         "text": "Atlas Search indexes."},
+    ])
+    rows = client.get(API + "/coverage").json()
+    assert rows[0]["pages_used"] == 0
+    assert rows[0]["pages_available"] is not None

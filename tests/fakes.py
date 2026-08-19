@@ -77,23 +77,57 @@ class FakeCollection:
         return name
 
     def aggregate(self, pipeline):
-        """Support the two aggregation shapes this program uses.
+        """Support the aggregation shapes this program uses.
 
         A pipeline starting with $vectorSearch is a similarity search (below); one
         starting with $group is a summary over the collection, used by the
-        documentation corpus screen to count pages per source.
+        documentation corpus screen to count pages per source; one starting with
+        $unwind fans an array field out before grouping, which is how questions are
+        counted per badge — a question filed under three badges counts for each.
         """
+        if pipeline and "$unwind" in pipeline[0]:
+            docs = self._unwound(pipeline[0]["$unwind"], self.docs)
+            return self._aggregate_group(pipeline[1:], docs=docs)
         if pipeline and "$group" in pipeline[0]:
             return self._aggregate_group(pipeline)
         return self._aggregate_vector_search(pipeline)
 
-    def _aggregate_group(self, pipeline):
-        """$group with $sum/$max/$min accumulators, then an optional $sort."""
+    @staticmethod
+    def _unwound(path: str, docs: list[dict]) -> list[dict]:
+        """One document per array element, as $unwind produces.
+
+        A document whose array is empty or absent contributes nothing, which is what
+        Mongo does without preserveNullAndEmptyArrays — a question filed under no badge
+        should not appear in a per-badge count.
+        """
+        field = str(path).lstrip("$")
+        out = []
+        for doc in docs:
+            for value in doc.get(field) or []:
+                out.append({**doc, field: value})
+        return out
+
+    def _aggregate_group(self, pipeline, docs=None):
+        """$group with $sum/$max/$min accumulators, then an optional $sort.
+
+        The group key may be a field path or a document of them: counting questions per
+        badge groups on badge *and* status together, and a fake that only understood a
+        single path would silently collapse the statuses into one number.
+        """
         spec = pipeline[0]["$group"]
         key = spec["_id"]
         groups: dict[Any, list[dict]] = {}
-        for doc in self.docs:
-            group_key = doc.get(key.lstrip("$")) if isinstance(key, str) else None
+        for doc in docs if docs is not None else self.docs:
+            if isinstance(key, str):
+                group_key: Any = doc.get(key.lstrip("$"))
+            elif isinstance(key, dict):
+                # Hashable so it can key the dict, and turned back into a document
+                # below — the caller reads row["_id"]["slug"], as it would in Mongo.
+                group_key = tuple(
+                    (name, doc.get(str(path).lstrip("$"))) for name, path in key.items()
+                )
+            else:
+                group_key = None
             groups.setdefault(group_key, []).append(doc)
 
         def field_values(docs, expression):
@@ -105,7 +139,9 @@ class FakeCollection:
 
         rows = []
         for group_key, docs in groups.items():
-            row: dict[str, Any] = {"_id": group_key}
+            row: dict[str, Any] = {
+                "_id": dict(group_key) if isinstance(group_key, tuple) else group_key
+            }
             for field, expression in spec.items():
                 if field == "_id":
                     continue
