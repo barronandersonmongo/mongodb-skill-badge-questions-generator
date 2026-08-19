@@ -662,6 +662,15 @@ a:focus-visible,
 .modal-title { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.015em; }
 .modal-backdrop.show { opacity: 0.35; }
 
+/* Wider than Bootstrap's widest dialog. Two questions side by side is the one thing in
+   this program that genuinely wants the room: at modal-xl's 1140px each column was
+   narrower than the question list it came from, so the options wrapped more here than
+   on the screen the reader had just been looking at. Capped against the viewport so it
+   cannot exceed the window on a smaller display. */
+.compare-dialog {
+  max-width: min(96vw, 1368px);
+}
+
 /* Two questions read at the same time. Side by side, because that is what comparing
    is; stacked below 62rem, where two columns would be two columns too narrow to read
    a question in. The divider is what stops the pair reading as one long question. */

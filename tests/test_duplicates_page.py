@@ -311,3 +311,21 @@ def test_a_questions_own_words_cannot_become_markup(client):
     body = client.get(PAGE).text
     script = body[body.index("function renderQuestion"):body.index("</script>")]
     assert "innerHTML" not in script
+
+
+def test_the_comparison_is_wider_than_a_standard_dialog(client):
+    """
+    Intent: Two questions side by side is the one thing here that genuinely wants the room. At
+        Bootstrap's widest dialog each column was narrower than the list the questions came
+        from, so the options wrapped more in the comparison than on the screen the reader had
+        just left — which makes two questions look less alike than they are.
+    Success: The comparison dialog is given a width of its own, capped against the viewport so
+        it cannot exceed a smaller window.
+    Feature: Duplicates screen — the comparison has room for two questions.
+    """
+    assert "compare-dialog" in client.get(PAGE).text
+    css = client.get("/static/theme.css").text
+    rule = css[css.index(".compare-dialog {"):]
+    rule = rule[: rule.index("}")]
+    assert "1368px" in rule
+    assert "vw" in rule
