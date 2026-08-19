@@ -396,6 +396,21 @@ search:
 The set comes back in relevance order, so a run that walks only part of it walks
 the most relevant part.
 
+**No page may crowd out the others.** Sections are then taken in rounds — the best
+section from every page, then the second best — because relevance order alone is not
+enough when one page scores well throughout. Measured on the live corpus: the 25 sections
+a Vector Search Fundamentals run walked came from **six pages**, since 85 of that badge's
+252 sections were hard-split slices of one 1.7 MB page, the same code sample repeated in a
+dozen languages under one heading. Twenty of those 25 produced no question at all, while
+`mongodb-overview`, spread across 24 pages, produced 72 from the same 25-section budget.
+With the rounds, that badge's first 25 sections come from 25 distinct pages.
+
+This is the same fairness the old page-level retrieval applied across topic queries. It
+was not carried over when the unit became a section, and the run above is what that cost.
+Sections held back by the per-page limit are appended rather than dropped: the limit
+reorders the set, it does not shrink it, or a badge whose material is genuinely
+concentrated would report itself exhausted with sections still unused.
+
 **A page's contribution is capped.** The corpus holds documentation pages up to
 **1.7 MB** — driver tutorials that repeat every example in a dozen languages — and one of
 those sent whole is about half a million input tokens. Measured on a real run on
