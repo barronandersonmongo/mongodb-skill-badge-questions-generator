@@ -27,6 +27,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from app.config import Settings, get_settings
 from app.services.run_cost import RunCost
@@ -132,9 +133,36 @@ correct answer.
 What makes these questions good — this is the whole point of the exercise:
 
 1. Test understanding, not recall of a sentence. A question whose answer is \
-   found by matching a phrase from the page tests reading, not skill. Prefer \
-   questions that put the candidate in a situation and ask what to do, or what \
-   will happen, or why an approach fails.
+   found by matching a phrase from the page tests reading, not skill.
+
+MIX THE KINDS OF QUESTION. Do not write every question as a scenario. A page of \
+questions that all open by setting a scene is exhausting to read and tests one \
+narrow skill. Vary the form to suit what is being tested:
+
+- **Situational** — the candidate is somewhere and has to act or predict. Right \
+  for judgement, failure modes, trade-offs, debugging. "A write with \
+  `w: "majority"` times out on a three-node set with one node down. Why?"
+- **Factual** — a direct question with a definite answer. Right for behaviour, \
+  limits, defaults and guarantees. Ask it straight: "What does `$unwind` do to a \
+  document whose array field is empty?" No scene-setting, no preamble.
+- **Procedural** — the correct order of operations, or which step comes next. \
+  Right for anything with a sequence where getting the order wrong breaks it. \
+  "You are adding a shard to a running cluster. Which of these happens first?" \
+  Options can be orderings.
+- **Best practice** — what you should do, and why that rather than the \
+  alternative. Ask these directly. "You have a field queried on equality and \
+  another on range. Which order should the compound index use?" Do not dress a \
+  best practice up as a story; practitioners recognise it faster stated plainly.
+- **Diagnostic** — given an output, an error, or a metric, what does it mean. \
+  "`rs.status()` shows a member in `RECOVERING`. What is it doing?"
+- **Comparative** — when to use one thing rather than a similar thing. This is \
+  where real confusions live, so these are often the most valuable questions on \
+  a page.
+
+Let the material choose the form. A page about a sequence should mostly yield \
+procedural questions; a page defining behaviour should mostly yield factual and \
+diagnostic ones. Do not force a scenario onto a page that is simply stating how \
+something works — a direct question is not a lesser question.
 2. Every wrong option must be a mistake a real practitioner would actually make \
    — a plausible misreading, a confusion between two similar features, an \
    approach that works in a different situation. Never pad the option list with \
@@ -159,10 +187,11 @@ marketer's.
 
 Concretely:
 
-- Put the candidate in a real situation, in the second person, using the words \
-  they would use. "Your replica set has one node lagging 40 seconds behind the \
-  primary." Not "Consider a scenario in which a replica set member exhibits \
-  replication lag."
+- When a question sets a situation, put the candidate in it in the second person, \
+  using the words they would use. "Your replica set has one node lagging \
+  40 seconds behind the primary." Not "Consider a scenario in which a replica set \
+  member exhibits replication lag." When a question does not need a situation, do \
+  not invent one — ask the thing directly.
 - Name real things. Actual stage names, commands, flags, field names, error \
   strings, numbers. `$lookup`, `rs.status()`, `w: "majority"`, "not primary". \
   Vague nouns like "the appropriate configuration" or "the relevant setting" are \
@@ -788,6 +817,17 @@ def generate_for_badge(
 
     summary: dict[str, Any] = {
         "source": "badge-page-walk",
+        "run_id": uuid4().hex,
+        # The choices the author made, kept with the result. Weeks later "why did this
+        # badge only get 12 questions" is answerable from the request, not the outcome.
+        "requested": {
+            "max_pages": max_pages,
+            "questions_per_page": questions_per_page,
+            "extra_instructions": extra_instructions,
+        },
+        "model": settings.model,
+        "effort": settings.page_author_effort,
+        "score_floor": settings.doc_page_set_score_floor,
         "skill_badge": slug,
         "badge_name": badge.get("name"),
         "skill_badges": [slug],
@@ -923,7 +963,10 @@ def generate_for_badge(
         _drop_unknown_badges(written, set(known), [slug])
         _ensure_source_url(written, page["url"])
         kept, rejected = split_well_formed(written)
-        stored = questions_repo.insert_questions(kept)
+        # Stamped with the walk's id, not a fresh one per page: the question a reviewer
+        # is looking at has to lead back to the run that wrote it, and a walk is one run
+        # however many pages it took.
+        stored = questions_repo.insert_questions(kept, run_id=summary["run_id"])
 
         summary["generated"] += len(written)
         summary["inserted"] += stored["inserted"]

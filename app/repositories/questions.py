@@ -46,13 +46,20 @@ def ensure_indexes() -> None:
     coll.create_index([("categories", ASCENDING)], name="categories")
 
 
-def insert_questions(questions: list[GeneratedQuestion]) -> dict[str, Any]:
-    """Store newly generated questions as drafts. Returns a summary for the UI."""
+def insert_questions(
+    questions: list[GeneratedQuestion], run_id: str | None = None
+) -> dict[str, Any]:
+    """Store newly generated questions. Returns a summary for the UI.
+
+    `run_id` is supplied by a caller that spans several inserts — a page walk stores
+    page by page, and stamping each page with its own id would make the run a question
+    came from unrecoverable from the question.
+    """
     if not questions:
-        return {"run_id": None, "inserted": 0, "question_ids": []}
+        return {"run_id": run_id, "inserted": 0, "question_ids": []}
 
     ensure_indexes()
-    run_id = uuid4().hex
+    run_id = run_id or uuid4().hex
     now = datetime.now(timezone.utc)
 
     docs = []

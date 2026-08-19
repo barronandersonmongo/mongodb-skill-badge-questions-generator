@@ -135,7 +135,8 @@ class FakeCollection:
             if path == 1:
                 return [1] * len(docs)
             name = path.lstrip("$")
-            return [d.get(name) for d in docs if d.get(name) is not None]
+            values = [_dotted(d, name) for d in docs]
+            return [v for v in values if v is not None]
 
         rows = []
         for group_key, docs in groups.items():
@@ -346,6 +347,22 @@ class FakeCollection:
             doc.pop(field, None)
         return doc != before
 
+    def replace_one(self, query: dict, document: dict, upsert: bool = False):
+        """Whole-document replacement, as a run record uses.
+
+        The stored `_id` is preserved: MongoDB keeps it across a replace, and a fake
+        that dropped it would let a caller pass while identity changed under it.
+        """
+        for index, doc in enumerate(self.docs):
+            if self._matches(doc, query):
+                self.docs[index] = {"_id": doc.get("_id"), **document}
+                return FakeUpdateResult(1, 1)
+        if not upsert:
+            return FakeUpdateResult(0, 0)
+        self.docs.append({"_id": self._next_id, **document})
+        self._next_id += 1
+        return FakeUpdateResult(0, 0)
+
     def update_many(self, query: dict, update: dict) -> "FakeUpdateResult":
         """Every match updated, with the count of those that actually changed.
 
@@ -427,6 +444,23 @@ def _project_search_result(doc: dict, projection: dict | None, score: float) -> 
         elif spec:
             item[field] = doc.get(field)
     return item
+
+
+def _dotted(doc: dict, path: str) -> Any:
+    """Resolve a dotted field path, as MongoDB does in an aggregation expression.
+
+    Summing `$cost.dollars` over run records needs this. A fake that only looked up
+    top-level keys would total zero and the caller would pass while reporting every
+    run as free.
+    """
+    current: Any = doc
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+        if current is None:
+            return None
+    return current
 
 
 def _tokens(text: str) -> set[str]:

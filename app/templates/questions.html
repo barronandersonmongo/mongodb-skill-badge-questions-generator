@@ -24,6 +24,10 @@
             data-bs-toggle="modal" data-bs-target="#coverage-modal">
       Coverage
     </button>
+    <button class="btn btn-outline-secondary" id="history-btn" type="button"
+            data-bs-toggle="modal" data-bs-target="#history-modal">
+      Run history
+    </button>
     <button class="btn btn-outline-secondary" id="sweep-btn" type="button">
       Find duplicates
     </button>
@@ -96,7 +100,9 @@
   {% endif %}
 </div>
 {% elif last_result %}
-<div class="alert alert-success">
+<div class="alert alert-success alert-dismissible" data-last-result="true">
+  <button type="button" class="btn-close" id="dismiss-result-btn" data-dismiss-result="true"
+          aria-label="Dismiss"></button>
   {% if last_result.source == "question-duplicate-sweep" %}
   <strong>Last duplicate sweep.</strong>
   {% elif last_result.source == "badge-page-walk" %}
@@ -431,6 +437,29 @@
   </div>
 </div>
 
+<div class="modal fade" id="history-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5">Run history</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-body-secondary">
+          Every recorded run, newest first — the choices made, how long it took, what it
+          produced and what it cost. Run state itself is in memory and does not survive a
+          restart, so this is the only lasting record.
+        </p>
+        <div id="history-totals" class="small fw-semibold mb-2"></div>
+        <div id="history-body" class="small text-body-secondary">Loading…</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="coverage-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-scrollable">
     <div class="modal-content">
@@ -747,6 +776,84 @@ document.querySelectorAll("[data-filter]").forEach((select) => {
     }
     window.location.assign(url.toString());
   });
+});
+
+// Dismissing clears the server's copy, not just this page's: rendered from run state,
+// the summary would come back on the next reload. Nothing is lost — every finished run
+// is recorded in its own collection.
+const dismissButton = document.getElementById("dismiss-result-btn");
+if (dismissButton) {
+  dismissButton.addEventListener("click", async () => {
+    const alert = dismissButton.closest("[data-last-result]");
+    if (alert) alert.classList.add("d-none");
+    await fetch(API + "/generate/dismiss", {method: "POST"});
+  });
+}
+
+function formatWhen(epochSeconds) {
+  if (!epochSeconds) return "—";
+  return new Date(epochSeconds * 1000).toLocaleString();
+}
+
+// Run history, fetched when its panel opens.
+let historyLoaded = false;
+document.getElementById("history-modal").addEventListener("show.bs.modal", async () => {
+  if (historyLoaded) return;
+  const target = document.getElementById("history-body");
+  const response = await fetch(API + "/runs");
+  if (!response.ok) {
+    target.textContent = "Could not load run history (HTTP " + response.status + ").";
+    return;
+  }
+  const payload = await response.json();
+  historyLoaded = true;
+  const t = payload.totals || {};
+  document.getElementById("history-totals").textContent =
+    (t.runs || 0) + " run(s) · " + (t.questions || 0) + " question(s) · "
+    + (t.pages || 0) + " page(s) · " + formatMoney(t.dollars) + " · "
+    + formatDuration(t.seconds);
+  target.textContent = "";
+  if ((payload.runs || []).length === 0) {
+    target.textContent = "No runs recorded yet.";
+    return;
+  }
+  const table = document.createElement("table");
+  table.className = "table table-sm align-middle mb-0";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  ["When", "Badge", "Pages", "Questions", "Per page", "Effort", "Took", "Cost", "Outcome"]
+    .forEach((label, i) => {
+      const th = document.createElement("th");
+      th.textContent = label;
+      if (i >= 2 && i <= 7) th.className = "text-end";
+      headRow.append(th);
+    });
+  head.append(headRow);
+  const tbody = document.createElement("tbody");
+  (payload.runs || []).forEach((run) => {
+    const tr = document.createElement("tr");
+    const cells = [
+      formatWhen(run.finished_at),
+      run.badge_name || (run.skill_badges || []).join(", ") || "—",
+      (run.pages_done || 0) + (run.pages_total ? " / " + run.pages_total : ""),
+      String(run.inserted || 0),
+      run.requested ? String(run.requested.questions_per_page || "—") : "—",
+      run.effort || "—",
+      formatDuration(run.elapsed_seconds),
+      formatMoney(run.cost ? run.cost.dollars : null),
+      run.error ? "failed" : (run.phase || "—"),
+    ];
+    cells.forEach((value, i) => {
+      const td = document.createElement("td");
+      td.textContent = value;
+      if (i >= 2 && i <= 7) td.className = "text-end";
+      if (i === 8 && run.error) td.className = "text-danger";
+      tr.append(td);
+    });
+    tbody.append(tr);
+  });
+  table.append(head, tbody);
+  target.append(table);
 });
 
 // Coverage is fetched when the panel opens, not rendered with the page: resolving

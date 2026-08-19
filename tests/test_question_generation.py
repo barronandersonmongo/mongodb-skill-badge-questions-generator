@@ -1600,3 +1600,65 @@ def test_the_rationales_are_held_to_the_same_voice(fake_client, walk_settings):
     question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
     system = client.messages.parse_calls[0]["system"]
     assert "rationale" in system and "same voice" in system
+
+
+# --- the kinds of question asked ---
+
+
+def test_the_author_is_told_not_to_make_everything_a_scenario(fake_client, walk_settings):
+    """
+    Intent: Observed on real output: every question opened by painting a situation. A page
+        of scenarios is exhausting to read and tests one narrow skill, and a page that
+        simply states how something works does not need a story wrapped round it. The
+        instruction has to say so, because scenario-writing is the model's default.
+    Success: The prompt tells the author to vary the form and not to force a scenario.
+    Feature: Question quality — a mix of question forms.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    assert "Do not write every question as a scenario" in system
+    assert "Do not force a scenario" in system
+
+
+def test_the_author_is_given_the_forms_to_choose_between(fake_client, walk_settings):
+    """
+    Intent: "Vary the form" is not actionable without naming the alternatives — the model
+        needs to know that factual, procedural, best-practice, diagnostic and comparative
+        questions are all wanted, or it will vary only the wording of a scenario.
+    Success: The prompt names each form and says what it is right for.
+    Feature: Question quality — the question forms are named.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    for form in ("Situational", "Factual", "Procedural", "Best practice", "Diagnostic", "Comparative"):
+        assert form in system
+
+
+def test_best_practices_are_asked_directly(fake_client, walk_settings):
+    """
+    Intent: Best practice is exactly where a scenario adds least — a practitioner
+        recognises "which index order should you use" faster stated plainly than buried in
+        a story about a slow query. Left unsaid, these get dressed up like everything else.
+    Success: The prompt requires best-practice questions to be asked directly.
+    Feature: Question quality — best practices stated plainly.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    assert "Ask these directly" in system
+    assert "a direct question is not a lesser question" in system
+
+
+def test_the_form_is_chosen_by_the_material(fake_client, walk_settings):
+    """
+    Intent: A fixed quota of forms per page would be as mechanical as all-scenarios — a page
+        describing a sequence should yield procedural questions, and one defining behaviour
+        should yield factual ones. The material has to drive the choice.
+    Success: The prompt tells the author to let the page decide the form.
+    Feature: Question quality — the form follows the material.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    assert "Let the material choose the form" in client.messages.parse_calls[0]["system"]

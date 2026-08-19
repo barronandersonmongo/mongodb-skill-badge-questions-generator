@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models.question import GeneratedQuestion, QuestionOption
 from app.repositories import questions
+from app.repositories import runs as runs_repo
 from app.routers import questions as api_module
 
 API = "/api/questions"
@@ -731,3 +732,120 @@ def test_an_empty_selection_is_refused(client, fake_questions):
     Feature: Question duplicate sweep — an empty selection is refused.
     """
     assert client.post(API + "/duplicates/delete", json={"question_ids": []}).status_code == 422
+
+
+# --- run history and dismissing a result ---
+
+
+def test_a_finished_walk_is_recorded(client, monkeypatch, fake_questions, fake_runs):
+    """
+    Intent: Run state is in memory and dies with the process, so a run that is not written
+        down cannot be reflected on later. Recording has to happen as part of finishing the
+        run, not as something an operator remembers to do.
+    Success: After a run, the walk's summary is in the run history with its timings.
+    Feature: Run history — a finished run records itself.
+    """
+    def record(slug, **kwargs):
+        return {
+            "source": "badge-page-walk",
+            "run_id": "walk-1",
+            "skill_badge": slug,
+            "skill_badges": [slug],
+            "inserted": 4,
+            "pages_done": 2,
+        }
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 2})
+    stored = runs_repo.get_run("walk-1")
+    assert stored["inserted"] == 4
+    assert stored["finished_at"] >= stored["started_at"]
+
+
+def test_a_failed_run_is_recorded_too(client, monkeypatch, fake_questions, fake_runs):
+    """
+    Intent: "We tried this badge and it broke" is exactly the thing that gets forgotten and
+        then retried. A history that only holds successes would make a recurring failure
+        look like a badge nobody had got round to.
+    Success: A run that raised is recorded with its error and a failed phase.
+    Feature: Run history — failures are recorded.
+    """
+    def explode(*args, **kwargs):
+        raise RuntimeError("no credentials")
+
+    monkeypatch.setattr(api_module, "generate_for_badge", explode)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
+    recorded = runs_repo.list_runs()
+    assert len(recorded) == 1
+    assert recorded[0]["phase"] == "failed"
+    assert "no credentials" in recorded[0]["error"]
+
+
+def test_the_history_is_readable_with_its_totals(client, fake_questions, fake_runs):
+    """
+    Intent: Per-run cost is small enough to ignore and large enough to matter in aggregate,
+        so the cumulative figure has to come back with the list rather than being something
+        the screen adds up itself and gets wrong.
+    Success: The endpoint returns the runs and the totals together.
+    Feature: Run history — listed with cumulative totals.
+    """
+    runs_repo.record_run(
+        {"run_id": "r1", "inserted": 3, "pages_done": 1, "cost": {"dollars": 0.1},
+         "elapsed_seconds": 30.0, "finished_at": 1000.0}
+    )
+    payload = client.get(API + "/runs").json()
+    assert [r["run_id"] for r in payload["runs"]] == ["r1"]
+    assert payload["totals"]["questions"] == 3
+    assert payload["totals"]["dollars"] == 0.1
+
+
+def test_one_run_can_be_read_in_full(client, fake_questions, fake_runs):
+    """
+    Intent: The listing drops the pages a run read, because fifty runs' worth is megabytes.
+        Judging one run still needs them — which pages produced questions is the evidence
+        for whether the page set was any good.
+    Success: Fetching a run by id returns its source pages.
+    Feature: Run history — one run in full.
+    """
+    runs_repo.record_run(
+        {"run_id": "r1", "source_pages": [{"url": "https://x/a.md", "questions": 3}]}
+    )
+    detail = client.get(API + "/runs/r1").json()
+    assert detail["source_pages"][0]["url"] == "https://x/a.md"
+
+
+def test_an_unknown_run_is_a_404(client, fake_questions, fake_runs):
+    """
+    Intent: A link to a run can outlive the record. A 200 with an empty body would read as
+        "this run did nothing" rather than "this run is gone".
+    Success: An unknown run id is a 404.
+    Feature: Run history — an unknown run is reported as missing.
+    """
+    assert client.get(API + "/runs/nope").status_code == 404
+
+
+def test_a_finished_run_can_be_dismissed(client, fake_questions, fake_runs):
+    """
+    Intent: The green summary is rendered from run state, so hiding it in the browser only
+        lasts until the next reload — it then sits on the screen permanently until somebody
+        starts another run. Nothing is lost by clearing it, because the run is recorded.
+    Success: Dismissing clears the last result from the status endpoint.
+    Feature: Question generation — a finished run's notice can be dismissed.
+    """
+    api_module._run_state["last_result"] = {"source": "badge-page-walk", "inserted": 1}
+    assert client.post(API + "/generate/dismiss").json() == {"dismissed": True}
+    assert client.get(API + "/generate/status").json()["last_result"] is None
+
+
+def test_dismissing_clears_a_failure_as_well(client, fake_questions, fake_runs):
+    """
+    Intent: A failed run leaves an error and a stack trace on the screen, which is the most
+        insistent thing on it. If dismissing cleared only successes, a fixed problem would
+        keep announcing itself.
+    Success: Dismissing clears the error and its traceback too.
+    Feature: Question generation — a failure notice can be dismissed.
+    """
+    api_module._run_state.update(last_error="boom", last_traceback="Traceback…")
+    client.post(API + "/generate/dismiss")
+    state = client.get(API + "/generate/status").json()
+    assert state["last_error"] is None and state["last_traceback"] is None

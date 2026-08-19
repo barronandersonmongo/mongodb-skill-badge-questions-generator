@@ -17,12 +17,14 @@ badges are unrelated jobs, and one must not report the other's result.
 import logging
 import time
 import traceback
+from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from pymongo.errors import PyMongoError
 
 from app.repositories import questions
+from app.repositories import runs as runs_repo
 from app.services.question_generation import generate_for_badge
 
 logger = logging.getLogger(__name__)
@@ -121,15 +123,53 @@ def _run_generation(request: GenerateRequest) -> None:
             _run_state["last_result"].get("inserted"),
             len(_run_state["last_result"].get("rejected") or []),
         )
+        _record(_run_state["last_result"])
     except Exception as exc:  # surfaced to the page, not swallowed
         _run_state["last_error"] = str(exc)
         # Keep the trace so the page can offer it without the author having to go
         # read server logs.
         _run_state["last_traceback"] = traceback.format_exc()
         logger.exception("Generation run failed: %s", exc)
+        # A failed run is worth recording too: "we tried this badge and it broke" is
+        # exactly the thing that gets forgotten and retried.
+        _record(
+            {
+                **(_run_state.get("progress") or {}),
+                "source": "badge-page-walk",
+                "skill_badges": request.skill_badges,
+                "phase": "failed",
+                "error": str(exc),
+            }
+        )
     finally:
         _run_state["running"] = False
         _run_state["finished_at"] = time.time()
+
+
+def _record(summary: dict | None) -> None:
+    """Persist a finished run, stamped with the clock times the run state holds.
+
+    Timings live on the run state rather than the summary because they are wall-clock
+    epochs owned by the request, not by the walk — and they are the part that is gone
+    for good once the process restarts.
+    """
+    if not summary:
+        return
+    started = _run_state.get("started_at")
+    finished = time.time()
+    runs_repo.record_run(
+        {
+            **summary,
+            "run_id": summary.get("run_id") or uuid4().hex,
+            "started_at": started,
+            "finished_at": finished,
+            "elapsed_seconds": (
+                summary.get("elapsed_seconds")
+                if summary.get("elapsed_seconds") is not None
+                else (round(finished - started, 1) if started else None)
+            ),
+        }
+    )
 
 
 def _combine(results: list[dict], request: GenerateRequest) -> dict:
@@ -140,6 +180,8 @@ def _combine(results: list[dict], request: GenerateRequest) -> dict:
     """
     combined: dict = {
         "source": "badge-page-walk",
+        "run_id": uuid4().hex,
+        "per_badge_run_ids": [r.get("run_id") for r in results],
         "skill_badges": [r["skill_badge"] for r in results],
         "per_badge": [
             {
@@ -159,6 +201,45 @@ def _combine(results: list[dict], request: GenerateRequest) -> dict:
         combined[field] = [item for r in results for item in (r.get(field) or [])]
     combined["failure_count"] = len(combined["failures"])
     return combined
+
+
+@router.post("/generate/dismiss")
+def dismiss_last_result() -> dict:
+    """Clear the last run's result from the screen.
+
+    Safe to lose: every finished run is recorded in `generation_runs`, so dismissing
+    hides a notice rather than discarding the record. Without this the green summary is
+    permanent until the next run, which makes the screen unreadable for anyone who is
+    not currently generating.
+    """
+    _run_state["last_result"] = None
+    _run_state["last_error"] = None
+    _run_state["last_traceback"] = None
+    _run_state["progress"] = None
+    return {"dismissed": True}
+
+
+@router.get("/runs")
+def list_runs(skill_badge: str | None = None, limit: int = Query(default=50, ge=1, le=500)) -> dict:
+    """Recorded runs, newest first, with the cumulative totals.
+
+    The history is what makes a prompt change assessable: per-run cost is small enough
+    to ignore and large enough to matter in aggregate, and neither the token counts nor
+    the wall clock survive a restart of the process.
+    """
+    return {
+        "runs": runs_repo.list_runs(skill_badge=skill_badge, limit=limit),
+        "totals": runs_repo.totals(),
+    }
+
+
+@router.get("/runs/{run_id}")
+def get_run(run_id: str) -> dict:
+    """One recorded run in full, including the pages it read."""
+    run = runs_repo.get_run(run_id)
+    if run is None:
+        raise HTTPException(404, f"No recorded run with id {run_id!r}.")
+    return run
 
 
 @router.get("/coverage")
@@ -298,6 +379,7 @@ def _run_sweep() -> None:
     logger.info("Duplicate sweep started")
     try:
         _run_state["last_result"] = report()
+        _record(_run_state["last_result"])
     except Exception as exc:  # surfaced to the page, not swallowed
         _run_state["last_error"] = str(exc)
         _run_state["last_traceback"] = traceback.format_exc()

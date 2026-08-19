@@ -396,6 +396,30 @@ written from is exhausted: another run will not help, and the honest answer is t
 say so rather than research around it. The fix there is a wider corpus or a lower
 relevance floor, not another press of the button.
 
+**Run history.** Run state is a single in-process dict: enough to drive a screen while
+a run is going, and gone the moment the server restarts. The token counts and the wall
+clock are unrecoverable after the fact, so every finished run is written to
+`generation_runs` — which badge, the choices the author made (page cap,
+questions-per-page, instructions), the model, the effort, the relevance floor, how long
+it took, what it produced, what it cost, which pages it read, and anything that failed.
+Failed runs are recorded too: "we tried this badge and it broke" is exactly the thing
+that gets forgotten and retried.
+
+Kept in its own collection because a run is an event and a question is an artefact, with
+different lifetimes: deleting a bad batch of questions must not erase the record that
+the batch was generated, since that record is the evidence for why the prompt was
+changed afterwards. Questions carry the id of the run that wrote them, so a question
+leads back to its run and a run to its questions.
+
+The **Run history** panel lists runs newest first with the cumulative totals across all
+of them. The cumulative figure is the one that matters: per-run cost is small enough to
+ignore individually and large enough to matter in aggregate, which is exactly the shape
+of spending that goes unnoticed.
+
+The run summary on the screen is **dismissible**. Rendered from run state it otherwise
+sits there permanently until somebody starts another run, and dismissing loses nothing
+now that the run is recorded.
+
 **Coverage.** Because a badge's questions come from its documentation, a badge with
 little documentation gets few questions. The **Coverage** panel makes that a
 workflow rather than a defect: every badge, thinnest first, with its question count
@@ -403,6 +427,22 @@ and how many pages it has left to walk. Few questions and many pages left
 means run it again; few questions and no pages left means the material is spent.
 Resolving every badge's page set is dozens of vector searches, so the panel is
 fetched on demand rather than rendered with the screen.
+
+**What kinds of question get asked.** Left to itself the model writes everything as a
+scenario — every question opens by painting a situation, which is exhausting to read
+and tests one narrow skill. So the prompt names the forms and says what each is for:
+**situational** (judgement, failure modes, debugging), **factual** (behaviour, limits,
+defaults — asked straight, with no scene-setting), **procedural** (the correct order of
+operations, where getting the order wrong breaks it), **best practice** (what you should
+do and why that rather than the alternative), **diagnostic** (given this output or
+error, what does it mean) and **comparative** (when to use one thing over a similar
+thing, which is where the real confusions live).
+
+The material chooses the form, not a quota: a page describing a sequence should yield
+procedural questions, and one defining behaviour should yield factual and diagnostic
+ones. Best practices in particular are asked plainly — a practitioner recognises "which
+order should this compound index use" faster stated directly than buried in a story
+about a slow query. A direct question is not a lesser question.
 
 **How the questions read.** The audience is working software developers, and a
 question phrased like a technical writer's abstract announces that nobody who does the
@@ -573,6 +613,9 @@ exactly the filtered set from the same endpoint the screen reads.
 | `GET` | `/api/questions/coverage` | Per-badge question counts and pages left to walk |
 | `GET` | `/api/questions` | List / export questions, same filters |
 | `GET` | `/api/questions/search?q=&limit=` | Questions ranked by similarity to `q` |
+| `GET` | `/api/questions/runs` | Recorded runs, newest first, with cumulative totals |
+| `GET` | `/api/questions/runs/{run_id}` | One recorded run in full |
+| `POST` | `/api/questions/generate/dismiss` | Clear the last run's notice from the screen |
 | `POST` | `/api/questions/duplicates/sweep` | Find duplicate candidates; deletes nothing |
 | `POST` | `/api/questions/duplicates/delete` | Delete questions chosen from that report |
 | `POST` | `/api/questions/backfill-embedding-text` | Compose `embedding_text` where missing or stale |
@@ -795,6 +838,7 @@ app/services/doc_retrieval.py        resolves a badge to the pages it is about
 app/services/run_cost.py             prices a run from the tokens it reported
 app/services/question_duplicates.py  the ad-hoc duplicate sweep ($vectorSearch + $rerank)
 app/services/discover_cli.py         shell entry point
+app/repositories/runs.py             run history: record, list, totals
 app/repositories/skill_badges.py     upsert / list / status, indexes
 app/repositories/questions.py        insert / filter / status, indexes
 app/repositories/doc_pages.py        the stored documentation corpus

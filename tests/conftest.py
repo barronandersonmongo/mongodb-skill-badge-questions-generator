@@ -1,7 +1,7 @@
 import pytest
 
 from app.config import Settings
-from app.repositories import doc_pages, questions, skill_badges
+from app.repositories import doc_pages, questions, runs, skill_badges
 from tests.fakes import FakeCollection
 
 
@@ -59,6 +59,19 @@ def clear_settings_cache():
 @pytest.fixture
 def settings() -> Settings:
     return Settings(mongodb_uri="mongodb://test")
+
+
+@pytest.fixture(autouse=True)
+def fake_runs(monkeypatch) -> FakeCollection:
+    """Point the run-history repository at an in-memory collection, for every test.
+
+    Autouse, unlike the other collection fixtures: run history is written as a side
+    effect of finishing any run, so a test that never mentions it would still reach for
+    a real database and sit out the driver's server-selection timeout.
+    """
+    collection = FakeCollection()
+    monkeypatch.setattr(runs, "collection", lambda: collection)
+    return collection
 
 
 @pytest.fixture

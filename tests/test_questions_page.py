@@ -393,7 +393,7 @@ def test_a_finished_runs_result_is_shown(client, fake_collection, fake_questions
         "rejected": [],
     }
     body = client.get(PAGE).text
-    assert 'class="alert alert-success"' in body
+    assert 'data-last-result="true"' in body
     assert "3 question(s) stored" in body
     assert "of 5 requested" in body
 
@@ -1066,3 +1066,36 @@ def test_the_report_says_nothing_was_deleted(client, fake_collection, fake_quest
     }
     body = client.get(PAGE).text
     assert "Nothing was deleted" in body
+
+
+# --- run history and dismissing on screen ---
+
+
+def test_the_run_summary_can_be_closed(client, fake_collection, fake_questions):
+    """
+    Intent: The summary is rendered from run state, so it stays on the screen until somebody
+        starts another run — permanently, for anyone who is not currently generating. It has
+        to be closable, and nothing is lost by closing it because the run is recorded.
+    Success: The run summary carries a dismiss control.
+    Feature: Question generation — a finished run's notice can be closed.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk", "inserted": 3, "pages_done": 1, "rejected": [],
+        "source_pages": [],
+    }
+    body = client.get(PAGE).text
+    assert 'data-last-result="true"' in body
+    assert 'data-dismiss-result="true"' in body
+
+
+def test_the_screen_offers_the_run_history(client, fake_collection, fake_questions):
+    """
+    Intent: Run history exists to make a prompt change assessable — what we did, what it
+        cost, what it produced. Reachable only as an API call it would never be looked at,
+        which is the same as not recording it.
+    Success: The screen offers a run-history panel.
+    Feature: Run history — reachable from the authoring screen.
+    """
+    body = client.get(PAGE).text
+    assert 'id="history-btn"' in body
+    assert 'id="history-modal"' in body

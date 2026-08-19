@@ -11,6 +11,10 @@ class Settings:
     skill_badges_collection: str = "skill_badges"
     questions_collection: str = "questions"
     doc_pages_collection: str = "doc_pages"
+    # Finished runs are recorded here. Separate from `questions` because a run is an
+    # event and a question is an artefact: deleting a bad batch must not erase the
+    # record that it was generated, which is the evidence for changing the prompt.
+    runs_collection: str = "generation_runs"
     # Claude Opus 5: adaptive thinking is on by default; effort tunes depth.
     model: str = "claude-opus-5"
     effort: str = "high"
