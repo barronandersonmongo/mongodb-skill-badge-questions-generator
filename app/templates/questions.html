@@ -51,11 +51,23 @@ per_page={{ pagination.per_page }}&
       <div class="progress mb-2" role="progressbar" style="height: 1.25rem;">
         <div class="progress-bar" data-overall-bar="true" style="width: 0%;">0%</div>
       </div>
-      <div class="row row-cols-2 row-cols-md-3 g-2 small mb-3" data-overall-stats="true">
+      {# Written and projected side by side in each pair, so the projection is read as
+         an extrapolation of the figure next to it rather than as a separate claim. #}
+      <div class="row row-cols-2 row-cols-md-4 g-2 small mb-3" data-overall-stats="true">
         <div><div class="text-body-secondary">Questions</div><div data-stat="all-questions">—</div></div>
+        <div>
+          <div class="text-body-secondary">Projected questions</div>
+          <div data-stat="all-projected-questions"
+               title="Questions per chunk so far, over the chunks this job is heading for. A ceiling: a badge can hold less material than the budget asked for.">—</div>
+        </div>
         <div><div class="text-body-secondary">Chunks</div><div data-stat="all-pages">—</div></div>
         <div><div class="text-body-secondary">Spent</div><div data-stat="all-spent">—</div></div>
-        <div><div class="text-body-secondary">Projected</div><div data-stat="all-projected">—</div></div>
+        <div>
+          <div class="text-body-secondary">Projected spend</div>
+          <div data-stat="all-projected"
+               title="Projected questions × cost per question so far.">—</div>
+        </div>
+        <div><div class="text-body-secondary">Per question</div><div data-stat="all-per-question">—</div></div>
         <div><div class="text-body-secondary">Questions/min</div><div data-stat="all-qpm">—</div></div>
         <div><div class="text-body-secondary">Remaining</div><div data-stat="all-eta">—</div></div>
       </div>
@@ -755,9 +767,14 @@ function showProgress(p) {
     panel.querySelector("[data-overall-headline]").textContent =
       all.badges_done + " / " + all.badge_count + " badges done";
     setStat("all-questions", String(all.inserted || 0));
-    setStat("all-pages", String(all.pages_done || 0));
+    setStat("all-projected-questions", all.projected_questions === null
+      || all.projected_questions === undefined ? "—" : all.projected_questions.toLocaleString());
+    setStat("all-pages", all.projected_chunks
+      ? (all.pages_done || 0) + " of ~" + all.projected_chunks
+      : String(all.pages_done || 0));
     setStat("all-spent", formatMoney(all.dollars));
     setStat("all-projected", formatMoney(all.projected_dollars));
+    setStat("all-per-question", formatUnitCost(all.dollars_per_question));
     setStat("all-qpm", all.questions_per_minute === null || all.questions_per_minute === undefined
       ? "—" : all.questions_per_minute.toFixed(1));
     setStat("all-eta", formatDuration(all.eta_seconds));

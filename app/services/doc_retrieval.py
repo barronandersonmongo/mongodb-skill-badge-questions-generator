@@ -45,6 +45,19 @@ from app.repositories import doc_chunks, doc_pages
 logger = logging.getLogger(__name__)
 
 
+class ChunkSetUnavailable(RuntimeError):
+    """A badge's section set could not be resolved, so nothing is known about it.
+
+    Distinct from an empty set on purpose. An empty set means "this badge has no
+    material left"; this means "we could not find out" — and the two were the same
+    value, so a transient Atlas 503 was reported to the operator as a badge having
+    exhausted its documentation, which is a permanent-sounding conclusion drawn from a
+    momentary failure. Observed on 2026-08-19: a 503 on one topic query made Search
+    Fundamentals, which has 291 sections, report as used up, and the run walked nothing
+    for it while still paying for the attempt.
+    """
+
+
 def queries_for_badge(badge: dict[str, Any]) -> list[str]:
     """The searches that cover one badge's syllabus.
 
@@ -103,10 +116,13 @@ def chunk_set_for_badge(
                 query, limit=settings.doc_page_set_per_topic, settings=settings
             )
         except Exception as exc:
-            # Never fatal: the caller reports an unresolvable set rather than failing,
-            # and can still fall back to the single-prompt path.
+            # Raised rather than returned as an empty set: the caller cannot tell those
+            # apart, and treating one as the other tells the operator a badge is
+            # exhausted when the search simply failed.
             logger.warning("Chunk set search failed for %r: %s", query, exc)
-            return []
+            raise ChunkSetUnavailable(
+                f"could not resolve this badge's sections: {exc}"
+            ) from exc
         for chunk in found:
             chunk_id = chunk.get("chunk_id")
             url = chunk.get("url") or ""

@@ -389,16 +389,21 @@ def test_the_chunk_set_is_capped(fake_doc_chunks, settings):
     assert len(doc_retrieval.chunk_set_for_badge(BADGE, settings=small)) == 4
 
 
-def test_an_unavailable_index_yields_no_chunk_set_rather_than_an_error(
+def test_an_unavailable_index_is_reported_as_unavailable(
     fake_doc_chunks, settings, monkeypatch, caplog
 ):
     """
-    Intent: The Atlas Vector Search index lives outside this repository, so it can be
-        missing, renamed or still building — and it has to be recreated against the chunk
-        field for this change, which is exactly when it will be absent. The coverage screen
-        and the walk both call this, and neither should break.
-    Success: A failing search returns an empty set and logs a warning.
-    Feature: Question generation — chunk-set resolution degrades rather than failing.
+    Intent: Replaces a test requiring a failing search to return an empty set. That is what
+        the caller returns for "this badge has no material left", so the two were the same
+        value and a transient failure was reported to the operator as a permanent
+        conclusion — observed on 2026-08-19, when a 503 on one topic query made Search
+        Fundamentals, which has 291 sections, report as having been fully written from. The
+        run then walked nothing for that badge while still paying for the attempt. "We could
+        not find out" and "there is nothing there" have to be distinguishable, because they
+        call for opposite actions: try again, or widen the corpus.
+    Success: A failing search raises ChunkSetUnavailable carrying the cause, and logs a
+        warning.
+    Feature: Question generation — an unresolvable chunk set is distinct from an empty one.
     """
     from app.repositories import doc_chunks
 
@@ -406,9 +411,26 @@ def test_an_unavailable_index_yields_no_chunk_set_rather_than_an_error(
         raise RuntimeError("index not found")
 
     monkeypatch.setattr(doc_chunks, "search_chunk_refs", boom)
-    assert doc_retrieval.chunk_set_for_badge(BADGE, settings=settings) == []
+    with pytest.raises(doc_retrieval.ChunkSetUnavailable) as raised:
+        doc_retrieval.chunk_set_for_badge(BADGE, settings=settings)
+    assert "index not found" in str(raised.value)
     assert "Chunk set search failed" in caplog.text
 
+
+def test_a_badge_with_no_sections_left_still_yields_an_empty_set(
+    fake_doc_chunks, settings, monkeypatch
+):
+    """
+    Intent: The other half of the distinction. A badge whose sections have all been written
+        from must still come back as an empty set rather than an error — that is a real,
+        actionable answer, and the walk relies on it to say the badge is exhausted.
+    Success: A search that succeeds and matches nothing returns an empty set.
+    Feature: Question generation — an exhausted badge is an empty set, not a failure.
+    """
+    from app.repositories import doc_chunks
+
+    monkeypatch.setattr(doc_chunks, "search_chunk_refs", lambda *a, **k: [])
+    assert doc_retrieval.chunk_set_for_badge(BADGE, settings=settings) == []
 
 def test_one_page_does_not_crowd_out_the_others(fake_doc_chunks, settings):
     """

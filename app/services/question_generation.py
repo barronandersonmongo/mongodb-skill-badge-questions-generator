@@ -1042,9 +1042,24 @@ def generate_for_badge(
     report()
 
     already = questions_repo.source_chunk_ids_for_badge(slug)
-    page_set = doc_retrieval.chunk_set_for_badge(
-        badge, exclude_chunk_ids=already, settings=settings
-    )
+    try:
+        page_set = doc_retrieval.chunk_set_for_badge(
+            badge, exclude_chunk_ids=already, settings=settings
+        )
+    except doc_retrieval.ChunkSetUnavailable as exc:
+        # Not the same as having nothing left, and not something to research around
+        # either: the corpus may be full of this badge's material and simply
+        # unreadable at this moment. Saying so is the only honest answer, and it is
+        # the difference between "widen the corpus" and "try again".
+        logger.warning("Cannot resolve sections for %s: %s", slug, exc)
+        summary["phase"] = "failed"
+        summary["error"] = str(exc)
+        summary["sections_unavailable"] = True
+        summary["pages_available"] = None
+        summary["pages_total"] = 0
+        summary["cost"] = cost.snapshot()
+        report()
+        return summary
     summary["pages_available"] = len(page_set)
     summary["pages_already_used"] = len(already)
     summary["pages_total"] = min(len(page_set), max_pages)

@@ -138,25 +138,56 @@ def _run_generation(request: GenerateRequest) -> None:
 
         elapsed = time.time() - (_run_state["started_at"] or time.time())
         inserted = done_inserted + (state.get("inserted") or 0)
+        dollars = done_dollars + (cost.get("dollars") or 0.0)
+        chunks_done = done_pages + (state.get("pages_done") or 0)
+
+        # How many chunks the job will read in all: what the finished badges actually
+        # read, what this badge resolved to, and the requested budget for the badges not
+        # started. The last part is a ceiling — a badge can turn out to have less
+        # material, as one with 7 chunks against a budget of 25 did — which is why this
+        # feeds a projection and not the progress bar.
+        not_started = max(0, badge_count - badges_done - 1)
+        projected_chunks = (
+            done_pages
+            + (state.get("pages_total") or request.max_pages)
+            + not_started * request.max_pages
+        )
+
+        # Measured, not assumed. Questions per chunk is the yield the model is actually
+        # giving on this material — asked for three, a chunk may produce two or none —
+        # so projecting from the request would overstate it.
+        per_chunk = (inserted / chunks_done) if chunks_done else None
+        projected_questions = (
+            round(per_chunk * projected_chunks) if per_chunk is not None else None
+        )
+        # Cost per question, which is the rate an author judges a run by, times the
+        # questions this job is heading for. Better than scaling spend by badges: it
+        # holds when badges differ in size, and it is the arithmetic anyone would check
+        # by hand from the two numbers beside it.
+        per_question = (dollars / inserted) if inserted else None
         return {
             "badges_done": badges_done,
             "badge_count": badge_count,
             "percent": progressed / badge_count * 100 if badge_count else None,
-            "pages_done": done_pages + (state.get("pages_done") or 0),
+            "pages_done": chunks_done,
+            "projected_chunks": projected_chunks,
             "inserted": inserted,
-            "dollars": done_dollars + (cost.get("dollars") or 0.0),
-            "elapsed_seconds": elapsed,
-            "questions_per_minute": (inserted / elapsed * 60) if elapsed > 0 else None,
-            # Only once a badge has finished: a projection from part of the first badge
-            # is a guess about badges whose material has not been looked at yet.
-            "eta_seconds": (
-                (elapsed / progressed) * (badge_count - progressed)
-                if progressed >= 1
+            "projected_questions": projected_questions,
+            "dollars": dollars,
+            "dollars_per_question": per_question,
+            "projected_dollars": (
+                projected_questions * per_question
+                if projected_questions is not None and per_question is not None
                 else None
             ),
-            "projected_dollars": (
-                (done_dollars + (cost.get("dollars") or 0.0)) / progressed * badge_count
-                if progressed >= 1
+            "elapsed_seconds": elapsed,
+            "questions_per_minute": (inserted / elapsed * 60) if elapsed > 0 else None,
+            # Time is projected per chunk rather than per badge: it is the unit the work
+            # is actually done in, and it starts answering after the first chunk instead
+            # of after the first badge.
+            "eta_seconds": (
+                (elapsed / chunks_done) * (projected_chunks - chunks_done)
+                if chunks_done
                 else None
             ),
         }

@@ -1247,27 +1247,71 @@ def test_the_whole_job_is_measured_in_badges(
     assert seen[1]["percent"] == pytest.approx(37.5)
 
 
-def test_the_job_is_not_projected_from_part_of_one_badge(
+def test_the_job_projects_a_question_count_and_a_cost(
     client, monkeypatch, fake_collection, fake_questions
 ):
     """
-    Intent: A projected cost or finish time drawn from a fraction of the first badge is a
-        statement about badges whose material has not been looked at yet. Shown as a number it
-        would be read as a quote, and it is the number an author uses to decide whether to stop.
-    Success: No projection or estimate is offered until at least one badge has finished.
-    Feature: Question generation — the job's projection waits for a finished badge.
+    Intent: Replaces a test requiring no projection until a badge had finished. Waiting was
+        the wrong caution: a run can be forty minutes and seven badges, and the figures an
+        author needs to decide whether to stop — how many questions this is heading for, and
+        what it will cost — were withheld for the first eight minutes and then derived by
+        scaling spend by badge count, which breaks when badges differ in size. Both are now
+        measured per chunk, which is the unit the work is actually done in, and are answerable
+        after the first chunk.
+    Success: The overall block projects a question count from the questions-per-chunk yield so
+        far, and a spend from that count times the cost per question so far.
+    Feature: Question generation — the whole job's size and cost are projected.
     """
     seen: list[dict] = []
 
     def fake_badge(slug, **kwargs):
-        kwargs["progress"]({"phase": "writing", "pages_done": 1, "pages_total": 4,
-                            "inserted": 1, "cost": {"dollars": 0.05}})
+        kwargs["progress"]({"phase": "writing", "pages_done": 2, "pages_total": 4,
+                            "inserted": 4, "cost": {"dollars": 0.20}})
         seen.append(dict(api_module._run_state["progress"]["overall"]))
-        return {"skill_badge": slug, "inserted": 1, "pages_done": 4,
-                "pages_available": 0, "cost": {"dollars": 0.20}}
+        return {"skill_badge": slug, "inserted": 8, "pages_done": 4,
+                "pages_available": 0, "cost": {"dollars": 0.40}}
 
     monkeypatch.setattr(api_module, "generate_for_badge", fake_badge)
-    client.post(API + "/generate", json={"skill_badges": ["one", "two"], "max_pages": 4})
-    assert seen[0]["eta_seconds"] is None
-    assert seen[0]["projected_dollars"] is None
-    assert seen[1]["projected_dollars"] is not None
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["one", "two"], "max_pages": 4, "per_page": 3},
+    )
+    # Two chunks read of a job heading for eight — this badge's four plus the other
+    # badge's requested four — at two questions a chunk, so sixteen questions.
+    first = seen[0]
+    assert first["projected_chunks"] == 8
+    assert first["projected_questions"] == 16
+    # And the spend that many questions implies at the rate measured so far: $0.20 for
+    # four questions is $0.05 each, so sixteen is $0.80.
+    assert first["dollars_per_question"] == pytest.approx(0.05)
+    assert first["projected_dollars"] == pytest.approx(0.80)
+
+
+def test_the_projection_uses_measured_yield_not_the_requested_one(
+    client, monkeypatch, fake_collection, fake_questions
+):
+    """
+    Intent: A chunk is asked for three questions and may give two, or none — the model decides
+        what the material supports. Projecting from the number on the form would state the
+        ceiling as the expectation, which is the same overstatement that made "25 pages at 3
+        questions each" read as 75 for a seven-badge run.
+    Success: The projected count follows the questions actually written per chunk, not the
+        questions-per-chunk requested.
+    Feature: Question generation — the projection measures rather than assumes.
+    """
+    seen: list[dict] = []
+
+    def fake_badge(slug, **kwargs):
+        # Asked for three per chunk; this material is giving one.
+        kwargs["progress"]({"phase": "writing", "pages_done": 4, "pages_total": 4,
+                            "inserted": 4})
+        seen.append(dict(api_module._run_state["progress"]["overall"]))
+        return {"skill_badge": slug, "inserted": 4, "pages_done": 4, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", fake_badge)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["one"], "max_pages": 4, "per_page": 3},
+    )
+    assert seen[0]["projected_questions"] == 4
+

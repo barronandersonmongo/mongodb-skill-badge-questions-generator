@@ -1879,3 +1879,37 @@ def test_a_walk_stores_questions_with_shuffled_options(
         for doc in fake_questions.docs
     }
     assert len(positions) > 1
+
+
+def test_a_badge_whose_sections_cannot_be_resolved_is_reported_as_failed(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings, monkeypatch
+):
+    """
+    Intent: A walk could not tell "the search failed" from "there is nothing left", so a
+        transient Atlas error made a badge report as having exhausted its documentation —
+        advice to widen the corpus, given for a badge with hundreds of sections in it. It also
+        skipped the badge silently inside a multi-badge run, so the questions the author
+        expected were simply absent.
+    Success: The walk reports the badge as failed, names the cause, and does not claim the
+        badge is exhausted or fall back to researching the web.
+    Feature: Question generation — an unresolvable badge is a failure, not exhaustion.
+    """
+    from app.services import doc_retrieval
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+
+    def unavailable(*args, **kwargs):
+        raise doc_retrieval.ChunkSetUnavailable("could not resolve: 503 from Atlas")
+
+    monkeypatch.setattr(doc_retrieval, "chunk_set_for_badge", unavailable)
+    summary = question_generation.generate_for_badge(
+        "atlas-search", max_pages=5, questions_per_page=3, settings=walk_settings
+    )
+    assert summary["phase"] == "failed"
+    assert summary["sections_unavailable"] is True
+    assert "503" in summary["error"]
+    assert summary["inserted"] == 0
+    assert not summary.get("exhausted")
+    assert not summary.get("fell_back_to_research")

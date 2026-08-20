@@ -671,15 +671,29 @@ makes **Stop after this page** an informed decision rather than a guess. Nothing
 projected until a section has finished, because a projection from zero reads as "this run is
 free" at exactly the wrong moment.
 
+**A failed lookup is not an empty one.** `chunk_set_for_badge` used to return an empty
+list when its search failed, which is the same value it returns for "this badge has nothing
+left" — so a transient Atlas 503 was reported as a badge having exhausted its documentation.
+Observed on 2026-08-19: Search Fundamentals, which has 291 chunks, reported as used up, and
+the run walked nothing for it while still paying for the attempt. It now raises
+`ChunkSetUnavailable`, and the walk reports that badge as failed with the cause rather than
+claiming exhaustion or researching around it — the two call for opposite actions, try again
+or widen the corpus.
+
 **A multi-badge run reports the job as well as the badge.** Every figure on the panel used
 to belong to the badge being walked, so a run over several of them showed a cost, a count
 and a percentage that reset at each badge while the clock ran on — leaving the one thing the
 author actually asked for unreported. Finished badges are summed and the badge in flight
 added to them. Overall progress is counted in badges, not chunks: a badge's chunk set is
 only resolved when its walk begins, so a percentage derived from the requested maximum would
-jump backwards whenever a badge turned out to have less material than asked for. Nothing is
-projected until at least one badge has finished, since a projection drawn from part of the
-first badge is a statement about badges whose material has not been looked at.
+jump backwards whenever a badge turned out to have less material than asked for. The job's projected question count and
+projected spend are measured per chunk — questions actually written per chunk, and dollars
+per question — against the chunks the job is heading for, so both answer after the first
+chunk rather than after the first badge. Projecting from the requested questions-per-chunk
+would state the ceiling as the expectation; the model decides what a chunk's material
+supports, and it is often fewer. The chunk total is itself a ceiling for badges not yet
+started, since a badge can hold less material than the budget asked for — one held 7
+against a budget of 25 — which is why it feeds the projection and not the progress bar.
 
 **Questions per minute and cost per question** are the two derived figures worth watching.
 Total spend cannot be compared between runs because it depends on how much was walked; cost
