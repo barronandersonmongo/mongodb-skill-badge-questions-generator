@@ -275,3 +275,40 @@ def test_one_word_is_used_for_the_unit_a_run_reads(client):
         content = body[body.index("<main"):]
         assert "Sections" not in content, screen
         assert "Articles" not in content, screen
+
+
+def test_the_shared_helpers_live_in_one_file(client):
+    """
+    Intent: Five screens each carried their own copy of the run helpers — showAlert five
+        times, the elapsed clock four, setStat three — and they had already drifted: two
+        copies had dropped the timed-elapsed branch, and the comment explaining why the clock
+        comes from the server survived in only two of the four. Duplicated code does not stay
+        identical, and the divergence is invisible until a screen behaves differently.
+    Success: /static/app.js is served and defines the helpers, and no template defines them
+        again.
+    Feature: Shared look — one copy of the shared JavaScript.
+    """
+    shared = client.get("/static/app.js")
+    assert shared.status_code == 200
+    for helper in ("formatElapsed", "formatDuration", "showAlert", "setStat", "RunClock"):
+        assert helper in shared.text
+
+    for screen in SCREENS + ("/duplicates",):
+        body = client.get(screen).text
+        page = body[body.index("<main"):]
+        for helper in ("function showAlert(", "function formatElapsed(",
+                       "function setStat(", "function formatDuration("):
+            assert helper not in page, (screen, helper)
+
+
+def test_every_screen_loads_the_shared_helpers_before_its_own_script(client):
+    """
+    Intent: The per-screen scripts call into the shared file at parse time — they bind its
+        functions to their own elements — so loading it afterwards would fail on the first
+        line of every screen that watches a run.
+    Success: The shared script tag appears before the per-screen block on every screen.
+    Feature: Shared look — the shared script loads first.
+    """
+    for screen in SCREENS + ("/duplicates",):
+        body = client.get(screen).text
+        assert "/static/app.js" in body, screen

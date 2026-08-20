@@ -306,18 +306,6 @@ def search_page_texts(query: str, *, limit: int = 5) -> list[dict[str, Any]]:
     return _vector_search(query, limit)
 
 
-def search_page_refs(query: str, *, limit: int = 60) -> list[dict[str, Any]]:
-    """The same ranking, carrying only what identifies and scores a page.
-
-    Resolving a badge to its page set ranks several hundred candidates and decides
-    which belong. Reading their text to do that would move tens of megabytes to
-    answer a question about relevance.
-    """
-    query = (query or "").strip()
-    if not query:
-        return []
-    return _vector_search(query, limit, include_text=False)
-
 
 def page_by_url(url: str) -> dict[str, Any] | None:
     """One stored page with its text, or None. The unit the page walk reads."""

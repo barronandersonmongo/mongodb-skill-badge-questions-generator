@@ -5,7 +5,6 @@ recorded requirement and are never edited: if behavior must change, the
 program changes, or a new test is added alongside with its own block.
 """
 
-import anthropic
 import pytest
 
 from app.config import Settings

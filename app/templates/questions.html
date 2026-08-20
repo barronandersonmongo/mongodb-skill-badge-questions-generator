@@ -608,72 +608,30 @@ per_page={{ pagination.per_page }}&
 <script>
 const API = "{{ api }}";
 const alertBox = document.getElementById("run-alert");
-let elapsedTimer = null;
 
-// When the run started, in epoch milliseconds, as reported by the server. The
-// browser must not use its own clock for this: a reload, or a trip to another
-// screen and back, would restart the count from zero while the run carried on.
-let startedAt = null;
-// Clock offset between this browser and the server, so a machine whose clock is
-// off does not show a negative or wildly inflated elapsed time.
-let clockSkewMs = 0;
-
-function formatElapsed(ms) {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const pad = (n) => String(n).padStart(2, "0");
-  return pad(Math.floor(total / 3600)) + ":" + pad(Math.floor((total % 3600) / 60)) +
-    ":" + pad(total % 60);
-}
-
-function elapsedSinceStart(until = null) {
-  if (startedAt === null) return null;
-  const end = until !== null ? until : Date.now() - clockSkewMs;
-  return end - startedAt;
-}
-
-// Adopt the server's view of when this run started and what time it is now.
-function adoptServerClock(state) {
-  if (state.server_time) {
-    clockSkewMs = Date.now() - state.server_time * 1000;
-  }
-  startedAt = state.started_at ? state.started_at * 1000 : null;
-}
-
-function showAlert(kind, message, {timed = false} = {}) {
-  alertBox.className = "alert alert-" + kind;
-  alertBox.textContent = message;
-
-  if (!timed) {
-    stopElapsed();
-    return;
-  }
-  // Runs take minutes, so show how long this one has been going. Until the first
-  // poll answers, there is no server timestamp yet and the timer is left blank
-  // rather than restarted at zero.
-  const label = document.createElement("span");
-  label.className = "ms-2 font-monospace";
-  label.dataset.elapsed = "true";
-  const current = elapsedSinceStart();
-  label.textContent = current === null ? "" : formatElapsed(current);
-  alertBox.append(label);
-  if (elapsedTimer === null) {
-    elapsedTimer = setInterval(() => {
-      const shown = alertBox.querySelector("[data-elapsed]");
-      const running = elapsedSinceStart();
-      if (shown && running !== null) shown.textContent = formatElapsed(running);
-    }, 1000);
-  }
-}
-
-function stopElapsed() {
-  if (elapsedTimer !== null) {
-    clearInterval(elapsedTimer);
-    elapsedTimer = null;
-  }
-}
 
 const panel = document.getElementById("progress-panel");
 const bar = document.getElementById("progress-bar");
+// The shared helpers, from /static/app.js, bound to this screen's elements so the code
+// below reads as it did when each screen carried its own copy.
+const clock = new UI.RunClock();
+const {formatElapsed, formatDuration, formatMoney, formatUnitCost, formatTokens} = UI;
+const adoptServerClock = (state) => clock.adopt(state);
+const elapsedSinceStart = (until = null) => clock.elapsed(until);
+const stopElapsed = () => clock.stop();
+const setStat = (name, value) => UI.setStat(panel, name, value);
+const setPanelState = (kind, message) => UI.setPanelState(panel, kind, message);
+const showAlert = (kind, message, options) => UI.showAlert(alertBox, clock, kind, message, options);
+
+// Elapsed ticks in the browser against the server's start time, so it advances every
+// second instead of jumping whenever a poll happens to answer.
+function startPanelClock() {
+  clock.tick(() => {
+    const running = clock.elapsed();
+    setStat("elapsed", running === null ? "—" : formatElapsed(running));
+  });
+}
+
 const stopButton = document.getElementById("stop-run-btn");
 const statsPanel = panel.querySelector("[data-progress-stats]");
 
@@ -684,61 +642,7 @@ const PHASES = {
   done: "Finished",
 };
 
-function formatDuration(seconds) {
-  if (seconds === null || seconds === undefined) return "—";
-  const total = Math.max(0, Math.round(seconds));
-  if (total < 60) return total + "s";
-  const minutes = Math.floor(total / 60);
-  if (minutes < 60) return minutes + "m " + String(total % 60).padStart(2, "0") + "s";
-  return Math.floor(minutes / 60) + "h " + String(minutes % 60).padStart(2, "0") + "m";
-}
 
-function formatMoney(value) {
-  if (value === null || value === undefined) return "—";
-  // Sub-cent runs are normal for a short walk, so two decimals would round most of
-  // them to $0.00 and look broken.
-  return "$" + (value < 1 ? value.toFixed(3) : value.toFixed(2));
-}
-
-function formatUnitCost(value) {
-  // A question costs cents, so this needs more places than a run total: rounded to two
-  // it would read as $0.00 and be useless for comparing one run with the next.
-  if (value === null || value === undefined) return "—";
-  return "$" + value.toFixed(4);
-}
-
-function formatTokens(n) {
-  if (!n) return "0";
-  if (n < 1000) return String(n);
-  if (n < 1000000) return (n / 1000).toFixed(1) + "k";
-  return (n / 1000000).toFixed(2) + "M";
-}
-
-function setStat(name, value) {
-  const cell = panel.querySelector('[data-stat="' + name + '"]');
-  if (cell) cell.textContent = value;
-}
-
-// The panel is the run's only status window: the message that used to sit in a
-// separate alert above it now sits inside, and the panel takes the colour that alert
-// carried. Two windows for one run meant two elapsed times, one of them stale.
-function setPanelState(kind, message) {
-  panel.classList.remove("d-none", "border-info", "border-success", "border-danger");
-  if (kind) panel.classList.add("border-" + kind, "border-2");
-  const line = panel.querySelector("[data-status-line]");
-  if (line) line.textContent = message || "";
-}
-
-// Elapsed ticks in the browser against the server's start time, so it advances every
-// second instead of jumping whenever a poll happens to answer.
-function startPanelClock() {
-  const tick = () => {
-    const running = elapsedSinceStart();
-    setStat("elapsed", running === null ? "—" : formatElapsed(running));
-  };
-  tick();
-  if (elapsedTimer === null) elapsedTimer = setInterval(tick, 1000);
-}
 
 function showProgress(p) {
   if (!p) return;
@@ -796,7 +700,7 @@ function showProgress(p) {
   setStat("rate", p.pages_per_minute ? p.pages_per_minute.toFixed(1) + "/min" : "—");
   setStat("per-page", p.questions_per_page_actual === null || p.questions_per_page_actual === undefined
     ? "—" : p.questions_per_page_actual.toFixed(1));
-  if (elapsedTimer === null) {
+  if (!clock.ticking()) {
     // Only when the browser is not ticking — a page opened after the run finished has
     // no start time to count from, and the server's figure is the honest one.
     setStat("elapsed", formatDuration(p.elapsed_seconds));

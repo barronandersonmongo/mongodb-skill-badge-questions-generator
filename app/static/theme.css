@@ -90,8 +90,7 @@
 
 * { -webkit-font-smoothing: antialiased; }
 
-body,
-body.bg-body-tertiary {
+body {
   font-family: var(--font);
   font-size: 0.9375rem;
   line-height: 1.55;
@@ -100,7 +99,7 @@ body.bg-body-tertiary {
   margin: 0;
 }
 
-.font-monospace, code, pre, .mono { font-family: var(--mono); }
+.font-monospace, code, pre { font-family: var(--mono); }
 
 a { color: var(--forest); text-decoration: none; }
 a:hover { color: var(--forest-hover); text-decoration: underline; }
@@ -124,7 +123,10 @@ a:hover { color: var(--forest-hover); text-decoration: underline; }
   height: 100vh;
   display: flex;
   flex-direction: column;
-  padding: var(--s5) var(--s3) var(--s4);
+  /* Stated rather than relied on: the items belong at the top, and a stray auto
+     margin or a future footer would otherwise push them down the column. */
+  justify-content: flex-start;
+  padding: var(--s4) var(--s3);
   background: var(--surface);
   border-right: 1px solid var(--line);
 }
@@ -133,7 +135,7 @@ a:hover { color: var(--forest-hover); text-decoration: underline; }
   display: flex;
   align-items: center;
   gap: var(--s2);
-  padding: 0 var(--s2) var(--s6);
+  padding: 0 var(--s2) var(--s4);
   font-size: 0.9375rem;
   font-weight: 600;
   letter-spacing: -0.015em;
@@ -201,14 +203,6 @@ a:hover { color: var(--forest-hover); text-decoration: underline; }
   font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: var(--ink-3);
-}
-
-.app-sidebar-footer {
-  margin-top: auto;
-  padding: var(--s3) var(--s2) 0;
-  border-top: 1px solid var(--line);
-  font-size: 0.75rem;
   color: var(--ink-3);
 }
 
@@ -303,8 +297,7 @@ a:hover { color: var(--forest-hover); text-decoration: underline; }
 /* Everything that is not the one primary action is a quiet button on white.
    Bootstrap's outline variants all shouted at the same volume. */
 .btn-outline-secondary,
-.btn-outline-primary,
-.btn-secondary {
+.btn-outline-primary {
   background: var(--surface);
   border-color: var(--line-strong);
   color: var(--ink);
@@ -312,8 +305,7 @@ a:hover { color: var(--forest-hover); text-decoration: underline; }
 }
 
 .btn-outline-secondary:hover,
-.btn-outline-primary:hover,
-.btn-secondary:hover {
+.btn-outline-primary:hover {
   background: var(--surface-sunken);
   border-color: var(--line-strong);
   color: var(--ink);
@@ -633,7 +625,7 @@ a:focus-visible,
 .alert-danger { border-left-color: var(--danger); background: var(--danger-wash); color: #6b1d1d; }
 .alert-warning { border-left-color: var(--warn); background: var(--warn-wash); color: #5c4600; }
 .alert-success { border-left-color: var(--forest); background: var(--forest-wash); color: #0a4436; }
-.alert-info, .alert-secondary { border-left-color: var(--forest); background: var(--surface); color: var(--ink); }
+.alert-info { border-left-color: var(--forest); background: var(--surface); color: var(--ink); }
 
 .alert strong { font-weight: 600; }
 
@@ -816,6 +808,5 @@ a:focus-visible,
   .app-nav-list { flex-direction: row; }
   .nav-section { margin: 0; padding: 0 0 0 var(--s3); border-top: none; border-left: 1px solid var(--line); }
   .nav-group-label { display: none; }
-  .app-sidebar-footer { margin: 0; padding: 0; border: none; }
-  .page-header, .page-body { padding-left: var(--s4); padding-right: var(--s4); }
+  .page-header { padding-left: var(--s4); padding-right: var(--s4); }
 }

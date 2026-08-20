@@ -712,9 +712,15 @@ def test_the_badge_screens_elapsed_timer_is_driven_by_the_servers_start_time(
     Feature: Badge discovery — elapsed time survives leaving the page.
     """
     body = client.get("/admin/skill-badges").text
+    shared = client.get("/static/app.js").text
+    # The clock itself moved to /static/app.js when five copies of it were consolidated,
+    # so the behaviour now spans the page and that file: the page adopts the server's
+    # clock, and app.js is what reads started_at and server_time. Both are asserted, and
+    # the requirement recorded above is unchanged.
     assert "adoptServerClock(state)" in body
-    assert "state.started_at" in body
+    assert "state.started_at" in shared
     assert "startedAt = Date.now()" not in body
+    assert "startedAt = Date.now()" not in shared
 
 
 def test_a_badge_run_reports_when_it_started_and_finished(client, fake_collection, monkeypatch):
