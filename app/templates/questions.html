@@ -4,36 +4,107 @@
 {% block title %}Questions — Skill Badge Questions{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-start mb-3">
-  <div>
-    <h1 class="h3 mb-1">Questions</h1>
-    <p class="text-body-secondary mb-0">
-      Review the questions already written, or generate new ones. A generation run
-      is scoped to the skill badge(s) you pick — the badge decides what is in
-      subject matter. New questions arrive as <strong>drafts</strong> for you to
-      approve or reject.
-    </p>
-  </div>
-  <div class="text-nowrap">
-    <button class="btn btn-primary" id="generate-btn" type="button"
-            data-bs-toggle="modal" data-bs-target="#generate-modal"
-            {% if not badges %}disabled{% endif %}>
-      Generate questions
-    </button>
-    <button class="btn btn-outline-secondary" id="sweep-btn" type="button">
-      Find duplicates
-    </button>
-    <button class="btn btn-outline-secondary" id="sweep-dry-run-btn" type="button">
-      Dry run
-    </button>
-    <a class="btn btn-outline-secondary" id="export-btn" target="_blank" rel="noopener"
-       href="{{ api }}?{% if status_filter %}status={{ status_filter }}&{% endif %}{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
-      Export JSON
-    </a>
-  </div>
-</div>
+{% import "_ui.html" as ui %}
+
+{# Everything a page link must preserve. A pager that dropped the filters would move
+   through a different collection from the one being read. #}
+{% set page_query %}
+{%- if badge_filter %}skill_badge={{ badge_filter | urlencode }}&{% endif %}
+{%- if category_filter %}category={{ category_filter | urlencode }}&{% endif %}
+{%- if query %}q={{ query | urlencode }}&{% endif %}
+per_page={{ pagination.per_page }}&
+{%- endset %}
+
+{# A question named by its identifier, linking to it. A stem alone cannot be checked
+   — the options, the badges and the source are what decide whether two questions are
+   really the same — and the search box takes an identifier, so that is the address.
+   Opened in a new tab: this report is not reproducible once the page is left, and
+   nothing on it survives a navigation. #}
+{% macro question_link(question_id) %}
+<a class="dupe-id font-monospace" href="/?q={{ question_id }}" target="_blank"
+   rel="noopener" title="{{ question_id }} — open this question in a new tab"
+   data-question-link="{{ question_id }}">{{ question_id[:8] }}</a>
+{% endmacro %}
+
+
+{% call ui.page_header(
+    "Questions",
+    "Review what has been written, or generate more. A run is scoped to the skill "
+    "badge(s) you pick — the badge decides what is in subject matter. New questions "
+    "arrive as drafts for you to approve or reject.") %}
+  <button class="btn btn-primary" id="generate-btn" type="button"
+          data-bs-toggle="modal" data-bs-target="#generate-modal"
+          {% if not badges %}disabled{% endif %}>
+    Generate questions
+  </button>
+{% endcall %}
 
 <div id="run-alert" class="alert d-none" role="status"></div>
+
+<div class="card mb-3 d-none" id="progress-panel" data-progress-panel="true">
+  <div class="card-body py-3">
+    <div class="d-none" data-overall="true">
+      <div class="d-flex justify-content-between align-items-baseline mb-1">
+        <span class="fw-semibold">Whole job</span>
+        <span class="font-monospace small" data-overall-headline="true"></span>
+      </div>
+      <div class="progress mb-2" role="progressbar" style="height: 1.25rem;">
+        <div class="progress-bar" data-overall-bar="true" style="width: 0%;">0%</div>
+      </div>
+      {# Written and projected side by side in each pair, so the projection is read as
+         an extrapolation of the figure next to it rather than as a separate claim. #}
+      <div class="row row-cols-2 row-cols-md-4 g-2 small mb-3" data-overall-stats="true">
+        <div><div class="text-body-secondary">Questions</div><div data-stat="all-questions">—</div></div>
+        <div>
+          <div class="text-body-secondary">Projected questions</div>
+          <div data-stat="all-projected-questions"
+               title="Questions per chunk so far, over the chunks this job is heading for. A ceiling: a badge can hold less material than the budget asked for.">—</div>
+        </div>
+        <div><div class="text-body-secondary">Chunks</div><div data-stat="all-pages">—</div></div>
+        <div><div class="text-body-secondary">Spent</div><div data-stat="all-spent">—</div></div>
+        <div>
+          <div class="text-body-secondary">Projected spend</div>
+          <div data-stat="all-projected"
+               title="Projected questions × cost per question so far.">—</div>
+        </div>
+        <div><div class="text-body-secondary">Per question</div><div data-stat="all-per-question">—</div></div>
+        <div><div class="text-body-secondary">Questions/min</div><div data-stat="all-qpm">—</div></div>
+        <div><div class="text-body-secondary">Remaining</div><div data-stat="all-eta">—</div></div>
+      </div>
+      <hr class="my-2">
+    </div>
+
+    <div class="d-flex justify-content-between align-items-baseline mb-1">
+      <span class="fw-semibold" data-phase="true">Starting…</span>
+      <span class="font-monospace small" data-headline="true"></span>
+    </div>
+    <div class="small mb-2" data-status-line="true"></div>
+    <div class="progress mb-2" role="progressbar" style="height: 1.25rem;">
+      <div class="progress-bar progress-bar-striped progress-bar-animated"
+           id="progress-bar" data-progress-bar="true" style="width: 0%;">0%</div>
+    </div>
+    <div class="row row-cols-2 row-cols-md-4 g-2 small mb-2" data-progress-stats="true">
+      <div><div class="text-body-secondary">Chunks</div><div data-stat="pages">—</div></div>
+      <div><div class="text-body-secondary">Questions</div><div data-stat="questions">—</div></div>
+      <div><div class="text-body-secondary">Rate</div><div data-stat="rate">—</div></div>
+      <div><div class="text-body-secondary">Per chunk</div><div data-stat="per-page">—</div></div>
+      <div><div class="text-body-secondary">Elapsed</div><div class="font-monospace" data-stat="elapsed">—</div></div>
+      <div><div class="text-body-secondary">Remaining</div><div data-stat="eta">—</div></div>
+      <div><div class="text-body-secondary">Spent</div><div data-stat="spent">—</div></div>
+      <div><div class="text-body-secondary">Projected</div><div data-stat="projected">—</div></div>
+      <div><div class="text-body-secondary">Questions/min</div><div data-stat="qpm">—</div></div>
+      <div><div class="text-body-secondary">Per question</div><div data-stat="per-question">—</div></div>
+    </div>
+    <div class="d-flex justify-content-between align-items-center gap-2">
+      <div class="small text-body-secondary text-truncate" data-stat="current-page">—</div>
+      <button class="btn btn-sm btn-outline-danger text-nowrap d-none" id="stop-run-btn"
+              type="button" data-stop-run="true">
+        Stop after this page
+      </button>
+    </div>
+    <div class="small text-body-secondary mt-2" data-stat="tokens">—</div>
+  </div>
+</div>
 
 {% if storage_error %}
 <div class="alert alert-danger">
@@ -62,10 +133,60 @@
   </details>
   {% endif %}
 </div>
-{% elif last_result %}
-<div class="alert alert-success">
-  {% if last_result.source == "question-duplicate-sweep" %}
-  <strong>Last duplicate sweep.</strong>
+{% elif last_result and last_result.source != "question-duplicate-sweep" %}
+{# A finished sweep's report is not shown here. It is a long list about pairs of
+   questions rather than about this screen's work, and every link on it leads to a
+   question — which, when the report sat on this page, meant leading back to the page
+   it was on. It lives on /duplicates. #}
+<div class="alert alert-success alert-dismissible" data-last-result="true">
+  <button type="button" class="btn-close" id="dismiss-result-btn" data-dismiss-result="true"
+          aria-label="Dismiss"></button>
+  {% if last_result.source == "badge-page-walk" %}
+  <strong>Last run:</strong>
+  {{ last_result.inserted }} question(s) stored from
+  {{ last_result.pages_done }} documentation chunk(s)
+  {% if last_result.cost and last_result.cost.dollars %}
+  <span class="text-body-secondary" data-run-cost="true">
+    — ${{ "%.3f"|format(last_result.cost.dollars) }} spent
+    {%- if last_result.cost.dollars_per_question %},
+    ${{ "%.4f"|format(last_result.cost.dollars_per_question) }} per question{% endif %}
+    {%- if last_result.questions_per_minute %},
+    {{ last_result.questions_per_minute }} per minute{% endif %}
+  </span>
+  {% endif %}
+  {% if last_result.stopped_early %}
+  <span class="badge text-bg-warning" data-stopped-early="true">stopped early</span>
+  {% endif %}
+  {% if last_result.exhausted %}
+  <div class="mt-1 small" data-exhausted="true">
+    Every page that resolves to this badge has already been written from. Widen the
+    documentation corpus, or lower the relevance floor, to find more material.
+  </div>
+  {% endif %}
+  {% if last_result.fell_back_to_research %}
+  <div class="mt-1 small" data-fell-back="true">
+    No stored documentation resolved to this badge, so this run researched instead of
+    walking pages. <a href="/admin/docs">Refresh the documentation corpus</a> to make
+    runs repeatable.
+  </div>
+  {% endif %}
+  {% if last_result.pages_available is not none %}
+  <div class="mt-1 small text-body-secondary" data-pages-left="true">
+    {{ last_result.pages_available }} chunk(s) not yet written from remain for this badge.
+  </div>
+  {% endif %}
+  {% if last_result.failure_count %}
+  <details class="mt-1">
+    <summary class="small" data-page-failures="true">
+      {{ last_result.failure_count }} chunk(s) produced nothing
+    </summary>
+    <ul class="small mb-0 mt-2">
+      {% for item in last_result.failures %}
+      <li><span class="font-monospace">{{ item.url }}</span> — {{ item.error }}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
   {% else %}
   <strong>Last run:</strong>
   {{ last_result.inserted }} question(s) stored
@@ -91,58 +212,36 @@
     {% endif %}
   </div>
   {% endif %}
+  {% if last_result.source_pages %}
+  <div class="mt-1" data-source-pages="true">
+    Written from {{ last_result.source_pages | length }} stored documentation page(s)
+    — the pages those chunks came from.
+    <details class="mt-1">
+      <summary class="small">Show sources</summary>
+      <ul class="small mb-0 mt-2">
+        {% for page in last_result.source_pages %}
+        <li>
+          <a href="{{ page.url }}" target="_blank" rel="noopener">{{ page.title or page.url }}</a>
+          {% if page.questions is not none %}
+          <span class="text-body-secondary">— {{ page.questions }} question(s)</span>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </details>
+  </div>
+  {% elif last_result.researched_the_web %}
+  <div class="mt-1 small" data-researched-the-web="true">
+    Nothing in the stored documentation matched these badges, so this run researched
+    the web instead — slower, and two runs will not see the same source text.
+    <a href="/admin/docs">Refresh the documentation corpus</a> to fix that.
+  </div>
+  {% endif %}
   {% if last_result.attribution_error %}
   <div class="mt-1 small" data-attribution-error="true">
     Cross-badge review did not run, so these questions are filed only under the
     badge(s) they were written for: {{ last_result.attribution_error }}
   </div>
-  {% endif %}
-  {% if last_result.source == "question-duplicate-sweep" %}
-  <div class="mt-1">
-    {{ last_result.compared }} pair(s) compared.
-    {% if last_result.dry_run %}
-    <span class="badge text-bg-warning" data-sweep-dry-run="true">dry run — nothing deleted</span>
-    {% endif %}
-  </div>
-  {% if last_result.deleted %}
-  <details class="mt-2" data-sweep-deleted="true">
-    <summary class="small">{{ last_result.deleted | length }} deleted as duplicates</summary>
-    <ul class="small mb-0 mt-2">
-      {% for pair in last_result.deleted %}
-      <li>
-        deleted <span class="fst-italic">{{ pair.drop_stem }}</span>,
-        kept <span class="fst-italic">{{ pair.keep_stem }}</span>
-        <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
-        <span class="badge text-bg-light border">vector {{ "%.3f"|format(pair.vector_score) }}</span>
-      </li>
-      {% endfor %}
-    </ul>
-  </details>
-  {% endif %}
-  {% if last_result.possible_duplicates %}
-  <details class="mt-2" data-sweep-possible="true">
-    <summary class="small">
-      {{ last_result.possible_duplicates | length }} pair(s) below the delete threshold — kept
-    </summary>
-    <ul class="small mb-0 mt-2">
-      {% for pair in last_result.possible_duplicates %}
-      <li>
-        <span class="fst-italic">{{ pair.drop_stem }}</span>
-        vs <span class="fst-italic">{{ pair.keep_stem }}</span>
-        <span class="badge text-bg-light border">rerank {{ "%.3f"|format(pair.rerank_score) }}</span>
-        {% if pair.would_delete %}<span class="badge text-bg-warning">would delete</span>{% endif %}
-        {% if pair.skipped %}<span class="badge text-bg-secondary">{{ pair.skipped }}</span>{% endif %}
-      </li>
-      {% endfor %}
-    </ul>
-  </details>
-  {% endif %}
-  {% if last_result.errors %}
-  <div class="mt-2 small" data-sweep-errors="true">
-    <strong>Not everything could be compared:</strong>
-    <ul class="mb-0">{% for e in last_result.errors %}<li class="font-monospace">{{ e }}</li>{% endfor %}</ul>
-  </div>
-  {% endif %}
   {% endif %}
   {% if last_result.rejected %}
   <details class="mt-2">
@@ -159,25 +258,23 @@
 </div>
 {% endif %}
 
-<div class="row g-2 align-items-end mb-2">
-  <div class="col-auto">
-    <label class="form-label small mb-1" for="search">Search by meaning</label>
+{% call ui.filter_bar() %}
+  <div>
+    <label class="form-label" for="search">Search by meaning</label>
     <form method="get" action="/" class="d-flex gap-1" data-search-form="true">
-      <input class="form-control form-control-sm" type="search" id="search" name="q"
+      <input class="form-control" type="search" id="search" name="q"
              value="{{ query }}" style="min-width: 22rem;"
-             placeholder="e.g. joining data from another collection">
-      {% if status_filter %}<input type="hidden" name="status" value="{{ status_filter }}">{% endif %}
+             placeholder="e.g. joining data from another collection — or an identifier">
       {% if badge_filter %}<input type="hidden" name="skill_badge" value="{{ badge_filter }}">{% endif %}
       {% if category_filter %}<input type="hidden" name="category" value="{{ category_filter }}">{% endif %}
-      <button class="btn btn-sm btn-outline-primary" type="submit">Search</button>
+      <button class="btn btn-outline-primary" type="submit">Search</button>
       {% if query %}
-      <a class="btn btn-sm btn-outline-secondary" href="/" data-clear-search="true">Clear</a>
+      <a class="btn btn-outline-secondary" href="/" data-clear-search="true">Clear</a>
       {% endif %}
     </form>
   </div>
-  <div class="col-auto">
-    <label class="form-label small mb-1" for="badge-filter">Skill badge</label>
-    <select class="form-select form-select-sm" id="badge-filter" data-filter="skill_badge">
+  {% call ui.field("Skill badge", "badge-filter") %}
+    <select class="form-select" id="badge-filter" data-filter="skill_badge">
       <option value="">All badges</option>
       {% for badge in badges %}
       <option value="{{ badge.slug }}" {% if badge_filter == badge.slug %}selected{% endif %}>
@@ -185,10 +282,19 @@
       </option>
       {% endfor %}
     </select>
-  </div>
-  <div class="col-auto">
-    <label class="form-label small mb-1" for="category-filter">Category</label>
-    <select class="form-select form-select-sm" id="category-filter" data-filter="category">
+  {% endcall %}
+  {% call ui.field("Per page", "per-page-filter") %}
+    <select class="form-select" id="per-page-filter" data-filter="per_page"
+            data-page-size="true">
+      {% for size in pagination.sizes %}
+      <option value="{{ size }}" {% if pagination.per_page == size %}selected{% endif %}>
+        {{ size }}
+      </option>
+      {% endfor %}
+    </select>
+  {% endcall %}
+  {% call ui.field("Category", "category-filter") %}
+    <select class="form-select" id="category-filter" data-filter="category">
       <option value="">All categories</option>
       {% for category in categories %}
       <option value="{{ category }}" {% if category_filter == category %}selected{% endif %}>
@@ -196,16 +302,28 @@
       </option>
       {% endfor %}
     </select>
-  </div>
-</div>
+  {% endcall %}
+{% endcall %}
 
-{% if search_error %}
+{% if search_error == "no-such-identifier" %}
+<div class="alert alert-warning" data-no-such-id="true">
+  <strong>No question with that identifier.</strong>
+  <span class="font-monospace">{{ query }}</span> looks like an identifier, so it was
+  looked up exactly rather than searched for. Either it has been deleted, or it belongs
+  to a different collection.
+</div>
+{% elif search_error %}
 <div class="alert alert-warning" data-search-error="true">
   <strong>Vector search is unavailable.</strong>
   A newly created index takes a few minutes to build and becomes queryable on its
   own; until then this search cannot run.
   <div class="small font-monospace mt-1">{{ search_error }}</div>
 </div>
+{% elif query and is_identifier_query %}
+<p class="text-body-secondary small mb-2" data-id-summary="true">
+  Looked up by identifier <span class="font-monospace">{{ query }}</span>, not searched
+  for.
+</p>
 {% elif query %}
 <p class="text-body-secondary small mb-2" data-search-summary="true">
   Ranked by similarity to <strong>{{ query }}</strong> — closest first. Filters below
@@ -213,31 +331,90 @@
 </p>
 {% endif %}
 
-<ul class="nav nav-tabs mb-0">
-  {% for tab, label in tabs %}
-  <li class="nav-item">
-    <a class="nav-link {% if status_filter == tab %}active{% endif %}"
-       href="/?{% if tab %}status={{ tab }}&{% endif %}{% if badge_filter %}skill_badge={{ badge_filter }}&{% endif %}{% if category_filter %}category={{ category_filter }}{% endif %}">
-      {{ label }} <span class="badge text-bg-secondary">{{ counts.get(tab, 0) }}</span>
-    </a>
-  </li>
-  {% endfor %}
-</ul>
+<div class="d-flex justify-content-between align-items-baseline mb-2">
+  <span class="fw-semibold" data-question-count="true">
+    {{ counts.get("", 0) }} question{{ "" if counts.get("", 0) == 1 else "s" }}
+    {%- if badge_filter or category_filter or query %} in this view{% endif %}
+  </span>
+  {# Which of them is on screen. Without it, a page of 50 out of 3,000 looks like the
+     whole collection — the difference between "that is all there is" and "that is all
+     that fits". #}
+  {% if pagination.total > pagination.per_page %}
+  <span class="meta" data-page-range="true">
+    Showing {{ pagination.first }}–{{ pagination.last }}
+  </span>
+  {% endif %}
+</div>
 
-<div class="card border-top-0 rounded-top-0">
+<div class="card">
   <div class="list-group list-group-flush">
     {% for question in questions %}
     <div class="list-group-item py-3" data-question-id="{{ question.question_id }}">
       <div class="d-flex justify-content-between align-items-start gap-3">
         <div class="flex-grow-1">
-          <div class="fw-semibold mb-2" data-stem="true">
+          {# What this question is, before what it asks: which question it is, when it
+             was written, and what it was written from. Each is labelled, because none
+             of the three says what it is on its own — a hex string, a date and a URL
+             are all unlabelled facts otherwise. They sit above the stem rather than
+             below the options because they are how an author refers to, dates and
+             checks a question, and a long question would push them out of sight. #}
+          <dl class="question-head">
+            <div>
+              {# "Question ID", not "serial number": these are random hex identifiers,
+                 not a counter, so nothing can be read from their order. #}
+              <dt>Question ID</dt>
+              <dd>
+                {# Plain text, not a chip. A pill reads as a category the question
+                   belongs to; this is the question's own name, and it now has a label
+                   telling you so. It is still a button because clicking copies the full
+                   identifier — 32 hex characters is not something anyone should retype. #}
+                <button type="button" class="copy-id"
+                        data-copy-id="{{ question.question_id }}"
+                        title="{{ question.question_id }} — click to copy">
+                  {{ question.question_id[:8] }}
+                </button>
+              </dd>
+            </div>
+            {% if question.created_at %}
+            <div>
+              {# The list is newest first, so this is what tells an author which
+                 questions came out of the run they just watched — and, once a prompt has
+                 been changed, which side of that change a question is from. #}
+              <dt>Generated</dt>
+              <dd>
+                <span data-created-at="true"
+                      title="{{ question.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}">
+                  {{ question.created_at.strftime("%d %b %Y, %H:%M UTC") }}
+                </span>
+              </dd>
+            </div>
+            {% endif %}
+            {% if question.source_urls %}
+            <div>
+              {# The visible text is the canonical URL, because that is what identifies
+                 the page. The link goes through our renderer: MongoDB serves these as
+                 raw Markdown, which a browser shows as unformatted text. #}
+              <dt>Source</dt>
+              <dd>
+                {% for url in question.source_urls %}
+                <a href="/admin/docs/render?url={{ url | urlencode }}"
+                   target="_blank" rel="noopener"
+                   title="Open {{ url }}, rendered"
+                   class="question-source font-monospace"
+                   data-source-url="{{ url }}">{{ url }}</a>
+                {% endfor %}
+              </dd>
+            </div>
+            {% endif %}
+          </dl>
+          <div class="question-stem" data-stem="true">
             {{ question.stem }}
             {% if question.get("score") is not none %}
             <span class="badge text-bg-info" data-score="true"
                   title="Similarity to your search">{{ "%.3f"|format(question.score) }}</span>
             {% endif %}
           </div>
-          <ol class="mb-2" type="A">
+          <ol class="question-options" type="A">
             {% for option in question.options %}
             <li class="{% if option.is_correct %}fw-semibold{% endif %}"
                 {% if option.is_correct %}data-correct="true"{% endif %}>
@@ -259,44 +436,28 @@
           <div class="mt-2">
             <span class="badge text-bg-{{ difficulty_styles.get(question.difficulty, 'secondary') }}"
                   data-difficulty="true">{{ question.difficulty }}</span>
-            {% for slug in question.skill_badges %}
-            <span class="badge text-bg-light border" data-badge-tag="{{ slug }}">{{ slug }}</span>
-            {% endfor %}
-            {% for category in question.categories %}
-            <span class="badge text-bg-light border" data-category-tag="{{ category }}">{{ category }}</span>
-            {% endfor %}
+            {# Three kinds of tag sit side by side, so they are told apart by colour as
+               well as by order: a solid chip for difficulty, the accent colour for the
+               badges a question is filed under, and a warm neutral for the topic areas
+               it exercises. The title carries the same distinction in words, since
+               colour alone is not a label. Badge tags link to the badge's definition — a
+               slug is not self-explanatory, and checking what it covers should not mean
+               hunting through the admin screen for it. #}
+            {% for slug in question.skill_badges %}{{ ui.badge_tag(slug) }}{% endfor %}
+            {% for category in question.categories %}{{ ui.category_tag(category) }}{% endfor %}
           </div>
-          {% if question.source_urls %}
-          <div class="mt-2">
-            {% for url in question.source_urls %}
-            <a href="{{ url }}" target="_blank" rel="noopener"
-               class="d-block small text-truncate" style="max-width: 32rem;">{{ url }}</a>
-            {% endfor %}
-          </div>
-          {% endif %}
         </div>
         <div class="text-end text-nowrap">
-          <span class="badge text-bg-{{ status_styles.get(question.status, 'secondary') }} mb-2 d-block">
-            {{ question.status }}
-          </span>
-          {% if question.status != "approved" %}
-          <button class="btn btn-sm btn-outline-success js-status" data-status="approved">Approve</button>
-          {% endif %}
-          {% if question.status != "rejected" %}
-          <button class="btn btn-sm btn-outline-secondary js-status" data-status="rejected">Reject</button>
-          {% endif %}
-          {% if question.status != "draft" %}
-          <button class="btn btn-sm btn-outline-primary js-status" data-status="draft">Re-open</button>
-          {% endif %}
-          <button class="btn btn-sm btn-outline-danger js-delete" data-delete="true">Delete</button>
+          <button class="btn btn-sm btn-outline-danger js-delete" data-delete="true"
+                  data-stem="{{ question.stem }}">Delete</button>
         </div>
       </div>
     </div>
     {% else %}
-    <div class="list-group-item text-center text-body-secondary py-5" data-empty="true">
+    <div class="list-group-item empty-state" data-empty="true">
       {% if query %}
         Nothing close to “{{ query }}” in the collection.
-      {% elif status_filter or badge_filter or category_filter %}
+      {% elif badge_filter or category_filter %}
         No questions match these filters.
       {% else %}
         No questions yet. Run <strong>Generate questions</strong> to write the first.
@@ -306,10 +467,58 @@
   </div>
 </div>
 
-<p class="text-body-secondary small mt-3 mb-0">
+{% if pagination.pages > 1 %}
+{# Kept below the list rather than above it as well: paging is what you do having read
+   the page, and a second copy on top would be one more thing between the filters and
+   the questions. Plain links, so a page is an address that can be shared. #}
+<nav class="pager" aria-label="Question pages" data-pager="true">
+  <a class="btn btn-outline-secondary {% if not pagination.has_previous %}disabled{% endif %}"
+     data-page-previous="true"
+     href="?{{ page_query }}page={{ pagination.page - 1 }}">Previous</a>
+  <span class="meta" data-page-position="true">
+    Page {{ pagination.page }} of {{ pagination.pages }}
+  </span>
+  <a class="btn btn-outline-secondary {% if not pagination.has_next %}disabled{% endif %}"
+     data-page-next="true"
+     href="?{{ page_query }}page={{ pagination.page + 1 }}">Next</a>
+</nav>
+{% endif %}
+
+<p class="meta mt-3 mb-0">
   Stored in <span class="font-monospace">{{ database }}.{{ collection }}</span>.
-  <strong>Export JSON</strong> returns exactly the questions matching the filters above.
+  {# Said here because the export is the one thing that is not paged, and a screen
+     showing 50 of 3,000 invites the assumption that its export would match. #}
+  <a href="/export">Export</a> returns every question matching the filters above, not
+  only this page.
 </p>
+
+<div class="modal fade" id="delete-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5">Delete this question?</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-body-secondary mb-2">
+          Deleting is the only editorial act there is, and it is final — nothing can
+          re-create this question. Read it once more before you do.
+        </p>
+        <blockquote class="border-start border-3 ps-3 mb-3" data-delete-stem="true"></blockquote>
+        <label for="delete-confirm" class="form-label small">
+          Type <strong>delete</strong> to confirm.
+        </label>
+        <input class="form-control" id="delete-confirm" type="text" autocomplete="off"
+               data-delete-confirm="true" placeholder="delete">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirm-delete" disabled
+                data-confirm-delete="true">Delete permanently</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="modal fade" id="generate-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-lg">
@@ -320,9 +529,12 @@
       </div>
       <div class="modal-body">
         <p class="small text-body-secondary">
-          Claude drafts the questions, then they are validated into the four-option
-          format before being stored. This takes minutes, not seconds — you can
-          leave this page open and it will report when done.
+          A run walks the documentation a badge is about one <strong>chunk</strong> at a
+          time — a heading and the passage under it, not a whole page — and writes several
+          questions from each. A page is a few chunks on average, and chunks already
+          written from are skipped, so running a badge again covers new material rather
+          than repeating. Several badges are walked one after another, each getting the
+          full budget below.
         </p>
         <label for="badge-picker" class="form-label">Skill badges</label>
         <select class="form-select" id="badge-picker" multiple size="8">
@@ -338,17 +550,43 @@
           catalog and also filed under any other badge it genuinely tests.
         </div>
 
-        <label for="count" class="form-label mt-3">How many questions</label>
-        <input class="form-control" id="count" type="number" value="5" min="1" max="25">
-
-        <label for="source-material" class="form-label mt-3">
-          Source material (optional)
-        </label>
-        <textarea class="form-control" id="source-material" rows="6"
-                  placeholder="Paste training material, course notes, or reference text to write from."></textarea>
+        <div class="row g-3 mt-3">
+          <div class="col">
+            <label for="max-pages" class="form-label">How many chunks to walk</label>
+            <input class="form-control" id="max-pages" type="number" value="25" min="1" max="200">
+          </div>
+          <div class="col">
+            <label for="per-page" class="form-label">Questions per chunk</label>
+            <input class="form-control" id="per-page" type="number" value="3" min="1" max="10">
+          </div>
+        </div>
+        {# The budget is per badge, not per run: every selected badge is walked with
+           these numbers in full. The old hint read "25 pages at 3 questions each is up
+           to 75 questions", which is true of one badge and wrong by a factor of however
+           many were selected — the one number on this form that decides what a run
+           costs, stated as the smallest it could be. #}
         <div class="form-text">
-          Preferred over anything Claude finds on its own. This is where internal
-          training content goes — the server cannot reach Glean or a cluster itself.
+          Per badge, not per run: each selected badge is walked with these numbers. A
+          badge picks up where its last run stopped, so a badge with less unused material
+          contributes fewer chunks than the maximum.
+        </div>
+
+        {# Spelled out because the multiplication is where the surprise was. It is a
+           ceiling, not an estimate: skipped pages and a stop both bring it down. #}
+        <div class="alert alert-info mt-3 mb-0 py-2 small" data-projection="true">
+          <span data-projection-text="true">Pick a badge to see what a run would cover.</span>
+        </div>
+
+        <label for="difficulty" class="form-label mt-3">Skill level</label>
+        <select class="form-select" id="difficulty">
+          <option value="" selected>Mixed — let the material decide</option>
+          <option value="foundational">Foundational — a few weeks with MongoDB</option>
+          <option value="intermediate">Intermediate — ships it in production</option>
+          <option value="advanced">Advanced — owns the deployment</option>
+        </select>
+        <div class="form-text">
+          The same scale every question is tagged with. Advanced means deeper judgement —
+          failure modes and why a recommendation holds — not obscurer trivia.
         </div>
 
         <label for="instructions" class="form-label mt-3">
@@ -434,17 +672,235 @@ function stopElapsed() {
   }
 }
 
+const panel = document.getElementById("progress-panel");
+const bar = document.getElementById("progress-bar");
+const stopButton = document.getElementById("stop-run-btn");
+const statsPanel = panel.querySelector("[data-progress-stats]");
+
+const PHASES = {
+  resolving: "Working out which documentation this badge is about…",
+  writing: "Reading chunks and writing questions…",
+  stopped: "Stopped",
+  done: "Finished",
+};
+
+function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return total + "s";
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return minutes + "m " + String(total % 60).padStart(2, "0") + "s";
+  return Math.floor(minutes / 60) + "h " + String(minutes % 60).padStart(2, "0") + "m";
+}
+
+function formatMoney(value) {
+  if (value === null || value === undefined) return "—";
+  // Sub-cent runs are normal for a short walk, so two decimals would round most of
+  // them to $0.00 and look broken.
+  return "$" + (value < 1 ? value.toFixed(3) : value.toFixed(2));
+}
+
+function formatUnitCost(value) {
+  // A question costs cents, so this needs more places than a run total: rounded to two
+  // it would read as $0.00 and be useless for comparing one run with the next.
+  if (value === null || value === undefined) return "—";
+  return "$" + value.toFixed(4);
+}
+
+function formatTokens(n) {
+  if (!n) return "0";
+  if (n < 1000) return String(n);
+  if (n < 1000000) return (n / 1000).toFixed(1) + "k";
+  return (n / 1000000).toFixed(2) + "M";
+}
+
+function setStat(name, value) {
+  const cell = panel.querySelector('[data-stat="' + name + '"]');
+  if (cell) cell.textContent = value;
+}
+
+// The panel is the run's only status window: the message that used to sit in a
+// separate alert above it now sits inside, and the panel takes the colour that alert
+// carried. Two windows for one run meant two elapsed times, one of them stale.
+function setPanelState(kind, message) {
+  panel.classList.remove("d-none", "border-info", "border-success", "border-danger");
+  if (kind) panel.classList.add("border-" + kind, "border-2");
+  const line = panel.querySelector("[data-status-line]");
+  if (line) line.textContent = message || "";
+}
+
+// Elapsed ticks in the browser against the server's start time, so it advances every
+// second instead of jumping whenever a poll happens to answer.
+function startPanelClock() {
+  const tick = () => {
+    const running = elapsedSinceStart();
+    setStat("elapsed", running === null ? "—" : formatElapsed(running));
+  };
+  tick();
+  if (elapsedTimer === null) elapsedTimer = setInterval(tick, 1000);
+}
+
+function showProgress(p) {
+  if (!p) return;
+  panel.classList.remove("d-none");
+  panel.querySelector("[data-phase]").textContent = PHASES[p.phase] || p.phase || "Working…";
+
+  // A percentage is only shown once the page set is known — while resolving, the walk
+  // genuinely does not know how much work there is, and inventing a number would be
+  // worse than admitting it.
+  const known = p.percent !== null && p.percent !== undefined;
+  bar.style.width = (known ? p.percent : 100) + "%";
+  bar.textContent = known ? p.percent.toFixed(1) + "%" : "";
+  bar.classList.toggle("bg-secondary", !known);
+
+  // The whole job, when there is more than one badge in it. With one badge the job and
+  // the badge are the same thing, and two identical bars would be worse than one.
+  const all = p.overall || {};
+  const overallPanel = panel.querySelector("[data-overall]");
+  const many = (all.badge_count || 0) > 1;
+  overallPanel.classList.toggle("d-none", !many);
+  if (many) {
+    const overallBar = panel.querySelector("[data-overall-bar]");
+    const pct = all.percent || 0;
+    overallBar.style.width = pct + "%";
+    overallBar.textContent = pct.toFixed(1) + "%";
+    panel.querySelector("[data-overall-headline]").textContent =
+      all.badges_done + " / " + all.badge_count + " badges done";
+    setStat("all-questions", String(all.inserted || 0));
+    setStat("all-projected-questions", all.projected_questions === null
+      || all.projected_questions === undefined ? "—" : all.projected_questions.toLocaleString());
+    setStat("all-pages", all.projected_chunks
+      ? (all.pages_done || 0) + " of ~" + all.projected_chunks
+      : String(all.pages_done || 0));
+    setStat("all-spent", formatMoney(all.dollars));
+    setStat("all-projected", formatMoney(all.projected_dollars));
+    setStat("all-per-question", formatUnitCost(all.dollars_per_question));
+    setStat("all-qpm", all.questions_per_minute === null || all.questions_per_minute === undefined
+      ? "—" : all.questions_per_minute.toFixed(1));
+    setStat("all-eta", formatDuration(all.eta_seconds));
+  }
+
+  // A multi-badge run walks each badge in turn, so the bar restarts per badge. Saying
+  // which badge of how many is what stops that reading as the run having started over.
+  const ofBadges = p.badge_count > 1
+    ? " · badge " + p.badge_index + " of " + p.badge_count
+    : "";
+  panel.querySelector("[data-headline]").textContent = (known
+    ? p.pages_done + " / " + p.pages_total + " sections" +
+      (p.badge_name ? " · " + p.badge_name : "")
+    : (p.badge_name || "")) + ofBadges;
+
+  setStat("pages", p.pages_total ? p.pages_done + " of " + p.pages_total : String(p.pages_done || 0));
+  setStat("questions", String(p.inserted || 0)
+    + (p.failure_count ? " · " + p.failure_count + " chunk(s) failed" : ""));
+  setStat("rate", p.pages_per_minute ? p.pages_per_minute.toFixed(1) + "/min" : "—");
+  setStat("per-page", p.questions_per_page_actual === null || p.questions_per_page_actual === undefined
+    ? "—" : p.questions_per_page_actual.toFixed(1));
+  if (elapsedTimer === null) {
+    // Only when the browser is not ticking — a page opened after the run finished has
+    // no start time to count from, and the server's figure is the honest one.
+    setStat("elapsed", formatDuration(p.elapsed_seconds));
+  }
+  setStat("eta", p.phase === "done" || p.phase === "stopped" ? "—" : formatDuration(p.eta_seconds));
+
+  const cost = p.cost || {};
+  setStat("qpm", p.questions_per_minute === null || p.questions_per_minute === undefined
+    ? "—" : p.questions_per_minute.toFixed(1));
+  setStat("per-question", formatUnitCost(cost.dollars_per_question));
+  setStat("spent", formatMoney(cost.dollars));
+  setStat("projected", p.phase === "done" || p.phase === "stopped"
+    ? "—" : formatMoney(cost.projected_dollars));
+  setStat("tokens", cost.calls
+    ? formatTokens(cost.input_tokens) + " in · " + formatTokens(cost.output_tokens)
+      + " out · " + cost.calls + " call(s)"
+      + (cost.cache_read_tokens ? " · " + formatTokens(cost.cache_read_tokens) + " cached" : "")
+    : "—");
+
+  setStat("current-page", p.current_page
+    ? "Reading: " + (p.current_page.title || p.current_page.url)
+    : (p.pages_available !== null && p.pages_available !== undefined
+        ? p.pages_available + " chunk(s) not yet written from remain for this badge"
+        : "—"));
+}
+
+// A walk stores questions section by section over many minutes, so the list a reader is
+// looking at goes stale while they watch it being filled. The count is polled and the page
+// reloaded when it grows — reloaded rather than patched in JS, because the question card is
+// a Jinja template and rebuilding it here would be a second copy of it to keep in step.
+let knownQuestionCount = null;
+
+// Counted for the view on screen, not the whole collection: an unfiltered count would
+// reload a badge-filtered list whenever any other badge gained a question, which during a
+// multi-badge run is most of the time.
+const COUNT_QUERY = new URLSearchParams(
+  Object.entries({
+    skill_badge: "{{ badge_filter }}",
+    category: "{{ category_filter }}",
+  }).filter(([, value]) => value)
+).toString();
+
+async function showNewQuestions() {
+  const response = await fetch(API + "/count" + (COUNT_QUERY ? "?" + COUNT_QUERY : ""));
+  if (!response.ok) return;
+  const {count} = await response.json();
+  if (knownQuestionCount === null) {
+    knownQuestionCount = count;
+    return;
+  }
+  if (count <= knownQuestionCount) return;
+  // Not while a dialog is open or the tab is hidden: pulling the page out from under
+  // someone reading a delete confirmation is worse than a slightly stale list.
+  if (document.querySelector(".modal.show") || document.hidden) return;
+  window.location.reload();
+}
+
 async function pollStatus() {
   const response = await fetch(API + "/generate/status");
   const state = await response.json();
   adoptServerClock(state);
-  if (state.running) {
-    showAlert("info", "Writing questions — this takes a few minutes…", {timed: true});
-    setTimeout(pollStatus, 3000);
+  showProgress(state.progress);
+  // A generation run and a duplicate sweep share one run slot, so a sweep started on
+  // the other screen shows up here. It is not this screen's work and is not reported
+  // as such: it is named, with a way to go and watch it, and nothing else.
+  const sweeping = state.kind === "duplicate-sweep";
+  if (state.running && sweeping) {
+    stopButton.classList.add("d-none");
+    statsPanel.classList.add("d-none");
+    showAlert("info", "A duplicate sweep is running. Watch it on the duplicates screen.");
+    const link = document.createElement("a");
+    link.href = "/duplicates";
+    link.className = "ms-2";
+    link.textContent = "Open duplicates";
+    alertBox.append(link);
+    panel.classList.add("d-none");
+    setTimeout(pollStatus, 2000);
     return;
   }
+  if (state.running) {
+    stopButton.classList.remove("d-none");
+    statsPanel.classList.remove("d-none");
+    alertBox.classList.add("d-none");
+    setPanelState("info", "Writing questions — you can leave this page open and come back.");
+    startPanelClock();
+    await showNewQuestions();
+    panel.classList.remove("d-none");
+    setTimeout(pollStatus, 2000);
+    return;
+  }
+  // A sweep that finished elsewhere leaves its result behind; this screen has nothing
+  // to say about it and reloading for it would be a page turn nobody asked for.
+  if (sweeping) { stopElapsed(); return; }
+  stopButton.classList.add("d-none");
+  statsPanel.classList.remove("d-none");
+  stopElapsed();
+  bar.classList.remove("progress-bar-animated");
+  // The finished run carries the final figures, which the last progress snapshot may
+  // predate.
+  if (state.last_result) showProgress(state.last_result);
   if (state.last_error) {
-    showAlert("danger", "Run failed: " + state.last_error);
+    const what = "Run failed: " + state.last_error;
+    setPanelState("danger", what);
+    showAlert("danger", what);
     if (state.last_traceback) {
       const details = document.createElement("details");
       details.className = "mt-2";
@@ -464,7 +920,9 @@ async function pollStatus() {
     ? elapsedSinceStart(state.finished_at * 1000)
     : elapsedSinceStart();
   const took = duration === null ? "" : " Took " + formatElapsed(duration) + ".";
-  showAlert("success", "Run finished." + took + " Reloading…");
+  if (duration !== null) setStat("elapsed", formatElapsed(duration));
+  alertBox.classList.add("d-none");
+  setPanelState("success", "Run finished." + took + " Reloading…");
   window.location.reload();
 }
 
@@ -478,9 +936,84 @@ document.querySelectorAll("[data-filter]").forEach((select) => {
     } else {
       url.searchParams.delete(select.dataset.filter);
     }
+    // Back to the first page: page 7 of the old result is not page 7 of the new one,
+    // and is frequently past the end of it.
+    url.searchParams.delete("page");
     window.location.assign(url.toString());
   });
 });
+
+// Dismissing clears the server's copy, not just this page's: rendered from run state,
+// the summary would come back on the next reload. Nothing is lost — every finished run
+// is recorded in its own collection.
+const dismissButton = document.getElementById("dismiss-result-btn");
+if (dismissButton) {
+  dismissButton.addEventListener("click", async () => {
+    const alert = dismissButton.closest("[data-last-result]");
+    if (alert) alert.classList.add("d-none");
+    await fetch(API + "/generate/dismiss", {method: "POST"});
+  });
+}
+
+stopButton.addEventListener("click", async () => {
+  stopButton.disabled = true;
+  stopButton.textContent = "Stopping…";
+  const response = await fetch(API + "/generate/stop", {method: "POST"});
+  if (!response.ok && response.status !== 409) {
+    showAlert("danger", "Could not stop the run (HTTP " + response.status + ").");
+    stopButton.disabled = false;
+    stopButton.textContent = "Stop after this page";
+  }
+});
+
+// Copying an identifier, so it can be pasted into a message, a ticket, or back into the
+// search box. The chip briefly says so rather than opening a dialog for a trivial action.
+document.querySelectorAll("[data-copy-id]").forEach((chip) => {
+  chip.addEventListener("click", async () => {
+    const id = chip.dataset.copyId;
+    const shown = chip.textContent;
+    try {
+      await navigator.clipboard.writeText(id);
+      chip.textContent = "copied";
+    } catch {
+      // Clipboard access is refused outside a secure context; selecting the full id is
+      // the fallback, so it can still be copied by hand.
+      chip.textContent = id;
+    }
+    setTimeout(() => { chip.textContent = shown; }, 1200);
+  });
+});
+
+// What the numbers on the form add up to. The budget applies to every selected badge,
+// so the total is the product — which is the thing that surprised an author who selected
+// everything and read a hint written for one badge.
+const badgePicker = document.getElementById("badge-picker");
+const maxPagesInput = document.getElementById("max-pages");
+const perPageInput = document.getElementById("per-page");
+const projection = document.querySelector("[data-projection-text]");
+
+function updateProjection() {
+  const badges = badgePicker.selectedOptions.length;
+  const pages = Number(maxPagesInput.value) || 0;
+  const perPage = Number(perPageInput.value) || 0;
+  if (badges === 0) {
+    projection.textContent = "Pick a badge to see what a run would cover.";
+    return;
+  }
+  const pagesTotal = badges * pages;
+  const questions = pagesTotal * perPage;
+  projection.textContent =
+    badges + (badges === 1 ? " badge × " : " badges × ") + pages + " chunks × " +
+    perPage + " per chunk — up to " + questions.toLocaleString() + " questions from " +
+    pagesTotal.toLocaleString() + " chunks. A ceiling, not an estimate: chunks already " +
+    "written from are skipped, and stopping ends the whole run.";
+}
+
+[badgePicker, maxPagesInput, perPageInput].forEach((control) => {
+  control.addEventListener("input", updateProjection);
+  control.addEventListener("change", updateProjection);
+});
+updateProjection();
 
 document.getElementById("start-run").addEventListener("click", async () => {
   const picker = document.getElementById("badge-picker");
@@ -495,8 +1028,9 @@ document.getElementById("start-run").addEventListener("click", async () => {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({
       skill_badges: slugs,
-      count: Number(document.getElementById("count").value),
-      source_material: document.getElementById("source-material").value.trim() || null,
+      max_pages: Number(document.getElementById("max-pages").value),
+      questions_per_page: Number(document.getElementById("per-page").value),
+      difficulty: document.getElementById("difficulty").value || null,
       extra_instructions: document.getElementById("instructions").value.trim() || null,
     }),
   });
@@ -511,65 +1045,57 @@ document.getElementById("start-run").addEventListener("click", async () => {
   pollStatus();
 });
 
-async function startSweep(dryRun) {
-  showAlert("info", dryRun
-    ? "Comparing stored questions — nothing will be deleted…"
-    : "Comparing stored questions for duplicates…", {timed: true});
-  const response = await fetch(API + "/duplicates/sweep?dry_run=" + (dryRun ? "true" : "false"),
-    {method: "POST"});
-  if (response.status === 409) {
-    showAlert("warning", "A run is already in progress.");
-    return;
-  }
-  if (!response.ok) {
-    showAlert("danger", "Could not start the sweep (HTTP " + response.status + ").");
-    return;
-  }
-  pollStatus();
+// Deleting is the only irreversible act on this screen and the only editorial one,
+// so it is guarded twice over: the question is shown again in the dialog, and the
+// word has to be typed. A single misplaced click cannot lose a question.
+const deleteModalEl = document.getElementById("delete-modal");
+const deleteModal = new bootstrap.Modal(deleteModalEl);
+const deleteConfirmInput = document.getElementById("delete-confirm");
+const confirmDeleteButton = document.getElementById("confirm-delete");
+let pendingDeleteId = null;
+
+function resetDeleteDialog() {
+  deleteConfirmInput.value = "";
+  confirmDeleteButton.disabled = true;
+  confirmDeleteButton.textContent = "Delete permanently";
 }
 
-document.getElementById("sweep-btn").addEventListener("click", () => {
-  if (!window.confirm(
-    "Find duplicates and delete the clear ones?\n\nDeletions cannot be undone. " +
-    "Use Dry run first if the threshold has not been checked against real data."
-  )) return;
-  startSweep(false);
+deleteConfirmInput.addEventListener("input", () => {
+  confirmDeleteButton.disabled =
+    deleteConfirmInput.value.trim().toLowerCase() !== "delete";
 });
 
-document.getElementById("sweep-dry-run-btn").addEventListener("click", () => startSweep(true));
-
-document.querySelectorAll(".js-status").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const id = button.closest("[data-question-id]").dataset.questionId;
-    button.disabled = true;
-    const response = await fetch(API + "/" + encodeURIComponent(id) + "/status", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({status: button.dataset.status}),
-    });
-    if (!response.ok) {
-      button.disabled = false;
-      showAlert("danger", "Could not update the question (HTTP " + response.status + ").");
-      return;
-    }
-    window.location.reload();
-  });
+deleteModalEl.addEventListener("hidden.bs.modal", () => {
+  pendingDeleteId = null;
+  resetDeleteDialog();
 });
+
+deleteModalEl.addEventListener("shown.bs.modal", () => deleteConfirmInput.focus());
 
 document.querySelectorAll(".js-delete").forEach((button) => {
-  button.addEventListener("click", async () => {
-    const id = button.closest("[data-question-id]").dataset.questionId;
-    if (!window.confirm(
-      "Permanently delete this question?\n\nThis cannot be undone — nothing can " +
-      "re-create it. Reject it instead if you may want it back."
-    )) return;
-    const response = await fetch(API + "/" + encodeURIComponent(id), {method: "DELETE"});
-    if (!response.ok) {
-      showAlert("danger", "Could not delete the question (HTTP " + response.status + ").");
-      return;
-    }
-    window.location.reload();
+  button.addEventListener("click", () => {
+    pendingDeleteId = button.closest("[data-question-id]").dataset.questionId;
+      // textContent, never innerHTML: a stem is model-written text.
+    deleteModalEl.querySelector("[data-delete-stem]").textContent =
+      button.dataset.stem || "";
+    resetDeleteDialog();
+    deleteModal.show();
   });
+});
+
+confirmDeleteButton.addEventListener("click", async () => {
+  if (!pendingDeleteId) return;
+  confirmDeleteButton.disabled = true;
+  confirmDeleteButton.textContent = "Deleting…";
+  const response = await fetch(
+    API + "/" + encodeURIComponent(pendingDeleteId), {method: "DELETE"}
+  );
+  if (!response.ok) {
+    deleteModal.hide();
+    showAlert("danger", "Could not delete (HTTP " + response.status + ").");
+    return;
+  }
+  window.location.reload();
 });
 
 // A run may already be going when the page loads (started elsewhere, or a reload).

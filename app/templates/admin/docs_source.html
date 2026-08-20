@@ -3,6 +3,8 @@
 {% block title %}{{ source }} — Documentation{% endblock %}
 
 {% block content %}
+{% import "_ui.html" as ui %}
+
 <nav aria-label="breadcrumb">
   <ol class="breadcrumb small" data-breadcrumb="true">
     <li class="breadcrumb-item"><a href="/admin/docs">Documentation corpus</a></li>
@@ -12,24 +14,27 @@
   </ol>
 </nav>
 
-<div class="d-flex justify-content-between align-items-start mb-3">
+{% call ui.page_header("Pages in this source") %}{% endcall %}
+
+<p class="meta mb-3">
+  <a href="{{ source }}" target="_blank" rel="noopener" class="font-monospace">{{ source }}</a>
+</p>
+
+{% call ui.filter_bar() %}
   <div>
-    <h1 class="h4 mb-1">Pages in this source</h1>
-    <p class="text-body-secondary small mb-0">
-      <a href="{{ source }}" target="_blank" rel="noopener" class="font-monospace">{{ source }}</a>
-    </p>
+    <label class="form-label" for="source-filter">Filter by title or URL</label>
+    <form method="get" action="/admin/docs/source" class="d-flex gap-1">
+      <input type="hidden" name="source" value="{{ source }}">
+      <input class="form-control" type="search" name="q" id="source-filter" value="{{ query }}"
+             style="min-width: 18rem;">
+      <button class="btn btn-outline-primary" type="submit">Filter</button>
+      {% if query %}
+      <a class="btn btn-outline-secondary"
+         href="/admin/docs/source?source={{ source | urlencode }}" data-clear-filter="true">Clear</a>
+      {% endif %}
+    </form>
   </div>
-  <form method="get" action="/admin/docs/source" class="d-flex gap-1">
-    <input type="hidden" name="source" value="{{ source }}">
-    <input class="form-control form-control-sm" type="search" name="q" value="{{ query }}"
-           placeholder="filter by title or URL" style="min-width: 18rem;">
-    <button class="btn btn-sm btn-outline-primary" type="submit">Filter</button>
-    {% if query %}
-    <a class="btn btn-sm btn-outline-secondary"
-       href="/admin/docs/source?source={{ source | urlencode }}" data-clear-filter="true">Clear</a>
-    {% endif %}
-  </form>
-</div>
+{% endcall %}
 
 {% if storage_error %}
 <div class="alert alert-danger">
@@ -38,7 +43,7 @@
 </div>
 {% endif %}
 
-<p class="text-body-secondary small" data-page-count="true">
+<p class="meta" data-page-count="true">
   Showing {{ shown }} of {{ total }} page(s){% if query %} matching “{{ query }}”{% endif %}.
   {% if shown < total and not query %}
   Refine with the filter to reach the rest.

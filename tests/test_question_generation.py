@@ -5,6 +5,8 @@ recorded requirement and are never edited: if behavior must change, the
 program changes, or a new test is added alongside with its own block.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from app.models.question import (
@@ -937,3 +939,977 @@ def test_generation_does_not_screen_for_duplicates(
     assert result["inserted"] == 1
     assert "duplicates_dropped" not in result
     assert "duplicate_check_error" not in result
+
+
+# --- authoring from the stored documentation corpus ---
+
+
+def test_the_stored_documentation_is_given_to_the_author(fake_client, settings):
+    """
+    Intent: The corpus exists so a run reads its source material out of the database
+        instead of fetching it mid-run: a run that searches the web spends most of its
+        wall clock waiting, and two runs on the same badge see different source text.
+        Material that is retrieved but not put in the prompt is material not used.
+    Success: The retrieved page's text and its source URL both reach the authoring
+        prompt.
+    Feature: Question generation — authoring from the stored documentation corpus.
+    """
+    client = fake_client(stream_messages=[FakeMessage("draft")])
+    pages = [{"url": "https://x/a.md", "title": "Indexes", "text": "Define an index."}]
+    question_generation.author_questions(
+        [BADGE], 1, corpus_pages=pages, settings=settings
+    )
+    prompt = client.messages.stream_calls[0]["messages"][0]["content"]
+    assert "Define an index." in prompt
+    assert "https://x/a.md" in prompt
+
+
+def test_the_web_is_not_searched_when_the_corpus_supplied_material(fake_client, settings):
+    """
+    Intent: Left available alongside retrieved pages, the web tools get used anyway,
+        which puts back the minutes of waiting and the run-to-run variation that
+        reading from the corpus removes. Grounding in the corpus only holds if the
+        web is not also on offer.
+    Success: An authoring turn given corpus pages is passed no tools.
+    Feature: Question generation — the corpus replaces web research.
+    """
+    client = fake_client(stream_messages=[FakeMessage("draft")])
+    pages = [{"url": "https://x/a.md", "title": "Indexes", "text": "Define an index."}]
+    question_generation.author_questions(
+        [BADGE], 1, corpus_pages=pages, settings=settings
+    )
+    assert client.messages.stream_calls[0]["tools"] == []
+
+
+def test_an_empty_corpus_falls_back_to_researching_the_web(fake_client, settings):
+    """
+    Intent: A badge whose documentation has not been crawled yet is a reason to
+        research the slow way, not a reason to refuse to write questions. The
+        fallback has to be the old behaviour, intact.
+    Success: With no corpus pages, the authoring turn gets the web search and fetch
+        tools and is told to search.
+    Feature: Question generation — falling back to web research.
+    """
+    client = fake_client(stream_messages=[FakeMessage("draft")])
+    question_generation.author_questions([BADGE], 1, corpus_pages=[], settings=settings)
+    call = client.messages.stream_calls[0]
+    assert [t["type"] for t in call["tools"]] == [
+        settings.web_search_tool,
+        settings.web_fetch_tool,
+    ]
+    assert "Search and fetch as needed" in call["messages"][0]["content"]
+
+
+def test_a_run_reads_the_corpus_before_authoring(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, settings
+):
+    """
+    Intent: Retrieval that is not wired into the run is retrieval that never happens —
+        the screen would report a normal run while every question was still written
+        from a web search.
+    Success: An end-to-end run puts a stored documentation page into the authoring
+        prompt.
+    Feature: Question generation — end-to-end run reads the corpus.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    from app.repositories import doc_pages
+
+    doc_pages.upsert_pages([{
+        "url": "https://x/a.md",
+        "source": "ix-1",
+        "title": "Atlas Search indexes",
+        "text": "Define an Atlas Search index.",
+    }])
+    client = fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
+    question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    assert "Define an Atlas Search index." in client.messages.stream_calls[0]["messages"][0]["content"]
+
+
+def test_a_run_reports_which_pages_it_wrote_from(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, settings
+):
+    """
+    Intent: A question is only worth as much as it is checkable. Without knowing which
+        pages a run read, a reviewer cannot tell a question grounded in current
+        documentation from one written out of the model's memory.
+    Success: The run summary lists the source pages, and records that the web was not
+        researched.
+    Feature: Question generation — the source material of a run is reported.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    from app.repositories import doc_pages
+
+    doc_pages.upsert_pages([{
+        "url": "https://x/a.md",
+        "source": "ix-1",
+        "title": "Atlas Search indexes",
+        "text": "Define an Atlas Search index.",
+    }])
+    fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
+    result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    assert result["source_pages"] == [{"url": "https://x/a.md", "title": "Atlas Search indexes"}]
+    assert result["researched_the_web"] is False
+
+
+def test_a_run_with_no_stored_documentation_says_it_researched_the_web(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, settings
+):
+    """
+    Intent: A run that fell back to the web is slower and not repeatable, and the
+        remedy — refresh the corpus — is only actionable if the fallback is visible
+        rather than silent.
+    Success: With an empty corpus the run reports no source pages and records that it
+        researched the web.
+    Feature: Question generation — the fallback to web research is reported.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
+    result = question_generation.generate_questions(["atlas-search"], 1, settings=settings)
+    assert result["source_pages"] == []
+    assert result["researched_the_web"] is True
+
+
+# --- the badge-scoped page walk ---
+
+
+@pytest.fixture
+def walk_settings(settings):
+    """Settings with the page-set relevance floor open.
+
+    The floor is calibrated against the real Atlas index, where a page plainly about a
+    badge scores 0.70-0.86. The in-memory stand-in approximates similarity with word
+    overlap on short fixture text, which lands well below that — so a walk test using
+    the production floor would resolve to no pages at all and test nothing. The floor
+    itself is exercised in tests/test_doc_retrieval.py.
+    """
+    return replace(settings, doc_page_set_score_floor=0.0)
+
+
+PAGE = {
+    "url": "https://x/a.md",
+    "title": "Atlas Search indexes",
+    "source": "ix-1",
+    "text": "An Atlas Search index defines how fields are analysed.",
+}
+
+CHUNK = {
+    "chunk_id": "c1",
+    "url": "https://x/a.md",
+    "anchor": "atlas-search-indexes",
+    "source": "ix-1",
+    "page_title": "Atlas Search indexes",
+    "heading": "Atlas Search indexes",
+    "heading_path": ["Atlas Search"],
+    "heading_level": 2,
+    "ordinal": 0,
+    "text": "An Atlas Search index defines how fields are analysed.",
+    "embed_text": "Atlas Search indexes\n\nAn Atlas Search index defines how fields are analysed.",
+    "chars": 53,
+    "bytes": 53,
+}
+
+
+def seed_corpus(pages, settings):
+    """Store pages and the chunks derived from them, as a refresh does.
+
+    Chunked through the real splitter rather than with hand-written fixtures, so a walk
+    test exercises the same shape production produces — a chunk whose metadata the test
+    invented would let the walk pass while the refresh stored something else.
+    """
+    from app.repositories import doc_chunks, doc_pages
+    from app.services import doc_chunking
+
+    doc_pages.upsert_pages(pages)
+    for page in pages:
+        stored = doc_pages.page_by_url(page["url"])
+        doc_chunks.replace_page_chunks(
+            page["url"], doc_chunking.split_page(stored, settings=settings)
+        )
+
+
+def walk_run(questions=ONE_QUESTION) -> dict:
+    """A page walk makes one parse() call per page, against the question schema."""
+    return {GeneratedQuestions: questions}
+
+
+def test_a_page_and_its_badge_reach_the_authoring_call(fake_client, walk_settings):
+    """
+    Intent: The page is the source and the badge is the scope. If either is missing from
+        the prompt the model writes from memory or outside the syllabus, which is the
+        whole thing the walk exists to prevent.
+    Success: The page text, its source URL and the badge slug all reach the prompt.
+    Feature: Question generation — one page authored at a time.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "An Atlas Search index defines how fields are analysed." in prompt
+    assert "https://x/a.md" in prompt
+    assert "atlas-search" in prompt
+
+
+def test_the_badge_catalog_reaches_the_authoring_call(fake_client, walk_settings):
+    """
+    Intent: Badge attribution is folded into the same call rather than run as a separate
+        pass — the model already holds the question, and re-sending every question to a
+        second pass pays output tokens twice to decide something it could have decided
+        while writing. That only works if the catalog is in front of it.
+    Success: Every badge slug in the catalog is offered in the prompt.
+    Feature: Question generation — attribution folded into page authoring.
+    """
+    other = {"slug": "indexing", "name": "Indexing", "description": "Index design."}
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE, other], settings=walk_settings)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "indexing" in prompt and "atlas-search" in prompt
+
+
+def test_page_authoring_is_one_pass_not_two(fake_client, walk_settings):
+    """
+    Intent: The badge-wide path drafts prose then extracts it, which is worth it for a
+        research turn. Reading one page needs no tools and no research, so a second pass
+        would only pay output tokens again to restate questions already written.
+    Success: One page produces questions in a single call, with no web tools.
+    Feature: Question generation — a single structured pass per page.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    assert len(client.messages.parse_calls) == 1
+    assert client.messages.stream_calls == []
+    assert "tools" not in client.messages.parse_calls[0]
+
+
+def test_page_authoring_effort_is_tuned_separately(fake_client, walk_settings):
+    """
+    Intent: Output tokens — thinking most of all — dominate the cost of a walk, and
+        reading one page to write three questions is a bounded task rather than the
+        open-ended research the badge-wide path does. Inheriting that path's effort would
+        be the single largest avoidable cost at thousands of questions.
+    Success: The call uses the configured page-authoring effort.
+    Feature: Question generation — effort tuned for page authoring.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    call = client.messages.parse_calls[0]
+    assert call["output_config"]["effort"] == walk_settings.page_author_effort
+
+
+def test_a_truncated_page_authoring_response_is_reported(fake_client, walk_settings):
+    """
+    Intent: A pass that returns no structured output has produced nothing. Treated as an
+        empty list it would look like a page with no questions in it, and the walk would
+        step over material that is actually fine.
+    Success: Missing structured output raises rather than returning nothing.
+    Feature: Question generation — a failed page pass is not silent.
+    """
+    client = fake_client()
+    client.messages.parsed = FakeParsedResponse(None, stop_reason="max_tokens")
+    client.messages.parsed_by_format = None
+    with pytest.raises(RuntimeError, match="no structured output"):
+        question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+
+
+def test_every_question_cites_the_page_it_came_from(fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings):
+    """
+    Intent: The citation is load-bearing twice over: it is how a reviewer checks a
+        question without re-reading the corpus, and it is what "pages already written
+        from" is derived from — so a walk that lost it would repeat itself forever.
+        Too important to leave to the model remembering to include it.
+    Success: A stored question carries the URL of the page it was written from, even
+        though the model returned none.
+    Feature: Question generation — the source page is always recorded.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE], walk_settings)
+    fake_client(parsed_by_format=walk_run(GeneratedQuestions(questions=[make(source_urls=[])])))
+    question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    assert fake_questions.docs[0]["source_urls"] == ["https://x/a.md"]
+
+
+def test_a_walk_stores_questions_page_by_page(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A walk runs for many minutes. Storing only at the end would mean a failure on
+        page eighteen discarded the questions from the first seventeen — an hour of work
+        and spend lost to one bad page.
+    Success: Questions from each page are stored, and the summary counts the pages walked.
+    Feature: Question generation — a walk stores as it goes.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus(
+        [PAGE, {**PAGE, "url": "https://x/b.md", "title": "Atlas Search analysers"}],
+        walk_settings,
+    )
+    fake_client(parsed_by_format=walk_run())
+    result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    assert result["pages_done"] == 2
+    assert result["inserted"] == 2
+    assert len(fake_questions.docs) == 2
+
+
+def test_a_walk_is_bounded_by_its_page_cap(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: The cap is how an author trades questions against how long they will wait,
+        and it is the only bound on a run's spend. Ignored, a badge with 300 pages would
+        run for hours on a request the author thought was small.
+    Success: A walk reads no more pages than the cap allows.
+    Feature: Question generation — a bounded walk.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([{**PAGE, "url": f"https://x/{n}.md"} for n in range(6)], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+    result = question_generation.generate_for_badge(
+        "atlas-search", max_pages=2, settings=walk_settings
+    )
+    assert result["pages_done"] == 2
+
+
+def test_one_bad_page_does_not_end_the_walk(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A refusal or a truncated response on one page says nothing about the next,
+        and a badge's walk is worth far more than any single page in it. Raising would
+        throw away everything after the first bad page.
+    Success: A failing page is recorded with its reason and the walk continues.
+    Feature: Question generation — a walk steps over a failing page.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+    calls = {"n": 0}
+    original = question_generation.questions_from_chunk
+
+    def flaky(chunk, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("refused")
+        return original(chunk, *args, **kwargs)
+
+    question_generation.questions_from_chunk = flaky
+    try:
+        result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    finally:
+        question_generation.questions_from_chunk = original
+    assert result["failure_count"] == 1
+    assert "refused" in result["failures"][0]["error"]
+    assert result["inserted"] == 1
+
+
+def test_a_walk_reports_progress_page_by_page(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A walk of 25 pages takes many minutes. Without per-page progress the screen
+        can only show a spinner, and an author cannot tell a slow run from a stuck one.
+    Success: A progress callback is given the pages done, the total and the running
+        question count.
+    Feature: Question generation — a walk reports its progress.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+    seen = []
+    question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    # Reported more than once per page — before the set is resolved, as each page is
+    # named, and as each finishes — so this checks the sequence advances and ends
+    # complete rather than pinning the number of snapshots.
+    assert [s["pages_done"] for s in seen] == sorted(s["pages_done"] for s in seen)
+    assert seen[0]["pages_done"] == 0
+    assert seen[-1]["pages_done"] == 2
+    assert seen[-1]["pages_total"] == 2
+    assert seen[-1]["inserted"] == 2
+    assert seen[-1]["phase"] == "done"
+
+
+def test_a_walk_can_be_stopped(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A run of 200 pages is a long commitment and an author who started the wrong
+        one should not have to wait it out or restart the server. Stopping must keep what
+        has been written rather than discarding it.
+    Success: A walk asked to stop reports it stopped early and keeps its questions.
+    Feature: Question generation — a walk can be stopped without losing work.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+    calls = {"n": 0}
+
+    def stop() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    result = question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, stop=stop
+    )
+    assert result["stopped_early"] is True
+    assert result["inserted"] == 1
+
+
+def test_a_badge_with_no_documentation_falls_back_to_research(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A badge whose material was never crawled is a reason to research the slow
+        way, not a reason to refuse. The walk cannot walk an empty set, so the old
+        single-prompt path is what answers instead — and the author has to be told,
+        because that run is slower and not repeatable.
+    Success: With no pages, the run researches instead and says so.
+    Feature: Question generation — an uncrawled badge still produces questions.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    fake_client(stream_messages=[FakeMessage("draft")], parsed_by_format=full_run())
+    result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    assert result["fell_back_to_research"] is True
+    assert result["inserted"] == 1
+
+
+def test_walking_an_unknown_badge_is_refused(fake_collection, fake_questions, walk_settings):
+    """
+    Intent: An unknown slug cannot be resolved to a page set, and questions filed under
+        it would be findable from no badge at all. Better refused than stored somewhere
+        nothing looks.
+    Success: A slug matching no stored badge raises before anything is spent.
+    Feature: Question generation — an unknown badge is refused.
+    """
+    with pytest.raises(ValueError, match="No skill badge"):
+        question_generation.generate_for_badge("not-a-badge", settings=walk_settings)
+
+
+# --- what a walk costs, and stopping it ---
+
+
+def test_a_walk_reports_what_it_has_spent(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: Cost is the reason to stop a walk, so the walk has to account for it as it
+        goes rather than only at the end. Reported from the token counts each response
+        carries, so the figure is what was spent rather than a guess at it.
+    Success: The run summary carries token counts, a call count and a dollar figure.
+    Feature: Question generation — a walk accounts for its own cost.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
+    client = fake_client(parsed_by_format=walk_run())
+    client.messages.usage = {"input_tokens": 1000, "output_tokens": 500}
+    result = question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    assert result["cost"]["calls"] == 2
+    assert result["cost"]["input_tokens"] == 2000
+    assert result["cost"]["dollars"] > 0
+
+
+def test_progress_carries_the_cost_so_far_and_the_projection(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: The stop decision has to be made while there is still something to stop, so
+        spend and the projected total both belong in the progress snapshot rather than the
+        final summary.
+    Success: A progress snapshot mid-walk reports dollars spent and a projected total.
+    Feature: Question generation — cost reported during the walk.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
+    client = fake_client(parsed_by_format=walk_run())
+    client.messages.usage = {"input_tokens": 1000, "output_tokens": 500}
+    seen = []
+    question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    mid = [s for s in seen if s["pages_done"] == 1][-1]
+    assert mid["cost"]["dollars"] > 0
+    assert mid["cost"]["projected_dollars"] > mid["cost"]["dollars"]
+
+
+def test_a_walk_names_the_page_it_is_reading(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: "Page 7 of 25" says how far along a run is; it does not say whether it is
+        working on something sensible. Naming the page is what lets an author notice a walk
+        spending its budget on material that does not belong to the badge.
+    Success: A progress snapshot names the page currently being read.
+    Feature: Question generation — the page being read is reported.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+    seen = []
+    question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    named = [s["current_page"] for s in seen if s["current_page"]]
+    assert named and named[0]["url"] == "https://x/a.md"
+    # Cleared at the end: a finished run is not still reading anything.
+    assert seen[-1]["current_page"] is None
+
+
+def test_a_walk_reports_its_phase(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: Resolving a badge to its page set happens before the total is known, so a
+        progress bar has nothing honest to show during it. A phase lets the screen say what
+        is happening instead of inventing a percentage.
+    Success: A walk reports resolving before writing, and done at the end.
+    Feature: Question generation — the phase of a walk is reported.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+    seen = []
+    question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    phases = [s["phase"] for s in seen]
+    assert phases[0] == "resolving"
+    assert "writing" in phases
+    assert phases[-1] == "done"
+
+
+def test_a_stopped_walk_reports_the_stopped_phase(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: A stopped walk and a completed one both end with a run summary. Reported as
+        done, a stopped walk would look like a badge that had run out of material, and the
+        pages still waiting would be invisible.
+    Success: A walk that was stopped ends in the stopped phase rather than done.
+    Feature: Question generation — a stopped walk is distinguishable from a finished one.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+    result = question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, stop=lambda: True
+    )
+    assert result["phase"] == "stopped"
+    assert result["stopped_early"] is True
+
+
+# --- how the questions read ---
+
+
+def test_the_author_is_told_who_the_reader_is(fake_client, walk_settings):
+    """
+    Intent: Questions that read as machine-written are not usable as they stand — the
+        audience is working software developers, and a question phrased like a technical
+        writer's abstract signals that nobody who does the job wrote it. The audience has
+        to be stated, not implied.
+    Success: The page-authoring prompt names software developers and engineers as the
+        reader.
+    Feature: Question quality — written for a developer audience.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    assert "software developer" in system
+    assert "engineer" in system
+
+
+def test_the_author_is_given_the_words_not_to_use(fake_client, walk_settings):
+    """
+    Intent: "Write naturally" does not change anything on its own; the machine-written
+        register comes from a specific and recognisable vocabulary. Naming the words is
+        what makes the instruction actionable rather than aspirational.
+    Success: The prompt bans the vocabulary that marks the register, and the stock stems
+        that go with it.
+    Feature: Question quality — the machine-written register is named and excluded.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    for word in ("leverage", "utilize", "seamless", "crucial", "delve"):
+        assert word in system
+    assert "Which of the following best describes" in system
+
+
+def test_the_author_is_told_to_be_specific(fake_client, walk_settings):
+    """
+    Intent: The surest sign a question was not written by someone who does the work is
+        that it names nothing — "the appropriate configuration" instead of the actual flag.
+        Specificity is both what makes a question read as human and what makes it test
+        anything.
+    Success: The prompt requires real stage names, commands, flags and errors, and a
+        second-person situation.
+    Feature: Question quality — concrete situations over abstract ones.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    assert "second person" in system
+    assert "Name real things" in system
+    assert "the appropriate configuration" in system
+
+
+def test_the_rationales_are_held_to_the_same_voice(fake_client, walk_settings):
+    """
+    Intent: The rationale is what a reviewer reads when deciding whether a question is
+        sound, and what an author reads when deciding whether a distractor is fair. Left
+        out of the style rules it reverts to textbook prose, and the question reads as
+        machine-written even when the stem does not.
+    Success: The prompt applies the same voice to option rationales.
+    Feature: Question quality — rationales in the same voice as the question.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    assert "rationale" in system and "same voice" in system
+
+
+# --- the kinds of question asked ---
+
+
+def test_the_author_is_told_not_to_make_everything_a_scenario(fake_client, walk_settings):
+    """
+    Intent: Observed on real output: every question opened by painting a situation. A page
+        of scenarios is exhausting to read and tests one narrow skill, and a page that
+        simply states how something works does not need a story wrapped round it. The
+        instruction has to say so, because scenario-writing is the model's default.
+    Success: The prompt tells the author to vary the form and not to force a scenario.
+    Feature: Question quality — a mix of question forms.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    assert "Do not write every question as a scenario" in system
+    assert "Do not force a scenario" in system
+
+
+def test_the_author_is_given_the_forms_to_choose_between(fake_client, walk_settings):
+    """
+    Intent: "Vary the form" is not actionable without naming the alternatives — the model
+        needs to know that factual, procedural, best-practice, diagnostic and comparative
+        questions are all wanted, or it will vary only the wording of a scenario.
+    Success: The prompt names each form and says what it is right for.
+    Feature: Question quality — the question forms are named.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    for form in ("Situational", "Factual", "Procedural", "Best practice", "Diagnostic", "Comparative"):
+        assert form in system
+
+
+def test_best_practices_are_asked_directly(fake_client, walk_settings):
+    """
+    Intent: Best practice is exactly where a scenario adds least — a practitioner
+        recognises "which index order should you use" faster stated plainly than buried in
+        a story about a slow query. Left unsaid, these get dressed up like everything else.
+    Success: The prompt requires best-practice questions to be asked directly.
+    Feature: Question quality — best practices stated plainly.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    system = client.messages.parse_calls[0]["system"]
+    assert "Ask these directly" in system
+    assert "a direct question is not a lesser question" in system
+
+
+def test_the_form_is_chosen_by_the_material(fake_client, walk_settings):
+    """
+    Intent: A fixed quota of forms per page would be as mechanical as all-scenarios — a page
+        describing a sequence should yield procedural questions, and one defining behaviour
+        should yield factual ones. The material has to drive the choice.
+    Success: The prompt tells the author to let the page decide the form.
+    Feature: Question quality — the form follows the material.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    assert "Let the material choose the form" in client.messages.parse_calls[0]["system"]
+
+
+# --- throughput and unit cost during a walk ---
+
+
+def test_a_walk_reports_questions_per_minute(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: Pages per minute describes the machinery; questions per minute describes the
+        output, and it is what an author plans a session against. Reported only at the end it
+        arrives too late to decide whether to let a run continue.
+    Success: The finished run and its progress snapshots both carry a questions-per-minute
+        figure.
+    Feature: Question generation — throughput reported in questions per minute.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+    seen = []
+    result = question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    assert result["questions_per_minute"] is not None
+    assert any(s.get("questions_per_minute") is not None for s in seen)
+
+
+def test_a_walk_reports_what_each_question_is_costing(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: Spend so far does not say whether a run is going well — a big number may be fine
+        if it is producing a lot. Cost per question is the figure that makes stopping an
+        informed decision, and during a run the running average is also the best projection
+        of what the rest will cost.
+    Success: Progress and the finished run both report dollars per question.
+    Feature: Question generation — cost per question while the walk runs.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
+    client = fake_client(parsed_by_format=walk_run())
+    client.messages.usage = {"input_tokens": 1000, "output_tokens": 500}
+    seen = []
+    result = question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    assert result["cost"]["dollars_per_question"] > 0
+    mid = [s for s in seen if s["pages_done"] == 1][-1]
+    assert mid["cost"]["dollars_per_question"] > 0
+
+
+# --- asking for a skill level ---
+
+
+def test_a_requested_skill_level_reaches_the_prompt(fake_client, walk_settings):
+    """
+    Intent: The badge decides the subject matter; the skill level decides who the question is
+        for, and a quiz aimed at people who own the deployment is a different artefact from
+        one aimed at people who installed it last week. Dropped between the form and the
+        prompt, the choice would silently do nothing.
+    Success: The requested level's guidance reaches the authoring prompt.
+    Feature: Question generation — questions pitched at a chosen skill level.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(
+        PAGE, BADGE, [BADGE], difficulty="advanced", settings=walk_settings
+    )
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "ADVANCED" in prompt
+    assert "owns the deployment" in prompt
+
+
+def test_each_level_says_what_it_means(fake_client, walk_settings):
+    """
+    Intent: "Advanced" on its own is read as harder wording rather than harder judgement,
+        which produces obscure trivia — a version number nobody remembers — instead of
+        questions a senior engineer finds worth answering. Each level has to describe the
+        reader and the kind of thinking wanted.
+    Success: Every level's guidance describes who it is for, and advanced rules trivia out.
+    Feature: Question generation — the skill levels are defined, not just named.
+    """
+    guidance = question_generation.DIFFICULTY_GUIDANCE
+    assert set(guidance) == {"foundational", "intermediate", "advanced"}
+    assert "few weeks" in guidance["foundational"]
+    assert "production" in guidance["intermediate"]
+    assert "not obscurer trivia" in guidance["advanced"]
+
+
+def test_no_chosen_level_spreads_the_questions(fake_client, walk_settings):
+    """
+    Intent: Left silent the model pitches a whole page at one level of its own choosing, which
+        is the same problem as forcing every question into a scenario. "Mixed" has to be an
+        instruction to spread them, not the absence of one.
+    Success: With no level requested the prompt asks for a spread across the three levels.
+    Feature: Question generation — a mixed run spreads across levels.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "spread the questions across" in prompt
+
+
+def test_the_level_asked_for_is_recorded_with_the_run(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: The level is one of the choices that explains a run's output, so it belongs with
+        the record — comparing two runs on a badge is meaningless if you cannot see that one
+        asked for foundational and the other for advanced.
+    Success: The run summary reports the level that was requested.
+    Feature: Run history — the requested skill level is recorded.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+    result = question_generation.generate_for_badge(
+        "atlas-search", difficulty="intermediate", settings=walk_settings
+    )
+    assert result["requested"]["difficulty"] == "intermediate"
+
+
+# --- a huge page must not cost a fortune ---
+
+
+def test_a_huge_page_is_cut_short_before_it_is_sent(fake_client, walk_settings):
+    """
+    Intent: Measured on a real run on 2026-08-19: the corpus holds documentation pages up to
+        1.7 MB — driver tutorials repeating every example in a dozen languages — and one sent
+        whole was 505,435 input tokens, $2.58 for three questions, about a hundred times the
+        expected cost per question. The per-page cap existed for the single-prompt path and was
+        never applied to the walk.
+    Success: Only the first `doc_context_page_chars` of a page reach the prompt.
+    Feature: Question generation — a page's contribution to a prompt is bounded.
+    """
+    # A filler that cannot occur anywhere else in the prompt, so the count is the
+    # page's contribution and nothing else's — "x" also appears in the fixture URL.
+    huge = {**PAGE, "text": "Q" * 500_000}
+    capped = replace(walk_settings, doc_context_page_chars=1000)
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(huge, BADGE, [BADGE], settings=capped)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "Q" * 1000 in prompt
+    assert "Q" * 1001 not in prompt
+
+
+def test_a_cut_page_tells_the_author_it_was_cut(fake_client, walk_settings):
+    """
+    Intent: A model shown a page truncated mid-sentence can reasonably conclude the feature has
+        no more to it, and write a question asserting something the full page contradicts. It
+        has to be told, and told not to guess at the rest.
+    Success: A truncated page is marked as cut short, with an instruction not to assume the
+        remainder.
+    Feature: Question generation — truncation is disclosed to the author model.
+    """
+    huge = {**PAGE, "text": "Q" * 500_000}
+    capped = replace(walk_settings, doc_context_page_chars=1000)
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(huge, BADGE, [BADGE], settings=capped)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert "cut short" in prompt
+    assert "do not assume what the rest says" in prompt
+
+
+def test_a_page_within_the_cap_is_sent_whole(fake_client, walk_settings):
+    """
+    Intent: The cap is a guard against outliers, not a summariser. Most pages are a few
+        thousand characters, and quietly trimming them would lose material for no benefit —
+        and would make the truncation notice a lie on nearly every page.
+    Success: A page shorter than the cap arrives complete and unmarked.
+    Feature: Question generation — an ordinary page is not truncated.
+    """
+    client = fake_client(parsed_by_format=walk_run())
+    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
+    assert PAGE["text"] in prompt
+    assert "cut short" not in prompt
+
+
+
+
+# --- where the correct answer sits ---
+
+
+def test_the_correct_answer_does_not_always_come_first(walk_settings):
+    """
+    Intent: Measured on the first 125 questions this program produced: the correct answer was
+        option A in every single one. A candidate who always answers A scores 100%, so the
+        entire bank is worthless as a quiz. The cause is structural — a model filling four
+        options into a schema writes the right one first — so it is fixed here rather than
+        asked for in the prompt.
+    Success: Across many questions the correct answer lands in every position.
+    Feature: Question quality — the correct answer's position is randomised.
+    """
+    import random
+
+    questions = [make() for _ in range(200)]
+    question_generation.randomise_option_order(questions, random.Random(7))
+    positions = {
+        next(i for i, o in enumerate(q.options) if o.is_correct) for q in questions
+    }
+    assert positions == {0, 1, 2, 3}
+
+
+def test_shuffling_keeps_each_option_with_its_own_rationale(walk_settings):
+    """
+    Intent: Each option carries the misconception it catches. If the shuffle moved text and
+        rationale independently, every distractor would be explained by the wrong reasoning —
+        a subtler failure than the one being fixed, and harder to notice.
+    Success: After shuffling, every option still has the rationale and correctness it started
+        with.
+    Feature: Question quality — shuffling moves whole options.
+    """
+    import random
+
+    question = make()
+    before = {(o.text, o.rationale, o.is_correct) for o in question.options}
+    question_generation.randomise_option_order([question], random.Random(3))
+    assert {(o.text, o.rationale, o.is_correct) for o in question.options} == before
+
+
+def test_shuffling_keeps_exactly_one_correct_answer(walk_settings):
+    """
+    Intent: The format check runs after the shuffle, so a shuffle that lost or duplicated the
+        correct flag would turn good questions into rejected ones — and a run would report
+        questions discarded for a reason that had nothing to do with the model.
+    Success: Every shuffled question still has exactly one correct option, and four options.
+    Feature: Question quality — shuffling preserves the format.
+    """
+    import random
+
+    questions = [make() for _ in range(50)]
+    question_generation.randomise_option_order(questions, random.Random(11))
+    assert all(len(q.options) == 4 for q in questions)
+    assert all(sum(1 for o in q.options if o.is_correct) == 1 for q in questions)
+
+
+def test_a_walk_stores_questions_with_shuffled_options(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, fake_doc_chunks, walk_settings
+):
+    """
+    Intent: A shuffle that exists but is not wired into the walk fixes nothing — which is
+        exactly how the first 125 questions were stored with the answer always first.
+    Success: The walk applies the shuffle before storing.
+    Feature: Question generation — stored questions have randomised option order.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE], walk_settings)
+    fake_client(parsed_by_format=walk_run(GeneratedQuestions(questions=[make() for _ in range(40)])))
+    question_generation.generate_for_badge("atlas-search", settings=walk_settings)
+    positions = {
+        next(i for i, o in enumerate(doc["options"]) if o["is_correct"])
+        for doc in fake_questions.docs
+    }
+    assert len(positions) > 1
+
+
+def test_a_badge_whose_sections_cannot_be_resolved_is_reported_as_failed(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings, monkeypatch
+):
+    """
+    Intent: A walk could not tell "the search failed" from "there is nothing left", so a
+        transient Atlas error made a badge report as having exhausted its documentation —
+        advice to widen the corpus, given for a badge with hundreds of sections in it. It also
+        skipped the badge silently inside a multi-badge run, so the questions the author
+        expected were simply absent.
+    Success: The walk reports the badge as failed, names the cause, and does not claim the
+        badge is exhausted or fall back to researching the web.
+    Feature: Question generation — an unresolvable badge is a failure, not exhaustion.
+    """
+    from app.services import doc_retrieval
+
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+
+    def unavailable(*args, **kwargs):
+        raise doc_retrieval.ChunkSetUnavailable("could not resolve: 503 from Atlas")
+
+    monkeypatch.setattr(doc_retrieval, "chunk_set_for_badge", unavailable)
+    summary = question_generation.generate_for_badge(
+        "atlas-search", max_pages=5, questions_per_page=3, settings=walk_settings
+    )
+    assert summary["phase"] == "failed"
+    assert summary["sections_unavailable"] is True
+    assert "503" in summary["error"]
+    assert summary["inserted"] == 0
+    assert not summary.get("exhausted")
+    assert not summary.get("fell_back_to_research")

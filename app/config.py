@@ -11,6 +11,14 @@ class Settings:
     skill_badges_collection: str = "skill_badges"
     questions_collection: str = "questions"
     doc_pages_collection: str = "doc_pages"
+    # Finished runs are recorded here. Separate from `questions` because a run is an
+    # event and a question is an artefact: deleting a bad batch must not erase the
+    # record that it was generated, which is the evidence for changing the prompt.
+    runs_collection: str = "generation_runs"
+    # Chunks are derived from pages, not crawled, so they live apart from them: the
+    # band below can be re-tuned and the chunks rebuilt without a twelve-minute
+    # re-crawl, and the page viewer still has whole pages to show.
+    doc_chunks_collection: str = "doc_chunks"
     # Claude Opus 5: adaptive thinking is on by default; effort tunes depth.
     model: str = "claude-opus-5"
     effort: str = "high"
@@ -65,15 +73,94 @@ class Settings:
     # without knowing the words the documentation happens to use.
     doc_pages_vector_index_name: str = "doc_pages_text_vector"
     doc_pages_vector_path: str = "text"
+    # Retrieval runs against chunks, not pages. Configured with autoEmbed on
+    # `embed_text` — the chunk with its page title and heading path in front of it —
+    # because a section called "Limitations" means nothing embedded on its own. This
+    # index must exist in Atlas before retrieval works; it is not created from here.
+    doc_chunks_vector_index_name: str = "doc_chunks_embed_text_vector"
+    doc_chunks_vector_path: str = "embed_text"
+    # The chunk band, chosen by measuring this corpus on 2026-08-19 rather than by
+    # intuition. Splitting the 3,844 non-reference pages at H1-H3 gives 40,561
+    # sections with a median of 642 characters and 47% under 500 — sections are mostly
+    # small, so merging matters more than splitting. Packing neighbours to this floor
+    # and ceiling gives 18,421 chunks: median 2,133 characters (~530 tokens), p90
+    # 7,603, nothing over the ceiling, 3.8% under 500.
+    chunk_heading_depth: int = 3
+    chunk_floor_chars: int = 1_500
+    chunk_ceiling_chars: int = 8_000
+    # How many sections of one page may lead a badge's set before other pages get a
+    # turn. Measured on the live corpus: without this, a Vector Search Fundamentals run
+    # walked 25 sections drawn from six pages — 85 of the badge's 252 sections were
+    # hard-split slices of one 1.7 MB page, the same code sample in a dozen languages —
+    # and produced 5 questions where a badge spread over 24 pages produced 72.
+    doc_sections_per_page: int = 3
     # A page is not compared against the whole corpus: Atlas narrows to this many
     # approximate neighbours before scoring them exactly. Roughly 10x the result cap,
     # which is the usual recommendation for recall at this corpus size.
     doc_search_num_candidates: int = 500
+    # Question authoring reads its source material out of this corpus rather than
+    # searching the web: a run that fetches the web spends most of its wall clock
+    # waiting, and two runs on the same badge see different source text. One search
+    # per topic area rather than one per badge, because the top pages for a single
+    # badge-wide query cluster on one topic — and five questions off one page is the
+    # failure mode this tool exists to avoid.
+    doc_context_pages_per_topic: int = 3
+    # Pages are long and a badge has several topic areas, so both the per-page share
+    # and the whole context are bounded. A page cut short is still usable material;
+    # an authoring turn that will not fit is not.
+    doc_context_page_chars: int = 24_000
+    doc_context_char_budget: int = 360_000
+    # --- badge-scoped page walk ---
+    # Questions are written one documentation page at a time, over the set of pages
+    # that belong to a badge. A badge is resolved to that set first, then walked: each
+    # page is read once, yields several questions, and coverage is a counter against an
+    # enumerable list rather than a guess. Cost then arrives per badge, when someone
+    # asks for that badge, instead of as one sweep of the whole corpus.
+    #
+    # How wide the set is drawn. Deliberately much wider than the old single-prompt
+    # retrieval: the point is to enumerate a badge's material, not to pick the best few
+    # pages that fit in one request.
+    doc_page_set_per_topic: int = 60
+    doc_page_set_size: int = 400
+    # Pages further away than this are not this badge's material. Measured against the
+    # Atlas index (voyage-4-large) on the Cluster Reliability badge: pages plainly about
+    # the badge scored 0.70-0.86, while the noise its Credly tags dragged in — IP access
+    # lists, VPC peering — sat at 0.64-0.69.
+    doc_page_set_score_floor: float = 0.70
+    # Reference material is excluded from question material. Measured 2026-08-19:
+    # 3,318 of 7,162 stored pages are parameter lists, CLI synopses and command
+    # references, and a question written from a parameter list tests lookup, not skill.
+    doc_reference_url_pattern: str = r"/reference/|/cli/|/api/|/command/"
+    # How many questions one page is asked for, and how many pages a single run walks.
+    # The page cap bounds a run's wall clock and cost; the walk resumes where it left
+    # off, because pages already written from are skipped.
+    questions_per_page: int = 3
+    # Reading one page and writing three questions from it is a bounded task, not the
+    # open-ended research the badge-wide path does. Output tokens — thinking most of
+    # all — dominate the cost of a walk, so the effort is tuned separately here rather
+    # than inheriting the `high` used for research.
+    page_author_effort: str = "medium"
+    # --- what a run costs ---
+    # Claude Opus 5 list prices, dollars per million tokens, as published on
+    # 2026-08-19. Cached input reads at a tenth and writes at 1.25x. These are only
+    # used to report what a run has spent: the figure on the screen is computed from
+    # the token counts Claude actually returns, not from an estimate of them, so the
+    # only thing that can be wrong here is the price itself. Update alongside `model`.
+    cost_input_per_mtok: float = 5.00
+    cost_output_per_mtok: float = 25.00
+    cost_cache_read_per_mtok: float = 0.50
+    cost_cache_write_per_mtok: float = 6.25
+    max_pages_per_run: int = 25
     # MongoDB publishes an agent-oriented index of its documentation, and serves
     # every page as Markdown. That is the only enumerable route to the whole corpus:
     # search-knowledge returns the best chunks for a query and cannot be asked "give
     # me everything".
     docs_index_url: str = "https://www.mongodb.com/docs/llms.txt"
+    # The only host this program will fetch a page from on a visitor's behalf. The
+    # rendered-source view takes a URL and fetches it server-side, which is an SSRF
+    # hole unless the host is fixed — an attacker-supplied URL would otherwise reach
+    # anything the server can reach, including cloud metadata endpoints.
+    docs_domain: str = "www.mongodb.com"
     # ~10,000 pages, so the crawl is concurrent — but politely so, against a site
     # this program does not own.
     docs_fetch_concurrency: int = 8

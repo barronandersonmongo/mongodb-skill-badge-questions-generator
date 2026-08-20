@@ -4,6 +4,13 @@ An ad-hoc sweep, not a check on every generation run: authoring is where the tim
 and the money go, and a duplicate costs nothing until someone builds a quiz from
 the collection. So duplicates are found on request, over what is stored.
 
+Finding never deletes. There used to be a delete mode and a dry-run mode, which
+made the operator choose before seeing the collection — and since the safe mode is
+strictly more informative, nobody should ever have run the other one first. Now the
+sweep reports, and deleting is a separate act on a list somebody has read. That also
+demotes the score threshold: it shortlists pairs worth looking at rather than
+deciding which questions die.
+
 No language model is involved, and nothing here needs an API key. One aggregation
 per question does both stages on the cluster:
 
@@ -19,6 +26,7 @@ query the shortlist already ran.
 """
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from app.config import Settings, get_settings
@@ -38,14 +46,13 @@ def _text(question: dict[str, Any]) -> str:
 def _rank(question: dict[str, Any]) -> tuple:
     """How much a question is worth keeping, highest first.
 
-    Approved questions carry a review decision and must outlive a draft. Beyond
-    that, prefer the one attributed to more badges — it is reachable from more
-    places, so keeping it loses the least findability — and then the older one,
-    which anything downstream is more likely to have seen already.
+    There is no review state to prefer, so this turns on findability and age: prefer
+    the question attributed to more badges, because it is reachable from more places
+    and dropping it loses the most, and then the older one, which anything downstream
+    is more likely to have seen already.
     """
     created = question.get("created_at")
     return (
-        question.get("status") == "approved",
         len(question.get("skill_badges") or []),
         -(created.timestamp() if created else 0),
     )
@@ -58,21 +65,62 @@ def choose_survivor(
     return (left, right) if _rank(left) >= _rank(right) else (right, left)
 
 
-def find_pairs(*, settings: Settings | None = None) -> tuple[list[dict], list[str]]:
+def find_pairs(
+    *,
+    settings: Settings | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+    skill_badge: str | None = None,
+    category: str | None = None,
+    difficulty: str | None = None,
+) -> tuple[list[dict], list[str]]:
     """Every pair of stored questions the reranker scored, most similar first.
 
     Each pair is scored once: A-B and B-A are the same pair, and scoring both would
     double the work to reach the same answer.
+
+    `progress` is called after each question with how far the sweep has got. The work
+    is one round trip per stored question, and how many there are is known before the
+    first one — so on a collection of thousands this is minutes of a bar that would
+    otherwise sit at nothing, with no way to tell a slow sweep from a stuck one.
+
+    The filters scope the sweep to a subset, and scope it on both sides: a pair is only
+    reported when both of its questions are in the subset. Comparing a subset against
+    the whole collection would flag pairs the operator cannot act on from the screen
+    they asked the question on — and the cost of a sweep is one round trip per question
+    scanned, so scoping is the only way to ask a cheap question of a large bank.
     """
     settings = settings or get_settings()
-    stored = questions_repo.list_questions()
+    stored = questions_repo.list_questions(skill_badge, category)
+    if difficulty:
+        # Not a repository filter: difficulty is not indexed and is not used to narrow
+        # anything else, so it is applied here rather than growing the shared query.
+        stored = [q for q in stored if q.get("difficulty") == difficulty]
     by_id = {q["question_id"]: q for q in stored}
 
     seen: set[tuple[str, str]] = set()
     pairs: list[dict[str, Any]] = []
     errors: list[str] = []
+    total = len(stored)
 
-    for question in stored:
+    def report_progress(done: int) -> None:
+        if progress is None:
+            return
+        progress(
+            {
+                "phase": "comparing",
+                "compared": done,
+                "total": total,
+                # Guarded rather than assumed: an empty collection is a legitimate
+                # sweep, and dividing by its size is not.
+                "percent": (done / total * 100) if total else 100.0,
+                "pairs": len(pairs),
+                "errors": len(errors),
+            }
+        )
+
+    report_progress(0)
+
+    for index, question in enumerate(stored, start=1):
         try:
             neighbours = questions_repo.reranked_by_embedding_text(
                 _text(question),
@@ -85,6 +133,7 @@ def find_pairs(*, settings: Settings | None = None) -> tuple[list[dict], list[st
             # One unsearchable question must not abandon the whole sweep, and must
             # never be reported as "no duplicates here".
             errors.append(f"{question['question_id']}: {exc}")
+            report_progress(index)
             continue
 
         for neighbour in neighbours:
@@ -107,52 +156,66 @@ def find_pairs(*, settings: Settings | None = None) -> tuple[list[dict], list[st
                 }
             )
 
+        report_progress(index)
+
     pairs.sort(key=lambda item: item["rerank_score"], reverse=True)
     return pairs, errors
 
 
-def sweep(*, delete: bool = True, settings: Settings | None = None) -> dict[str, Any]:
-    """Find duplicate questions, and optionally delete one of each confident pair.
+def report(
+    *,
+    settings: Settings | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+    skill_badge: str | None = None,
+    category: str | None = None,
+    difficulty: str | None = None,
+) -> dict[str, Any]:
+    """Duplicate candidates, scored, deleting nothing.
 
-    `delete=False` is a dry run: the same pairs and scores, nothing removed. A
-    deletion here has no judge behind it and cannot be undone, so the threshold
-    should be re-checked this way whenever the collection changes character.
+    Pairs at or above the threshold are `flagged` — the ones worth acting on — and the
+    rest are reported below it so the threshold itself stays visible as a judgement
+    rather than a fact. Every pair names the question this program would drop and the
+    one it would keep, so acting on the list is one click rather than a comparison the
+    reader has to redo.
     """
     settings = settings or get_settings()
-    pairs, errors = find_pairs(settings=settings)
+    pairs, errors = find_pairs(
+        settings=settings,
+        progress=progress,
+        skill_badge=skill_badge,
+        category=category,
+        difficulty=difficulty,
+    )
 
-    deleted, possible = [], []
-    removed: set[str] = set()
+    flagged, below = [], []
     for pair in pairs:
-        if pair["rerank_score"] < settings.question_rerank_delete_threshold:
-            possible.append(pair)
-            continue
-        if not delete:
-            possible.append({**pair, "would_delete": True})
-            continue
-        # A question already removed by an earlier pair cannot be deleted again, and
-        # must not become the survivor of a later one either — otherwise three near
-        # copies could leave none.
-        if pair["drop"] in removed or pair["keep"] in removed:
-            possible.append({**pair, "skipped": "already resolved"})
-            continue
-        if questions_repo.delete_question(pair["drop"]):
-            removed.add(pair["drop"])
-            deleted.append(pair)
+        if pair["rerank_score"] >= settings.question_rerank_delete_threshold:
+            flagged.append(pair)
+        else:
+            below.append(pair)
 
     logger.info(
-        "Duplicate sweep: %d pair(s) compared, %d deleted, %d reported, %d error(s)%s",
+        "Duplicate sweep of %s: %d pair(s) compared, %d flagged, %d below threshold, "
+        "%d error(s)",
+        skill_badge or category or difficulty or "the whole collection",
         len(pairs),
-        len(deleted),
-        len(possible),
+        len(flagged),
+        len(below),
         len(errors),
-        " (dry run)" if not delete else "",
     )
     return {
         "source": "question-duplicate-sweep",
+        # Echoed back so the report says what it covered. A report that did not would be
+        # read as covering everything, and "no duplicates" means something very
+        # different about one badge than about the whole bank.
+        "scope": {
+            "skill_badge": skill_badge,
+            "category": category,
+            "difficulty": difficulty,
+        },
         "compared": len(pairs),
-        "deleted": deleted,
-        "possible_duplicates": possible,
+        "threshold": settings.question_rerank_delete_threshold,
+        "flagged": flagged,
+        "below_threshold": below,
         "errors": errors,
-        "dry_run": not delete,
     }

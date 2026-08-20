@@ -28,18 +28,6 @@ def make(stem: str = "Which stage filters documents?", **overrides) -> Generated
     )
 
 
-def test_new_questions_land_as_drafts(fake_questions):
-    """
-    Intent: Nothing Claude writes is publishable on arrival — a human decides. New
-        questions must therefore enter review as drafts rather than being usable
-        immediately.
-    Success: A freshly stored question has status "draft".
-    Feature: Question lifecycle — human approval gate.
-    """
-    questions.insert_questions([make()])
-    assert fake_questions.docs[0]["status"] == "draft"
-
-
 def test_every_question_gets_its_own_identity(fake_questions):
     """
     Intent: Two questions on the same topic are legitimately different questions, so
@@ -129,20 +117,6 @@ def test_a_question_is_found_by_any_of_its_categories(fake_questions):
     assert questions.list_questions(category="search") == []
 
 
-def test_filters_combine_rather_than_replace_each_other(fake_questions):
-    """
-    Intent: The screen offers status, badge and category at once. If they did not
-        intersect, a filtered export would silently contain questions the author had
-        excluded.
-    Success: A question matching only one of two filters is not returned.
-    Feature: Question filtering — filters intersect.
-    """
-    questions.insert_questions([make(skill_badges=["atlas-search"], categories=["search"])])
-    assert questions.list_questions(skill_badge="atlas-search", category="search")
-    assert questions.list_questions(skill_badge="atlas-search", category="indexing") == []
-    assert questions.list_questions(status="approved", skill_badge="atlas-search") == []
-
-
 def test_no_filter_returns_everything(fake_questions):
     """
     Intent: The unfiltered view must not accidentally apply a filter built from empty
@@ -152,29 +126,6 @@ def test_no_filter_returns_everything(fake_questions):
     """
     questions.insert_questions([make("First?"), make("Second?")])
     assert len(questions.list_questions()) == 2
-
-
-def test_approving_a_question_records_the_decision(fake_questions):
-    """
-    Intent: Approval is the human judgement the tool exists to capture; it must
-        persist on the question rather than living in the UI.
-    Success: set_status stores the new status and reports the question was found.
-    Feature: Question lifecycle — approve and reject.
-    """
-    question_id = questions.insert_questions([make()])["question_ids"][0]
-    assert questions.set_status(question_id, "approved") is True
-    assert fake_questions.docs[0]["status"] == "approved"
-
-
-def test_setting_the_status_of_an_unknown_question_reports_failure(fake_questions):
-    """
-    Intent: A stale page acting on a deleted question must be told so, not silently
-        succeed — otherwise the author believes a decision was recorded when nothing
-        was written.
-    Success: set_status on an unknown id returns False.
-    Feature: Question lifecycle — unknown question is reported, not ignored.
-    """
-    assert questions.set_status("nope", "approved") is False
 
 
 def test_a_question_can_be_deleted(fake_questions):
@@ -211,20 +162,6 @@ def test_the_category_menu_lists_each_category_once(fake_questions):
         [make("First?", categories=["search", "aggregation"]), make("Second?", categories=["search"])]
     )
     assert questions.categories_in_use() == ["aggregation", "search"]
-
-
-def test_the_fields_the_screen_filters_on_are_indexed(fake_questions):
-    """
-    Intent: Every listing filters on status, skill_badges or categories, and identity
-        lookups hit question_id. Unindexed, those become collection scans as the
-        collection grows — and a duplicate question_id would break identity.
-    Success: Indexes exist for all four fields, with question_id unique.
-    Feature: Question storage — queryable by badge, category and status.
-    """
-    questions.ensure_indexes()
-    by_name = {index["name"]: index for index in fake_questions.indexes}
-    assert {"question_id_unique", "skill_badges", "categories", "status"} <= by_name.keys()
-    assert by_name["question_id_unique"]["unique"] is True
 
 
 def test_the_repository_targets_the_configured_questions_collection(monkeypatch):
@@ -443,3 +380,206 @@ def test_the_reranked_search_asks_the_reranker_for_every_shortlisted_document(fa
         captured["pipeline"][1]["$rerank"]["numDocsToRerank"]
         == captured["pipeline"][0]["$vectorSearch"]["limit"]
     )
+
+
+# --- what a badge has already been written from ---
+
+
+def test_the_pages_a_badge_has_been_written_from_are_queryable(fake_questions):
+    """
+    Intent: A walk resumes by skipping the pages a badge already has questions from, so
+        that set has to be derivable from the questions themselves. Kept anywhere else it
+        could disagree with what was actually stored.
+    Success: The source URLs of a badge's questions come back as a set.
+    Feature: Question coverage — the pages a badge has been written from.
+    """
+    fake_questions.docs.extend([
+        {"skill_badges": ["atlas-search"], "source_urls": ["https://x/a.md"]},
+        {"skill_badges": ["atlas-search"], "source_urls": ["https://x/b.md", "https://x/a.md"]},
+        {"skill_badges": ["indexing"], "source_urls": ["https://x/c.md"]},
+    ])
+    assert questions.source_urls_for_badge("atlas-search") == {
+        "https://x/a.md",
+        "https://x/b.md",
+    }
+
+
+def test_a_badge_with_no_questions_has_used_no_pages(fake_questions):
+    """
+    Intent: The first walk of a badge must not be blocked by an empty result being
+        mistaken for an error. An empty set is the correct answer, not a missing one.
+    Success: A badge with no questions returns an empty set.
+    Feature: Question coverage — a badge that has never been walked.
+    """
+    assert questions.source_urls_for_badge("atlas-search") == set()
+
+
+def test_a_cross_filed_question_counts_for_every_badge_it_tests(fake_questions):
+    """
+    Intent: Questions are deliberately filed under every badge they test. The question the
+        coverage screen answers is "does this badge have enough", so a question serving
+        two badges has to count towards both — counting it once would understate every
+        badge it was cross-filed into.
+    Success: A question filed under two badges counts for both.
+    Feature: Question coverage — cross-filed questions count for each badge.
+    """
+    fake_questions.docs.append({"skill_badges": ["atlas-search", "indexing"]})
+    counts = questions.counts_by_badge()
+    assert counts["atlas-search"] == 1
+    assert counts["indexing"] == 1
+
+
+# --- no review workflow ---
+
+
+def test_a_stored_question_carries_no_review_state(fake_questions):
+    """
+    Intent: Replaces a test requiring new questions to land as drafts behind a human
+        approval gate. At thousands of questions nobody works a queue of drafts, so the
+        gate was a bottleneck rather than a safeguard, and a question nobody had blessed
+        was indistinguishable from one nobody wanted. A question that passes the format
+        check is usable.
+    Success: A freshly stored question has no status field at all.
+    Feature: Question lifecycle — no review state.
+    """
+    questions.insert_questions([make()])
+    assert "status" not in fake_questions.docs[0]
+
+
+def test_the_fields_the_screen_filters_on_are_still_indexed(fake_questions):
+    """
+    Intent: Replaces a test that also required a status index. Every listing filters on
+        skill_badges or categories and identity lookups hit question_id; unindexed those
+        become collection scans as the collection grows, and a duplicate question_id would
+        break identity. The status index is now an index on a field nothing writes.
+    Success: Indexes exist for question_id, skill_badges and categories, with question_id
+        unique, and no status index is created.
+    Feature: Question storage — queryable by badge and category.
+    """
+    questions.ensure_indexes()
+    by_name = {index["name"]: index for index in fake_questions.indexes}
+    assert {"question_id_unique", "skill_badges", "categories"} <= by_name.keys()
+    assert "status" not in by_name
+    assert by_name["question_id_unique"]["unique"] is True
+
+
+def test_badge_and_category_filters_combine(fake_questions):
+    """
+    Intent: Replaces a test that intersected a status filter as well. The screen still
+        offers badge and category together, and if they did not intersect a filtered
+        export would silently contain questions the author had excluded.
+    Success: A question matching only one of two filters is not returned.
+    Feature: Question filtering — filters intersect.
+    """
+    questions.insert_questions([make(skill_badges=["atlas-search"], categories=["search"])])
+    assert questions.list_questions(skill_badge="atlas-search", category="search")
+    assert questions.list_questions(skill_badge="atlas-search", category="indexing") == []
+
+
+def test_questions_are_counted_per_badge(fake_questions):
+    """
+    Intent: Replaces a test that split the counts by status. With no review state there is
+        one number that matters per badge — how many questions it has — and the coverage
+        screen reads it to decide where the next run should go.
+    Success: Counts come back as one number per badge.
+    Feature: Question coverage — per-badge counts.
+    """
+    fake_questions.docs.extend([
+        {"skill_badges": ["atlas-search"]},
+        {"skill_badges": ["atlas-search"]},
+        {"skill_badges": ["indexing"]},
+    ])
+    counts = questions.counts_by_badge()
+    assert counts == {"atlas-search": 2, "indexing": 1}
+
+
+def test_a_legacy_status_field_can_be_stripped(fake_questions):
+    """
+    Intent: Questions written before the workflow was dropped still carry `status`, and it
+        rides along in the JSON export — telling whoever consumes it that a question is an
+        unfinished draft when no such state exists. Left in place it is a lie in the
+        deliverable.
+    Success: The field is removed and the number of changed documents reported.
+    Feature: Question storage — the legacy review field can be cleaned up.
+    """
+    fake_questions.docs.extend([
+        {"question_id": "a", "status": "draft"},
+        {"question_id": "b"},
+    ])
+    assert questions.drop_status_field() == 1
+    assert all("status" not in doc for doc in fake_questions.docs)
+
+
+def test_stripping_the_legacy_field_twice_changes_nothing(fake_questions):
+    """
+    Intent: A maintenance action that is unsafe to repeat is one an operator has to
+        remember the state of. This one is run from a button, so running it again must be
+        a no-op rather than an error.
+    Success: A second call reports nothing changed.
+    Feature: Question storage — the cleanup is idempotent.
+    """
+    fake_questions.docs.append({"question_id": "a", "status": "draft"})
+    questions.drop_status_field()
+    assert questions.drop_status_field() == 0
+
+
+# --- finding one question by its identifier ---
+
+
+def test_a_question_is_findable_by_the_id_the_program_keys_on(fake_questions):
+    """
+    Intent: An author refers to one question in a message or a ticket by its identifier, and
+        needs to get back to it afterwards. `question_id` is what every endpoint takes, so it
+        is the one that has to resolve.
+    Success: Looking up a question_id returns that question.
+    Feature: Question lookup — by question_id.
+    """
+    ids = questions.insert_questions([make("One?"), make("Two?")])["question_ids"]
+    found = questions.find_by_identifier(ids[0])
+    assert len(found) == 1 and found[0]["question_id"] == ids[0]
+
+
+def test_a_question_is_findable_by_the_id_atlas_shows(fake_questions):
+    """
+    Intent: MongoDB's `_id` is projected out of every listing, so it is the identifier an
+        author only ever sees in Atlas or Compass — which is exactly the moment they want the
+        question it belongs to. Accepting only the program's own id would mean knowing which
+        kind of identifier you are holding before you can use it.
+    Success: Looking up a document's ObjectId returns that question.
+    Feature: Question lookup — by MongoDB's ObjectId.
+    """
+    questions.insert_questions([make("One?")])
+    object_id = fake_questions.docs[0]["_id"]
+    found = questions.find_by_identifier(str(object_id))
+    assert len(found) == 1 and found[0]["stem"] == "One?"
+
+
+def test_a_malformed_identifier_finds_nothing_rather_than_raising(fake_questions):
+    """
+    Intent: A search box is exactly where malformed input arrives — a truncated paste, a
+        stray quote. Constructing an ObjectId from a non-ObjectId raises, and a 500 on a
+        mistyped search is a worse answer than "nothing found".
+    Success: An unparseable identifier returns no results and does not raise.
+    Feature: Question lookup — malformed identifiers are handled.
+    """
+    assert questions.find_by_identifier("not-an-id") == []
+    assert questions.find_by_identifier("") == []
+    assert questions.find_by_identifier("zzzzzzzzzzzzzzzzzzzzzzzz") == []
+
+
+def test_an_identifier_is_told_apart_from_a_search_phrase(fake_questions):
+    """
+    Intent: One box serves both purposes — paste an id to find one question, type a phrase to
+        find several — because making the reader pick the right box first is friction for no
+        gain. Both identifiers are hex of a fixed length, and neither is anything a person
+        would type as a search.
+    Success: Identifier-shaped values are recognised and ordinary phrases are not.
+    Feature: Question lookup — identifiers are recognised by shape.
+    """
+    assert questions.looks_like_an_identifier("a" * 32) is True
+    assert questions.looks_like_an_identifier("a" * 24) is True
+    assert questions.looks_like_an_identifier("joining collections") is False
+    assert questions.looks_like_an_identifier("a" * 20) is False
+    # Hex-looking but the wrong length: a partial paste must not be treated as an id, or
+    # the reader gets "no such question" for something that was never a question id.
+    assert questions.looks_like_an_identifier("abc123") is False

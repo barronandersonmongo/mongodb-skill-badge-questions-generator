@@ -19,13 +19,16 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
 
 from app.config import Settings, get_settings
 from app.repositories import doc_pages
+from app.services import doc_chunking
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +121,154 @@ def source_pages(index_url: str, *, settings: Settings | None = None) -> list[st
     settings = settings or get_settings()
     pages, _ = index_links(_get(index_url, settings))
     return pages
+
+
+def _chunk_batch(
+    pages: list[dict[str, Any]], settings: Settings, run_id: str | None = None
+) -> int:
+    """Split a batch of freshly stored pages into chunks. Returns how many were made.
+
+    A page that fails to chunk is logged and skipped rather than failing the crawl:
+    the page itself is stored either way, and a rebuild can pick it up later.
+    """
+    from app.repositories import doc_chunks
+    from app.services import doc_chunking
+
+    made = 0
+    for page in pages:
+        try:
+            chunks = doc_chunking.split_page(page, settings=settings)
+            made += doc_chunks.replace_page_chunks(page["url"], chunks, run_id)
+        except Exception as exc:
+            logger.warning("Could not chunk %s: %s", page.get("url"), exc)
+    return made
+
+
+def rebuild_chunks(
+    *,
+    settings: Settings | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Re-split every stored page, without re-crawling anything.
+
+    This is why chunks are derived rather than crawled. The band — where to cut, what
+    to merge, what ceiling to allow — is a judgement that will want re-tuning against
+    real question quality, and re-tuning it should cost seconds rather than a
+    twelve-minute crawl and another round of being refused by CloudFront.
+
+    Chunk ids come from the page URL and position, so a rebuild of an unchanged page
+    produces the same ids and questions written from it stay attributable.
+    """
+    from app.repositories import doc_chunks
+    from app.repositories import doc_pages as pages_repo
+
+    settings = settings or get_settings()
+    started = time.monotonic()
+    summary: dict[str, Any] = {
+        "source": "docs-rechunk",
+        "phase": "chunking",
+        "pages_total": 0,
+        "pages_done": 0,
+        "chunks": 0,
+        "skipped": 0,
+        "removed_orphans": 0,
+        "failures": [],
+    }
+
+    def report() -> None:
+        if not progress:
+            return
+        elapsed = time.monotonic() - started
+        state = dict(summary)
+        state["elapsed_seconds"] = round(elapsed, 1)
+        done, total = summary["pages_done"], summary["pages_total"]
+        state["percent"] = round(done / total * 100, 1) if total else None
+        rate = done / elapsed if elapsed > 0 and done else 0
+        state["pages_per_second"] = round(rate, 1)
+        state["eta_seconds"] = round((total - done) / rate) if rate and total else None
+        progress(state)
+
+    urls = sorted(pages_repo.stored_urls())
+    summary["pages_total"] = len(urls)
+    report()
+
+    for url in urls:
+        page = pages_repo.get_page(url)
+        if page is None:
+            summary["skipped"] += 1
+            summary["pages_done"] += 1
+            continue
+        try:
+            chunks = doc_chunking.split_page(page, settings=settings)
+            summary["chunks"] += doc_chunks.replace_page_chunks(url, chunks)
+        except Exception as exc:
+            logger.warning("Could not chunk %s: %s", url, exc)
+            summary["failures"].append({"url": url, "error": str(exc)})
+        summary["pages_done"] += 1
+        if summary["pages_done"] % 200 == 0:
+            report()
+
+    # Chunks whose page has gone are still retrievable otherwise, so a question could
+    # be written from a page the corpus no longer holds.
+    summary["removed_orphans"] = doc_chunks.delete_orphans(set(urls))
+    summary["phase"] = "done"
+    summary["failure_count"] = len(summary["failures"])
+    summary["elapsed_seconds"] = round(time.monotonic() - started, 1)
+    report()
+    logger.info(
+        "Re-chunked %d page(s) into %d chunk(s); %d orphan(s) removed, %d failed",
+        summary["pages_done"],
+        summary["chunks"],
+        summary["removed_orphans"],
+        len(summary["failures"]),
+    )
+    return summary
+
+
+def is_docs_url(url: str, settings: Settings | None = None) -> bool:
+    """Whether this URL is a MongoDB documentation page this program may fetch.
+
+    The rendered-source view fetches a URL server-side on a visitor's request, so the
+    host has to be pinned. Left open it is a server-side request forgery hole: a crafted
+    URL would reach anything the server can reach — an internal service, a cloud
+    metadata endpoint — and return the response to whoever asked.
+
+    Checked on the parsed host rather than with a prefix match, because
+    `https://www.mongodb.com.evil.example/` starts with the right string and is not the
+    right host.
+    """
+    settings = settings or get_settings()
+    try:
+        parsed = urlparse(url or "")
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and parsed.hostname == settings.docs_domain
+
+
+def fetch_live_page(url: str, *, settings: Settings | None = None) -> dict[str, Any]:
+    """Fetch one documentation page from MongoDB now, for rendering.
+
+    Separate from the crawl: no stub filtering, no storing, no run bookkeeping. This is
+    the canonical page as it stands this minute, which is the point — the stored copy is
+    a snapshot and can have drifted since a question was written from it.
+
+    Raises ValueError for a URL outside the documentation host, so a caller cannot
+    forget the check.
+    """
+    settings = settings or get_settings()
+    if not is_docs_url(url, settings):
+        raise ValueError(
+            f"Refusing to fetch {url!r}: only https pages on "
+            f"{settings.docs_domain} can be rendered."
+        )
+    text = _get(url, settings)
+    return {
+        "url": url,
+        "title": page_title(text, url),
+        "text": text,
+        "bytes": len(text.encode("utf-8")),
+        "fetched_at": datetime.now(timezone.utc),
+    }
 
 
 def page_title(text: str, url: str) -> str:
@@ -298,9 +449,11 @@ def refresh(
         "updated": 0,
         "unchanged": 0,
         "skipped_stubs": 0,
+        "chunks": 0,
         "failed": 0,
         "removed": 0,
         "sweep_skipped": None,
+        "removed_orphan_chunks": 0,
         "failures": [],
         "per_source": [],
     }
@@ -415,6 +568,10 @@ def refresh(
                 stop=lambda: summary["blocked"],
             )
             written = doc_pages.upsert_pages(pages, run_id)
+            # Chunked as they land, not in a pass at the end: a crawl that dies half
+            # way through then leaves the pages it did fetch retrievable, which is the
+            # same reason pages are stored batch by batch.
+            summary["chunks"] += _chunk_batch(pages, settings, run_id)
             for key in ("inserted", "updated", "unchanged"):
                 summary[key] += written[key]
                 stats[key] += written[key]
@@ -459,6 +616,12 @@ def refresh(
         )
     elif stored_anything:
         summary["removed"] = doc_pages.delete_not_in_run(run_id)
+        # Chunks are swept the same way, by what this run did not write. A chunk
+        # outliving its page is invisible and harmful: retrieval keeps offering it and
+        # a question written from it cites a URL that no longer exists.
+        from app.repositories import doc_chunks
+
+        summary["removed_orphan_chunks"] = doc_chunks.delete_not_in_run(run_id)
     else:
         # Reported on its own rather than as a failure: the crawl may have worked
         # perfectly and simply found nothing storable, and counting this as a failure

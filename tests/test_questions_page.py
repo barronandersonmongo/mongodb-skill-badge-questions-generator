@@ -254,47 +254,12 @@ def test_filtered_emptiness_is_distinguished_from_an_empty_collection(
     Feature: Question review screen — filtered empty state.
     """
     seed_question()
-    body = client.get(PAGE, params={"status": "approved"}).text
+    body = client.get(PAGE, params={"category": "nothing-uses-this"}).text
     assert 'data-empty="true"' in body
     assert "match these filters" in body
 
 
 # --- filtering ---
-
-
-def test_the_status_tabs_count_the_questions_in_each_state(
-    client, fake_collection, fake_questions
-):
-    """
-    Intent: The counts are how an author sees there is review work waiting without
-        clicking every tab.
-    Success: With one draft, the All and Drafts tabs both show 1 and Approved shows 0.
-    Feature: Question review screen — status tabs with counts.
-    """
-    seed_question()
-    body = client.get(PAGE).text
-    tabs = [
-        (label.strip(), count)
-        for label, count in re.findall(
-            r'>([^<>]+?)<span class="badge text-bg-secondary">(\d+)</span>', body
-        )
-    ]
-    assert ("All", "1") in tabs
-    assert ("Drafts", "1") in tabs
-    assert ("Approved", "0") in tabs
-
-
-def test_filtering_by_status_narrows_the_list(client, fake_collection, fake_questions):
-    """
-    Intent: The tabs must actually filter. A tab that changed only the highlight would
-        misrepresent what state the collection is in.
-    Success: Filtering to approved hides the draft question.
-    Feature: Question review screen — status filter.
-    """
-    seed_question()
-    assert "Which stage filters documents?" not in client.get(
-        PAGE, params={"status": "approved"}
-    ).text
 
 
 def test_filtering_by_badge_and_category_narrows_the_list(
@@ -313,20 +278,6 @@ def test_filtering_by_badge_and_category_narrows_the_list(
     assert "Search question?" in by_badge and "Agg question?" not in by_badge
     by_category = client.get(PAGE, params={"category": "aggregation"}).text
     assert "Agg question?" in by_category and "Search question?" not in by_category
-
-
-def test_the_tabs_keep_the_badge_and_category_filters(client, fake_collection, fake_questions):
-    """
-    Intent: An author working through one badge switches status tabs constantly. If a
-        tab dropped the badge filter they would land in the whole collection and lose
-        their place.
-    Success: A tab link rendered under a badge filter carries that filter too.
-    Feature: Question review screen — filters survive tab changes.
-    """
-    seed_badge()
-    seed_question()
-    body = client.get(PAGE, params={"skill_badge": "atlas-search"}).text
-    assert 'href="/?status=draft&skill_badge=atlas-search' in body
 
 
 def test_the_filter_menus_offer_the_badges_and_categories_in_use(
@@ -349,21 +300,6 @@ def test_the_filter_menus_offer_the_badges_and_categories_in_use(
 # --- exporting ---
 
 
-def test_the_export_link_carries_the_current_filters(client, fake_collection, fake_questions):
-    """
-    Intent: Export is a stated requirement, and the author expects to get what they are
-        looking at. An export link that ignored the filters would quietly hand over the
-        whole collection.
-    Success: Under a badge filter, the export link requests that filter from the API.
-    Feature: Question export — exports what is on screen.
-    """
-    seed_badge()
-    seed_question()
-    body = client.get(PAGE, params={"status": "approved", "skill_badge": "atlas-search"}).text
-    assert 'id="export-btn"' in body
-    assert "/api/questions?status=approved&skill_badge=atlas-search" in body
-
-
 # --- generating ---
 
 
@@ -381,21 +317,23 @@ def test_the_generate_form_offers_every_badge(client, fake_collection, fake_ques
     assert "Atlas Search" in body
 
 
-def test_the_generate_form_takes_a_count_material_and_instructions(
+def test_the_generate_form_takes_a_walk_size_and_instructions(
     client, fake_collection, fake_questions
 ):
     """
-    Intent: Batch size, pasted training material and free-text steering are the three
-        controls an author has over a run. Missing from the form, they are unreachable
-        however well the API supports them.
-    Success: All three inputs are present on the page.
+    Intent: Replaces a test requiring a question-count box and a pasted-source-material
+        box. A run is now sized in pages of documentation walked and questions taken per
+        page, and the source material is the corpus rather than something pasted in — so
+        those are the controls that have to be reachable on the screen.
+    Success: The page cap, questions-per-page and instruction inputs are all present.
     Feature: Question generation — author controls on the screen.
     """
     seed_badge()
     body = client.get(PAGE).text
-    assert 'id="count"' in body
-    assert 'id="source-material"' in body
+    assert 'id="max-pages"' in body
+    assert 'id="per-page"' in body
     assert 'id="instructions"' in body
+
 
 
 def test_generation_is_not_offered_when_there_are_no_badges(
@@ -440,7 +378,7 @@ def test_a_finished_runs_result_is_shown(client, fake_collection, fake_questions
         "rejected": [],
     }
     body = client.get(PAGE).text
-    assert 'class="alert alert-success"' in body
+    assert 'data-last-result="true"' in body
     assert "3 question(s) stored" in body
     assert "of 5 requested" in body
 
@@ -495,37 +433,6 @@ def test_the_page_names_where_questions_are_stored(client, fake_collection, fake
 
 
 # --- review actions ---
-
-
-def test_each_question_offers_the_review_decisions(client, fake_collection, fake_questions):
-    """
-    Intent: Approving, rejecting and deleting are the review actions the screen exists
-        to provide, and each must be bound to the question it appears on — not to the
-        first one on the page.
-    Success: The row carries the question's id and the three action buttons.
-    Feature: Question review screen — review actions.
-    """
-    question_id = seed_question()
-    body = client.get(PAGE).text
-    assert f'data-question-id="{question_id}"' in body
-    assert 'class="btn btn-sm btn-outline-success js-status" data-status="approved"' in body
-    assert 'class="btn btn-sm btn-outline-secondary js-status" data-status="rejected"' in body
-    assert 'data-delete="true"' in body
-
-
-def test_the_current_state_is_not_offered_as_an_action(client, fake_collection, fake_questions):
-    """
-    Intent: Offering "Approve" on an approved question invites a click that changes
-        nothing and makes the current state harder to read.
-    Success: An approved question offers Reject and Re-open but not Approve.
-    Feature: Question review screen — actions reflect current state.
-    """
-    question_id = seed_question()
-    questions.set_status(question_id, "approved")
-    body = client.get(PAGE).text
-    assert 'data-status="approved"' not in body
-    assert 'data-status="rejected"' in body
-    assert 'data-status="draft"' in body
 
 
 def test_the_elapsed_timer_is_driven_by_the_servers_start_time(
@@ -653,7 +560,7 @@ def test_a_search_result_can_still_be_narrowed_by_the_filters(
     Feature: Question search — filters narrow the matches.
     """
     seed_question("Which stage filters documents?")
-    params = {"q": "stage filters documents", "status": "approved"}
+    params = {"q": "stage filters documents", "category": "nothing-uses-this"}
     assert "Which stage filters documents?" not in client.get(PAGE, params=params).text
 
 
@@ -704,104 +611,851 @@ def test_a_search_can_be_cleared(client, fake_collection, fake_questions):
     assert 'data-clear-search="true"' in body
 
 
-def test_the_screen_offers_the_duplicate_sweep(client, fake_collection, fake_questions):
-    """
-    Intent: The sweep is an on-demand action, so it needs a control. Without one it exists
-        only as an API call and would never be run.
-    Success: The page offers sweep and dry-run buttons.
-    Feature: Question duplicate sweep — reachable from the main screen.
-    """
-    body = client.get(PAGE).text
-    assert 'id="sweep-btn"' in body
-    assert 'id="sweep-dry-run-btn"' in body
+# --- where a run's questions came from ---
 
 
-def test_sweep_results_are_reported_with_scores(client, fake_collection, fake_questions):
+def test_the_pages_a_run_wrote_from_are_listed(client, fake_collection, fake_questions):
     """
-    Intent: A sweep deletes questions with no judge behind it, so what it did and how sure
-        it was must both be visible — otherwise a wrong threshold is invisible until an
-        author notices something missing.
-    Success: The page reports deleted pairs and remaining suspects with their rerank scores.
-    Feature: Question duplicate sweep — outcomes are reported on screen.
+    Intent: A question is only worth as much as it is checkable. Naming the documentation
+        pages a run read lets a reviewer open the source instead of re-researching the
+        question to find out whether it is right.
+    Success: The run alert reports how many pages were used and links each one.
+    Feature: Question generation — the source material of a run is shown on screen.
     """
     api_module._run_state["last_result"] = {
-        "source": "question-duplicate-sweep",
-        "compared": 2,
-        "dry_run": False,
-        "deleted": [
-            {
-                "keep": "k1",
-                "keep_stem": "The one kept?",
-                "drop": "d1",
-                "drop_stem": "The one deleted?",
-                "vector_score": 0.91,
-                "rerank_score": 0.98,
-            }
-        ],
-        "possible_duplicates": [
-            {
-                "keep": "k2",
-                "keep_stem": "A survivor?",
-                "drop": "d2",
-                "drop_stem": "A suspect?",
-                "vector_score": 0.80,
-                "rerank_score": 0.61,
-            }
-        ],
-        "errors": [],
+        "inserted": 1,
+        "requested": 1,
+        "rejected": [],
+        "source_pages": [{"url": "https://x/a.md", "title": "Atlas Search indexes"}],
+        "researched_the_web": False,
     }
     body = client.get(PAGE).text
-    assert 'data-sweep-deleted="true"' in body
-    assert "0.98" in body
-    assert 'data-sweep-possible="true"' in body
-    assert "0.61" in body
+    assert 'data-source-pages="true"' in body
+    assert "1 stored documentation page(s)" in body
+    assert "https://x/a.md" in body
 
 
-def test_a_dry_run_is_labelled_as_one(client, fake_collection, fake_questions):
+def test_a_run_that_fell_back_to_the_web_says_so(client, fake_collection, fake_questions):
     """
-    Intent: A dry run and a real sweep report the same pairs. If the screen did not
-        distinguish them, an author could believe duplicates were removed when nothing was.
-    Success: A dry-run result is labelled, and says nothing was deleted.
-    Feature: Question duplicate sweep — a dry run is visibly a dry run.
+    Intent: A run that researched the web is slower and not repeatable, and the remedy —
+        refresh the corpus — is only actionable if the author is told the fallback
+        happened rather than left assuming the stored documentation was used.
+    Success: The run alert says the web was researched and points at the corpus screen.
+    Feature: Question generation — the fallback to web research is visible on screen.
     """
     api_module._run_state["last_result"] = {
-        "source": "question-duplicate-sweep",
-        "compared": 1,
-        "dry_run": True,
-        "deleted": [],
-        "possible_duplicates": [
-            {
-                "keep": "k",
-                "keep_stem": "Kept?",
-                "drop": "d",
-                "drop_stem": "Would go?",
-                "vector_score": 0.9,
-                "rerank_score": 0.97,
-                "would_delete": True,
-            }
-        ],
-        "errors": [],
+        "inserted": 1,
+        "requested": 1,
+        "rejected": [],
+        "source_pages": [],
+        "researched_the_web": True,
     }
     body = client.get(PAGE).text
-    assert 'data-sweep-dry-run="true"' in body
+    assert 'data-researched-the-web="true"' in body
+    assert "/admin/docs" in body
 
 
-def test_sweep_errors_are_surfaced(client, fake_collection, fake_questions):
+# --- the page walk on screen ---
+
+
+def test_a_walk_reports_the_pages_it_wrote_from_and_what_is_left(
+    client, fake_collection, fake_questions
+):
     """
-    Intent: A sweep that could not rerank part of the collection has not cleared it. Silence
-        would be read as "no duplicates found", which is the one conclusion that must never
-        be assumed.
-    Success: Reported errors appear on the page.
-    Feature: Question duplicate sweep — partial failures are visible.
+    Intent: After a walk the author needs two things: which pages produced these questions,
+        and whether running it again would find anything new. Without the second, deciding
+        whether to run again is guesswork.
+    Success: The alert reports pages walked, per-page question counts, and pages remaining.
+    Feature: Question generation — a walk's result on screen.
     """
     api_module._run_state["last_result"] = {
-        "source": "question-duplicate-sweep",
-        "compared": 0,
-        "dry_run": False,
-        "deleted": [],
-        "possible_duplicates": [],
-        "errors": ["rerank failed for q1: VOYAGE_API_KEY not set"],
+        "source": "badge-page-walk",
+        "inserted": 6,
+        "pages_done": 2,
+        "pages_available": 41,
+        "rejected": [],
+        "source_pages": [
+            {"url": "https://x/a.md", "title": "Replication", "questions": 3},
+            {"url": "https://x/b.md", "title": "Failover", "questions": 3},
+        ],
     }
     body = client.get(PAGE).text
-    assert 'data-sweep-errors="true"' in body
-    assert "VOYAGE_API_KEY" in body
+    assert "6 question(s) stored from" in body
+    assert 'data-pages-left="true"' in body
+    # The unit this counts is a chunk — a heading and the passage under it — and calling
+    # it a page overstated the work by about four times, a page being a few chunks. The
+    # requirement recorded above is unchanged: what produced these questions, and whether
+    # running again would find anything new. Only the word for the unit is corrected.
+    assert "41 chunk(s) not yet written from" in body
+    assert "https://x/a.md" in body
+
+
+def test_a_badge_whose_material_is_used_up_says_so_on_screen(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: An exhausted badge and a badge that simply produced nothing look identical
+        without this. The actionable fact is that another run will not help — the corpus
+        needs widening — and an author who is not told will keep pressing the button.
+    Success: The alert says every page has been written from already.
+    Feature: Question generation — exhausted material is visible.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 0,
+        "pages_done": 0,
+        "pages_available": 0,
+        "rejected": [],
+        "exhausted": True,
+        "source_pages": [],
+    }
+    body = client.get(PAGE).text
+    assert 'data-exhausted="true"' in body
+    assert "already been written from" in body
+
+
+def test_a_walk_that_researched_instead_says_so_on_screen(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: A run that researched the web is slower and not repeatable, and the fix —
+        refresh the corpus — is only actionable if the author is told rather than left
+        assuming the documentation was walked.
+    Success: The alert reports the fallback and links to the corpus screen.
+    Feature: Question generation — the research fallback is visible.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 3,
+        "pages_done": 0,
+        "pages_available": 0,
+        "rejected": [],
+        "fell_back_to_research": True,
+        "source_pages": [],
+    }
+    body = client.get(PAGE).text
+    assert 'data-fell-back="true"' in body
+    assert "/admin/docs" in body
+
+
+def test_pages_that_produced_nothing_are_listed(client, fake_collection, fake_questions):
+    """
+    Intent: A walk steps over a page that refuses or truncates rather than failing. Left
+        unreported those pages are invisible, and a badge whose material is systematically
+        refused would look like a badge with thin documentation.
+    Success: The alert reports how many pages produced nothing, with their reasons.
+    Feature: Question generation — pages that produced nothing are reported.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 3,
+        "pages_done": 3,
+        "pages_available": 10,
+        "rejected": [],
+        "source_pages": [],
+        "failure_count": 1,
+        "failures": [{"url": "https://x/bad.md", "error": "refused"}],
+    }
+    body = client.get(PAGE).text
+    assert 'data-page-failures="true"' in body
+    assert "https://x/bad.md" in body and "refused" in body
+
+
+# --- the status panel ---
+
+
+def test_the_screen_carries_a_run_progress_panel(client, fake_collection, fake_questions):
+    """
+    Intent: A walk of 25 pages runs for many minutes. A spinner cannot distinguish a slow
+        run from a stuck one, so the screen needs the same kind of panel the documentation
+        refresh has: phase, a bar, and the numbers behind it.
+    Success: The panel and its progress bar are on the page, with cells for pages,
+        questions, rate, elapsed and remaining.
+    Feature: Question generation — a detailed run status panel.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'data-progress-panel="true"' in body
+    assert 'data-progress-bar="true"' in body
+    for stat in ("pages", "questions", "rate", "elapsed", "eta"):
+        assert 'data-stat="' + stat + '"' in body
+
+
+def test_the_status_panel_shows_what_the_run_is_spending(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Cost is the reason to stop a walk, so it has to be visible while there is
+        still something to stop. Spend and a projection together are what make that an
+        informed decision rather than a guess.
+    Success: The panel has cells for spend, the projected total and the token counts.
+    Feature: Question generation — run cost on screen.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'data-stat="spent"' in body
+    assert 'data-stat="projected"' in body
+    assert 'data-stat="tokens"' in body
+
+
+def test_the_status_panel_offers_a_stop_button(client, fake_collection, fake_questions):
+    """
+    Intent: A 200-page walk is a long commitment, and an author who started the wrong one
+        should be able to stop the spending without restarting the server. The button says
+        "after this page" because the page in flight is already paid for.
+    Success: A stop control is present on the panel.
+    Feature: Question generation — a run can be stopped from the screen.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'data-stop-run="true"' in body
+    assert "Stop after this page" in body
+
+
+def test_a_finished_run_reports_what_it_cost(client, fake_collection, fake_questions):
+    """
+    Intent: Cost per badge is how an author decides whether the next 33 badges are worth
+        it. Shown only while running, the number is gone by the time there is a decision
+        to make.
+    Success: The run alert reports the dollars the walk spent.
+    Feature: Question generation — a finished run reports its cost.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 9,
+        "pages_done": 3,
+        "pages_available": 20,
+        "rejected": [],
+        "source_pages": [],
+        "cost": {"dollars": 0.184},
+    }
+    body = client.get(PAGE).text
+    assert 'data-run-cost="true"' in body
+    assert "0.184" in body
+
+
+def test_a_stopped_run_is_labelled_as_one(client, fake_collection, fake_questions):
+    """
+    Intent: A stopped walk looks like a walk that ran out of material — both end with
+        fewer questions than asked for. Without a label the author cannot tell that the
+        remaining pages are still there to walk.
+    Success: A run that stopped early is marked as stopped on screen.
+    Feature: Question generation — a stopped run is visible as stopped.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 3,
+        "pages_done": 1,
+        "pages_available": 20,
+        "rejected": [],
+        "source_pages": [],
+        "stopped_early": True,
+    }
+    body = client.get(PAGE).text
+    assert 'data-stopped-early="true"' in body
+
+
+# --- no review workflow, guarded deletion ---
+
+
+def test_a_question_offers_only_deletion(client, fake_collection, fake_questions):
+    """
+    Intent: Replaces a test requiring approve, reject and re-open buttons. With no review
+        state there is nothing to approve and nothing to re-open, and every extra control
+        is one more thing to read on a screen holding thousands of questions. Deletion is
+        the one editorial act left, and it must be bound to the question it appears on
+        rather than the first on the page.
+    Success: The row carries its question id and a delete control, and offers no status
+        actions.
+    Feature: Question review screen — deletion is the only action.
+    """
+    question_id = seed_question()
+    body = client.get(PAGE).text
+    assert f'data-question-id="{question_id}"' in body
+    assert 'data-delete="true"' in body
+    assert "js-status" not in body
+
+
+def test_the_screen_no_longer_offers_status_tabs(client, fake_collection, fake_questions):
+    """
+    Intent: Replaces a test requiring Drafts, Approved and Rejected tabs with counts. Tabs
+        over states that no longer exist would filter on a field nothing writes, so every
+        tab but the first would read as empty — the screen would claim the collection was
+        empty when it was not.
+    Success: The list is headed by a single count of what is in view, with no status tabs.
+    Feature: Question review screen — one list, no review states.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    assert 'data-question-count="true"' in body
+    assert "1 question" in body
+    assert "nav-tabs" not in body
+
+
+def test_deleting_asks_twice_before_it_happens(client, fake_collection, fake_questions):
+    """
+    Intent: Deletion is the only irreversible act on this screen — nothing can re-create a
+        question — and it now sits next to no other button, so a misplaced click has
+        nowhere else to land. A single confirm is not enough for an action that is one
+        click from a list of thousands.
+    Success: The delete control opens a dialog that shows the question again and requires
+        the word to be typed before the confirming button is enabled.
+    Feature: Question deletion — guarded against an accidental click.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    assert 'id="delete-modal"' in body
+    assert 'data-delete-stem="true"' in body
+    assert 'data-delete-confirm="true"' in body
+    assert 'data-confirm-delete="true"' in body
+    assert "disabled" in body
+
+
+def test_the_delete_dialog_shows_the_question_it_will_delete(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: A confirmation that does not show what is about to be lost is a confirmation
+        nobody reads. The stem in the dialog is what makes the second click a decision
+        rather than a reflex — and it must be the stem of the row that was clicked.
+    Success: The delete control carries its own question's stem.
+    Feature: Question deletion — the dialog names the question.
+    """
+    seed_question("Which stage filters documents?")
+    body = client.get(PAGE).text
+    assert 'data-stem="Which stage filters documents?"' in body
+
+
+# --- run history and dismissing on screen ---
+
+
+def test_the_run_summary_can_be_closed(client, fake_collection, fake_questions):
+    """
+    Intent: The summary is rendered from run state, so it stays on the screen until somebody
+        starts another run — permanently, for anyone who is not currently generating. It has
+        to be closable, and nothing is lost by closing it because the run is recorded.
+    Success: The run summary carries a dismiss control.
+    Feature: Question generation — a finished run's notice can be closed.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk", "inserted": 3, "pages_done": 1, "rejected": [],
+        "source_pages": [],
+    }
+    body = client.get(PAGE).text
+    assert 'data-last-result="true"' in body
+    assert 'data-dismiss-result="true"' in body
+
+
+# --- skill level, rate and unit cost on screen ---
+
+
+def test_the_form_offers_a_skill_level(client, fake_collection, fake_questions):
+    """
+    Intent: A quiz for people who own the deployment is a different artefact from one for
+        people who installed MongoDB last week, so the level is a choice the author has to be
+        able to make — and mixed has to be offered, since spreading the levels is the sensible
+        default for filling a bank.
+    Success: The form offers the three levels and a mixed option.
+    Feature: Question generation — skill level is choosable on the screen.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'id="difficulty"' in body
+    for level in ("foundational", "intermediate", "advanced"):
+        assert 'value="' + level + '"' in body
+    assert "Mixed" in body
+
+
+def test_the_panel_shows_throughput_and_unit_cost(client, fake_collection, fake_questions):
+    """
+    Intent: Spend so far does not say whether a run is going well — a large number is fine if
+        it is producing a lot. Questions per minute and cost per question are the two figures
+        that make "let it run or stop it" an informed decision.
+    Success: The panel has cells for the rate and the cost per question.
+    Feature: Question generation — throughput and unit cost on the panel.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'data-stat="qpm"' in body
+    assert 'data-stat="per-question"' in body
+
+
+def test_a_finished_run_reports_its_unit_cost_and_rate(client, fake_collection, fake_questions):
+    """
+    Intent: Total spend cannot be compared between runs because it depends on how many pages
+        were walked. Cost per question and questions per minute are the comparable figures,
+        and they are what a later decision about the other badges turns on.
+    Success: The run summary reports both alongside the total.
+    Feature: Question generation — a finished run reports its unit cost and rate.
+    """
+    api_module._run_state["last_result"] = {
+        "source": "badge-page-walk",
+        "inserted": 9,
+        "pages_done": 3,
+        "pages_available": 20,
+        "rejected": [],
+        "source_pages": [],
+        "questions_per_minute": 2.5,
+        "cost": {"dollars": 0.184, "dollars_per_question": 0.0204},
+    }
+    body = client.get(PAGE).text
+    assert "0.0204" in body and "per question" in body
+    assert "2.5" in body and "per minute" in body
+
+
+# --- telling the tags apart ---
+
+
+def test_badge_and_category_tags_are_coloured_differently(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Three kinds of tag sit side by side on a question — difficulty, the badges it is
+        filed under, and the topic areas it exercises. Rendered identically they read as one
+        undifferentiated row of chips, and the reader has to know the order to tell which is
+        which.
+    Success: Badge tags and category tags carry different colour classes, and neither matches
+        the other.
+    Feature: Question review screen — tag kinds are visually distinct.
+    """
+    seed_question(skill_badges=["atlas-search"], categories=["search"])
+    body = client.get(PAGE).text
+    # The two colour treatments now come from the theme's tag classes rather than
+    # Bootstrap's subtle-background utilities. The requirement recorded above is
+    # unchanged — the two kinds of tag must carry different colour classes — only
+    # where those classes are defined has moved.
+    assert "tag-badge" in body
+    assert "tag-category" in body
+
+
+def test_a_tags_kind_is_also_stated_in_words(client, fake_collection, fake_questions):
+    """
+    Intent: Colour alone is not a label — it fails for anyone who cannot distinguish the two
+        hues, and it fails in a screenshot pasted into a document. The distinction has to exist
+        in text as well as in colour.
+    Success: Each tag says what kind of tag it is.
+    Feature: Question review screen — tag kinds are named, not only coloured.
+    """
+    seed_question(skill_badges=["atlas-search"], categories=["search"])
+    body = client.get(PAGE).text
+    assert "Skill badge: atlas-search" in body
+    assert "Topic area: search" in body
+
+
+def test_a_badge_tag_links_to_the_badge_definition(client, fake_collection, fake_questions):
+    """
+    Intent: A slug is not self-explanatory — "secure-mongodb-self-managed-authn-authz" does not
+        say what it covers. Checking should be one click, not a hunt through a 34-row admin
+        table for a row whose name differs from its slug.
+    Success: A badge tag is a link to that badge's row on the badge screen.
+    Feature: Question review screen — badge tags link to their definitions.
+    """
+    seed_question(skill_badges=["atlas-search"])
+    body = client.get(PAGE).text
+    assert '/admin/skill-badges#badge-atlas-search' in body
+
+
+def test_category_tags_are_not_links(client, fake_collection, fake_questions):
+    """
+    Intent: A topic area is a free-text label with no definition anywhere, so linking one would
+        promise a page that does not exist. Only the tags that lead somewhere should look like
+        they do.
+    Success: A category tag is not rendered as an anchor.
+    Feature: Question review screen — only badge tags are links.
+    """
+    seed_question(skill_badges=["atlas-search"], categories=["search"])
+    body = client.get(PAGE).text
+    start = body.rindex("<", 0, body.index('data-category-tag="search"'))
+    assert not body[start:].startswith("<a")
+
+
+def test_a_citation_links_to_the_rendered_page(client, fake_collection, fake_questions):
+    """
+    Intent: A citation exists so a reviewer can check a question against its source. MongoDB
+        serves these pages as raw Markdown, which a browser shows as unformatted text — so the
+        link went somewhere technically correct and unpleasant to read.
+    Success: The citation points at the renderer while still showing the canonical URL.
+    Feature: Question review screen — citations open rendered.
+    """
+    seed_question(source_urls=["https://www.mongodb.com/docs/manual/replication.md"])
+    body = client.get(PAGE).text
+    assert "/admin/docs/render?url=" in body
+    # The reader still sees the canonical URL: it is what identifies the page.
+    assert "https://www.mongodb.com/docs/manual/replication.md" in body
+
+
+# --- when a question was written ---
+
+
+def test_a_question_shows_when_it_was_written(client, fake_collection, fake_questions):
+    """
+    Intent: The list is newest first, but without a time an author cannot tell which questions
+        came out of the run they just watched — and once a prompt has been changed, cannot tell
+        which side of that change a question is from. That is the comparison the whole run
+        history exists to support, and it needs to be visible on the question itself.
+    Success: The question card shows its creation time.
+    Feature: Question review screen — questions show when they were written.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    assert 'data-created-at="true"' in body
+
+
+def test_the_screen_watches_for_newly_written_questions(client, fake_collection, fake_questions):
+    """
+    Intent: A walk stores questions section by section over many minutes, so a list left alone
+        goes stale while its reader watches it being filled — the questions exist in the
+        database and not on the screen.
+    Success: The page polls the count endpoint and reloads when it grows.
+    Feature: Question review screen — new questions appear as they are stored.
+    """
+    body = client.get(PAGE).text
+    assert "showNewQuestions" in body
+    assert '/count' in body
+
+
+def test_the_watch_counts_only_the_current_view(client, fake_collection, fake_questions):
+    """
+    Intent: The screen reloads when its count grows. Counting the whole collection would reload
+        a badge-filtered list whenever any other badge gained a question — during a multi-badge
+        run, constantly, and each time showing the reader the same list they already had.
+    Success: The polled count carries the screen's badge filter.
+    Feature: Question review screen — the watch matches the filtered view.
+    """
+    seed_badge()
+    seed_question()
+    body = client.get(PAGE, params={"skill_badge": "atlas-search"}).text
+    assert 'skill_badge: "atlas-search"' in body
+
+
+# --- identifiers on screen ---
+
+
+def test_a_question_shows_its_identifier(client, fake_collection, fake_questions):
+    """
+    Intent: An author refers to one question in a message or a ticket, and the only way to do
+        that is by identifier — so it has to be on the card. Shortened and click-to-copy,
+        because 32 hex characters is not something anyone should retype.
+    Success: The card carries a copyable identifier chip.
+    Feature: Question review screen — questions show their identifier.
+    """
+    question_id = seed_question()
+    body = client.get(PAGE).text
+    assert 'data-copy-id="' + question_id + '"' in body
+    assert question_id[:8] in body
+
+
+def test_pasting_an_identifier_finds_that_question(client, fake_collection, fake_questions):
+    """
+    Intent: One box serves both purposes — paste an id to find one question, type a phrase to
+        find several. A hex string has no meaning to embed, so semantically searching for one
+        returns whatever happens to be nearest, which reads as "that question does not exist".
+    Success: Searching for an identifier returns exactly that question, and says it was looked
+        up rather than searched for.
+    Feature: Question search — identifiers are looked up exactly.
+    """
+    question_id = seed_question("Which stage filters documents?")
+    seed_question("Something else entirely?")
+    body = client.get(PAGE, params={"q": question_id}).text
+    assert "Which stage filters documents?" in body
+    assert "Something else entirely?" not in body
+    assert 'data-id-summary="true"' in body
+
+
+def test_an_unknown_identifier_says_so_plainly(client, fake_collection, fake_questions):
+    """
+    Intent: An identifier that finds nothing means something specific — deleted, or from
+        another collection — and that is more useful than an empty result reading as "we have
+        nothing on that". It also tells the reader their paste was understood as an id.
+    Success: An identifier-shaped query with no match explains itself.
+    Feature: Question search — an unknown identifier is explained.
+    """
+    seed_question()
+    body = client.get(PAGE, params={"q": "a" * 32}).text
+    assert 'data-no-such-id="true"' in body
+    assert "No question with that identifier" in body
+
+
+def test_a_phrase_is_still_searched_semantically(client, fake_collection, fake_questions):
+    """
+    Intent: The identifier check must not swallow ordinary searches — a query is only treated
+        as an id when its shape says so. Otherwise a search for a hex-looking phrase would
+        silently return nothing.
+    Success: A worded query is reported as a similarity search, not an identifier lookup.
+    Feature: Question search — phrases are still searched by meaning.
+    """
+    seed_question("Which stage filters documents?")
+    body = client.get(PAGE, params={"q": "stage filters documents"}).text
+    assert 'data-search-summary="true"' in body
+    assert 'data-id-summary="true"' not in body
+
+
+# --- a question's own facts, above the question ---
+
+
+def test_the_identifier_date_and_source_sit_above_the_stem(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Which question this is, when it was written, and what it was written from are
+        how an author refers to, dates and checks a question — they are read before the
+        question, not after it. Below the options they were also out of sight on any
+        question long enough to need scrolling.
+    Success: All three render above the stem, in that order.
+    Feature: Question review screen — a question's facts are stated before the question.
+    """
+    seed_question(source_urls=["https://www.mongodb.com/docs/manual/aggregation.md"])
+    body = client.get(PAGE).text
+    head = body.index("question-head")
+    assert head < body.index('data-stem="true"')
+    assert head < body.index("data-copy-id=") < body.index('data-created-at="true"') \
+        < body.index("data-source-url=")
+
+
+def test_each_of_those_facts_is_labelled(client, fake_collection, fake_questions):
+    """
+    Intent: A hex string, a date and a URL say nothing about what they are on their own,
+        and the identifier in particular was previously an unlabelled grey chip in a row
+        of tags — indistinguishable from a category to anyone who had not been told.
+    Success: Each of the three carries a label naming what it is.
+    Feature: Question review screen — the facts above a question are named.
+    """
+    seed_question(source_urls=["https://www.mongodb.com/docs/manual/aggregation.md"])
+    body = client.get(PAGE).text
+    head = body[body.index("question-head"):body.index('data-stem="true"')]
+    assert "<dt>Question ID</dt>" in head
+    assert "<dt>Generated</dt>" in head
+    assert "<dt>Source</dt>" in head
+
+
+def test_a_question_with_no_source_omits_the_source_row(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Questions written before citations were recorded, and any written by research
+        rather than from a stored page, have no source. An empty labelled row would state
+        a fact the program does not have.
+    Success: The source label is not rendered for a question with no source.
+    Feature: Question review screen — absent facts are omitted, not shown empty.
+    """
+    seed_question(source_urls=[])
+    body = client.get(PAGE).text
+    head = body[body.index("question-head"):body.index('data-stem="true"')]
+    assert "<dt>Source</dt>" not in head
+
+
+def test_the_identifier_is_not_rendered_as_a_chip(client, fake_collection, fake_questions):
+    """
+    Intent: Chips on this screen mean "this question belongs to that" — a skill badge or a
+        topic area. The identifier is the question's own name, so a pill put it in the wrong
+        category of thing, and it now has a label saying what it is instead.
+    Success: The identifier renders as plain text, carrying no tag class.
+    Feature: Question review screen — the identifier reads as text, not as a tag.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    element = body[body.rindex("<button", 0, body.index("data-copy-id=")):]
+    assert "tag" not in element[: element.index(">")]
+
+
+# --- paging a bank of thousands ---
+
+
+def test_only_one_page_of_questions_is_rendered(client, fake_collection, fake_questions):
+    """
+    Intent: The bank is meant to hold thousands of questions. Rendering all of them builds a
+        document the browser is slow to lay out and slow to scroll, from a cursor that read
+        every match to produce it — the screen gets worse exactly as the collection gets more
+        valuable.
+    Success: A page shows at most the requested number of questions, not the whole
+        collection.
+    Feature: Question review screen — the list is paged.
+    """
+    for index in range(12):
+        seed_question(stem=f"Question {index}?")
+    body = client.get(PAGE, params={"per_page": 5}).text
+    assert body.count('data-question-id="') == 5
+
+
+def test_fifty_questions_is_the_default_page(client, fake_collection, fake_questions):
+    """
+    Intent: A default that has to be chosen before the screen is useful is a decision pushed
+        onto the reader. Fifty fills a screen or two — enough to scan a run's output without
+        the page becoming a burden.
+    Success: With no size asked for, the page offers fifty.
+    Feature: Question review screen — a default page size.
+    """
+    seed_question()
+    body = client.get(PAGE).text
+    assert '<option value="50" selected>' in body
+
+
+def test_a_page_size_that_is_not_offered_is_refused(client, fake_collection, fake_questions):
+    """
+    Intent: The size reaches the database as a limit. A hand-edited URL asking for a hundred
+        thousand would render the very page this exists to prevent, and nothing in the
+        request is worth trusting for that.
+    Success: An unoffered size falls back to the default rather than being honoured.
+    Feature: Question review screen — the page size is validated, not trusted.
+    """
+    seed_question()
+    body = client.get(PAGE, params={"per_page": 100000}).text
+    assert '<option value="50" selected>' in body
+
+
+def test_a_later_page_shows_the_questions_after_the_first(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Paging is only useful if the pages differ. Newest first is the order, so page two
+        must continue where page one stopped rather than starting over.
+    Success: The second page shows the next questions, and none of the first page's.
+    Feature: Question review screen — pages continue rather than repeat.
+    """
+    for index in range(12):
+        seed_question(stem=f"Question {index}?")
+    first = client.get(PAGE, params={"per_page": 5}).text
+    second = client.get(PAGE, params={"per_page": 5, "page": 2}).text
+    first_ids = set(re.findall(r'data-question-id="([^"]+)"', first))
+    second_ids = set(re.findall(r'data-question-id="([^"]+)"', second))
+    assert len(first_ids) == 5 and len(second_ids) == 5
+    assert not (first_ids & second_ids)
+
+
+def test_a_page_past_the_end_shows_the_last_page(client, fake_collection, fake_questions):
+    """
+    Intent: Deleting the last question on the last page, or narrowing a filter, leaves a URL
+        pointing past the end of the result. An error there is a dead end where showing the
+        last page is plainly what was meant.
+    Success: A page number beyond the end renders the last page rather than failing.
+    Feature: Question review screen — an out-of-range page is clamped.
+    """
+    for index in range(12):
+        seed_question(stem=f"Question {index}?")
+    response = client.get(PAGE, params={"per_page": 5, "page": 99})
+    assert response.status_code == 200
+    assert 'data-page-position="true"' in response.text
+    assert "Page 3 of 3" in re.sub(r"\s+", " ", response.text)
+
+
+def test_the_pager_keeps_the_filters_and_the_size(client, fake_collection, fake_questions):
+    """
+    Intent: A pager that dropped the filters would move through a different collection from
+        the one being read — page two of everything, having asked for one badge. The current
+        view is the URL, so the URL has to carry all of it.
+    Success: The next-page link preserves the badge filter, the search and the page size.
+    Feature: Question review screen — paging preserves the view.
+    """
+    for index in range(6):
+        seed_question(stem=f"Question {index}?", skill_badges=["atlas-search"])
+    body = client.get(PAGE, params={"skill_badge": "atlas-search", "per_page": 5}).text
+    link = body[body.index('data-page-next="true"'):]
+    link = body[body.rindex("<a", 0, body.index('data-page-next="true"')):][: link.index(">") + 200]
+    assert "skill_badge=atlas-search" in link
+    assert "per_page=5" in link
+    assert "page=2" in link
+
+
+def test_the_screen_says_which_questions_are_on_it(client, fake_collection, fake_questions):
+    """
+    Intent: A page of fifty out of three thousand looks like the whole collection unless it
+        says otherwise — the difference between "that is all there is" and "that is all that
+        fits" is the whole point of a count.
+    Success: The screen shows the range on this page alongside the total.
+    Feature: Question review screen — the count distinguishes the page from the whole.
+    """
+    for index in range(12):
+        seed_question(stem=f"Question {index}?")
+    body = re.sub(r"\s+", " ", client.get(PAGE, params={"per_page": 5, "page": 2}).text)
+    assert "12 questions" in body
+    assert "Showing 6–10" in body
+
+
+def test_a_search_result_is_paged_too(client, fake_collection, fake_questions, monkeypatch):
+    """
+    Intent: A result that behaved differently from the list would be a second set of rules to
+        learn — and a search that matches everything is as long as the list is.
+    Success: A search shows one page of its matches.
+    Feature: Question review screen — search results are paged.
+    """
+    ids = [seed_question(stem=f"Question {index}?") for index in range(12)]
+    monkeypatch.setattr(
+        questions,
+        "similar_by_embedding_text",
+        lambda *a, **k: [{"question_id": qid, "stem": "x", "options": [],
+                          "skill_badges": [], "categories": [],
+                          "difficulty": "intermediate"} for qid in ids],
+    )
+    body = client.get(PAGE, params={"q": "aggregation stages", "per_page": 5}).text
+    assert body.count('data-question-id="') == 5
+
+
+# --- what a run would cost before starting it ---
+
+
+def test_the_form_says_the_budget_is_per_badge(client, fake_collection, fake_questions):
+    """
+    Intent: The page budget and the questions-per-page are passed to each selected badge in
+        full, so a run over several badges walks that many times as much. The hint said "25
+        pages at 3 questions each is up to 75 questions", which is true of one badge and wrong
+        by a factor of however many were selected — understating the one number on the form
+        that decides what a run costs.
+    Success: The form states that the numbers apply per badge.
+    Feature: Question generation — the form says what the budget applies to.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert "Per badge, not per run" in body
+
+
+def test_the_form_projects_the_questions_a_run_would_write(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: The surprise was a multiplication the reader had to do themselves, from a hint that
+        did it wrong. Selecting every badge with the default budget is thousands of questions
+        and hours of work, and nothing on the form said so before the run started.
+    Success: The form carries a projection that multiplies badges by pages by questions per
+        page, and updates as those change.
+    Feature: Question generation — the run's size is projected before it starts.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert 'data-projection="true"' in body
+    script = body[body.index("function updateProjection"):]
+    script = script[: script.index("\n}")]
+    assert "badges * pages" in script
+    assert "pagesTotal * perPage" in script
+
+
+def test_the_projection_is_named_as_a_ceiling(client, fake_collection, fake_questions):
+    """
+    Intent: A projected number read as a promise would be wrong in the other direction: pages
+        already written from are skipped, so a badge with little unused material contributes
+        far fewer, and stopping ends the run. An author deciding whether to wait needs to know
+        which way the number can move.
+    Success: The projection says it is a ceiling and why the real figure can be lower.
+    Feature: Question generation — the projection states its own uncertainty.
+    """
+    seed_badge()
+    body = client.get(PAGE).text
+    assert "A ceiling, not an estimate" in body
+    assert "already " in body and "skipped" in body
+
+
+def test_the_panel_shows_the_whole_job_only_when_there_is_one(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: With a single badge selected, the job and the badge are the same thing, and two
+        identical bars reporting the same numbers would be worse than one — the reader would
+        look for the difference between them.
+    Success: The overall block is rendered but hidden, and shown only when more than one badge
+        is being walked.
+    Feature: Question generation — the whole-job panel appears only for a multi-badge run.
+    """
+    body = client.get(PAGE).text
+    assert 'data-overall="true"' in body
+    assert 'class="d-none" data-overall="true"' in body
+    script = body[body.index("const all = p.overall"):]
+    assert "(all.badge_count || 0) > 1" in script[: script.index("\n\n")]

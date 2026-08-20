@@ -4,14 +4,19 @@ Questions are keyed on `question_id`, a generated identifier rather than a slug:
 two questions on the same topic are legitimately different questions, so nothing
 about a question's content is its identity.
 
-`status` is a human decision and is only set on insert; a later generation run
-never revisits it.
+There is no review workflow. A question that passes the format check is stored and
+usable, so the only states a question has are "stored" and "deleted". A draft state
+was a bottleneck rather than a safeguard: at thousands of questions nobody reads a
+queue of drafts, and questions nobody has blessed are indistinguishable from
+questions nobody wants. Deletion is the one editorial act, and it is final.
 """
 
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from bson import ObjectId
+from bson.errors import InvalidId
 from pymongo import ASCENDING, DESCENDING
 from pymongo.collection import Collection
 
@@ -41,16 +46,22 @@ def ensure_indexes() -> None:
     # The three fields the review screen filters on.
     coll.create_index([("skill_badges", ASCENDING)], name="skill_badges")
     coll.create_index([("categories", ASCENDING)], name="categories")
-    coll.create_index([("status", ASCENDING)], name="status")
 
 
-def insert_questions(questions: list[GeneratedQuestion]) -> dict[str, Any]:
-    """Store newly generated questions as drafts. Returns a summary for the UI."""
+def insert_questions(
+    questions: list[GeneratedQuestion], run_id: str | None = None
+) -> dict[str, Any]:
+    """Store newly generated questions. Returns a summary for the UI.
+
+    `run_id` is supplied by a caller that spans several inserts — a page walk stores
+    page by page, and stamping each page with its own id would make the run a question
+    came from unrecoverable from the question.
+    """
     if not questions:
-        return {"run_id": None, "inserted": 0, "question_ids": []}
+        return {"run_id": run_id, "inserted": 0, "question_ids": []}
 
     ensure_indexes()
-    run_id = uuid4().hex
+    run_id = run_id or uuid4().hex
     now = datetime.now(timezone.utc)
 
     docs = []
@@ -61,7 +72,6 @@ def insert_questions(questions: list[GeneratedQuestion]) -> dict[str, Any]:
                 "question_id": uuid4().hex,
                 "created_at": now,
                 "generation_run_id": run_id,
-                "status": "draft",
                 # Composed on write, so a question is embeddable the moment it
                 # lands rather than after some later maintenance step.
                 EMBEDDING_FIELD: combined_text(question.stem, question.explanation),
@@ -76,32 +86,34 @@ def insert_questions(questions: list[GeneratedQuestion]) -> dict[str, Any]:
 
 
 def list_questions(
-    status: str | None = None,
     skill_badge: str | None = None,
     category: str | None = None,
+    *,
+    skip: int = 0,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Questions matching every filter given, newest first.
 
     Newest first because the author's usual question is "what did that run just
     produce?", and a generation run appends to the end of the collection.
+
+    `skip` and `limit` page the result on the server. The bank is meant to hold
+    thousands, and rendering all of them builds a document the browser is slow to
+    lay out and scroll, from a cursor that read every match to produce it. Omitting
+    `limit` still returns everything, which is what the export wants: an export
+    filtered to one page of results would be a surprising thing to hand someone.
     """
     query: dict[str, Any] = {}
-    if status:
-        query["status"] = status
     if skill_badge:
         query["skill_badges"] = skill_badge
     if category:
         query["categories"] = category
-    return list(
-        collection().find(query, LIST_PROJECTION).sort("created_at", DESCENDING)
+    cursor = (
+        collection().find(query, LIST_PROJECTION).sort("created_at", DESCENDING).skip(skip)
     )
-
-
-def set_status(question_id: str, status: str) -> bool:
-    result = collection().update_one(
-        {"question_id": question_id}, {"$set": {"status": status}}
-    )
-    return result.matched_count == 1
+    if limit is not None:
+        cursor = cursor.limit(limit)
+    return list(cursor)
 
 
 def delete_question(question_id: str) -> bool:
@@ -150,7 +162,6 @@ def similar_by_embedding_text(
                 "skill_badges": True,
                 "categories": True,
                 "difficulty": True,
-                "status": True,
                 "source_urls": True,
                 "score": {"$meta": "vectorSearchScore"},
             }
@@ -171,7 +182,6 @@ SEARCH_PROJECTION = {
     "skill_badges": True,
     "categories": True,
     "difficulty": True,
-    "status": True,
     "source_urls": True,
     "embedding_text": True,
 }
@@ -246,6 +256,182 @@ def backfill_embedding_text() -> dict[str, Any]:
         )
         written += 1
     return {"written": written, "already_correct": already_correct}
+
+
+def source_urls_for_badge(slug: str) -> set[str]:
+    """Every documentation page this badge already has questions from.
+
+    This is what makes the page walk resumable: a run skips the pages already written
+    from, so walking a badge twice covers new material instead of re-mining the same
+    pages. Read as one projection — the set is the whole answer, and asking per page
+    would be one round trip per candidate.
+    """
+    return {
+        url
+        for doc in collection().find(
+            {"skill_badges": slug}, {"_id": False, "source_urls": True}
+        )
+        for url in (doc.get("source_urls") or [])
+    }
+
+
+def delete_questions(question_ids: list[str]) -> int:
+    """Delete the named questions, returning how many were removed.
+
+    One round trip rather than one per question: the duplicate screen deletes a
+    reviewed batch, and the count is what the operator is told — so a stale id that
+    matches nothing is silently absent from it rather than an error, which is the
+    honest answer when another tab already deleted it.
+    """
+    if not question_ids:
+        return 0
+    return (
+        collection().delete_many({"question_id": {"$in": question_ids}}).deleted_count
+    )
+
+
+def find_by_identifier(value: str) -> list[dict[str, Any]]:
+    """One question looked up by either identifier, or none.
+
+    Two exist, for different reasons. `question_id` is what this program keys on and
+    what every endpoint takes; `_id` is MongoDB's, projected out of every listing and
+    therefore the one an author only ever sees in Atlas or Compass — which is exactly
+    when they want to find the question it belongs to.
+
+    Accepting both means a value pasted from either place works, rather than the reader
+    having to know which kind of identifier they are holding. Returned as a list so a
+    caller can treat it like any other result set.
+    """
+    value = (value or "").strip()
+    if not value:
+        return []
+
+    found = collection().find_one({"question_id": value}, LIST_PROJECTION)
+    if found:
+        return [found]
+
+    # An ObjectId is 24 hex characters. Constructing one from anything else raises, and
+    # a search box is exactly where malformed input arrives, so this never guesses.
+    try:
+        found = collection().find_one({"_id": ObjectId(value)}, LIST_PROJECTION)
+    except (InvalidId, TypeError):
+        return []
+    return [found] if found else []
+
+
+def looks_like_an_identifier(value: str) -> bool:
+    """Whether this query is an identifier rather than words to search for.
+
+    Checked by shape so the search box can serve both purposes: an author pastes an id
+    to find one question and types a phrase to find several, and having to choose the
+    right box first is friction for no gain. Both identifiers are hex — 32 characters
+    for a `question_id`, 24 for an ObjectId — and neither is anything a person would
+    type as a search.
+    """
+    value = (value or "").strip()
+    return len(value) in (24, 32) and all(c in "0123456789abcdefABCDEF" for c in value)
+
+
+def count_questions(skill_badge: str | None = None, category: str | None = None) -> int:
+    """How many questions match the filters. Counted, not fetched.
+
+    Polled while a run is going to notice new questions arriving, so it must stay cheap:
+    fetching every question to learn that nothing changed is the thing this avoids.
+    """
+    query: dict[str, Any] = {}
+    if skill_badge:
+        query["skill_badges"] = skill_badge
+    if category:
+        query["categories"] = category
+    return collection().count_documents(query)
+
+
+def source_chunk_ids_for_badge(slug: str) -> set[str]:
+    """Every documentation section this badge already has questions from.
+
+    Finer grain than the page: a page has several sections, and walking a badge again
+    must skip the sections already used rather than the whole page — otherwise one
+    question written from a page's opening would make the rest of it unreachable.
+    """
+    return {
+        chunk_id
+        for doc in collection().find(
+            {"skill_badges": slug}, {"_id": False, "source_chunk_ids": True}
+        )
+        for chunk_id in (doc.get("source_chunk_ids") or [])
+    }
+
+
+def shuffle_stored_options(seed: int | None = None) -> dict[str, int]:
+    """Re-order the options of every stored question.
+
+    For questions written before the order was randomised — the first 125 all had the
+    correct answer in position A, which makes them unusable as a quiz. Returns how many
+    were changed and how many were already varied.
+
+    A question whose correct option happens to shuffle back to where it started is not
+    counted as changed, so running this twice reports honestly rather than claiming to
+    have fixed something again.
+    """
+    import random
+
+    rng = random.Random(seed)
+    changed = unchanged = 0
+    for doc in collection().find({}, {"_id": True, "options": True}):
+        options = doc.get("options") or []
+        if len(options) < 2:
+            unchanged += 1
+            continue
+        before = [bool(o.get("is_correct")) for o in options]
+        rng.shuffle(options)
+        after = [bool(o.get("is_correct")) for o in options]
+        collection().update_one({"_id": doc["_id"]}, {"$set": {"options": options}})
+        if before == after:
+            unchanged += 1
+        else:
+            changed += 1
+    return {"changed": changed, "unchanged": unchanged}
+
+
+def correct_answer_positions() -> dict[str, int]:
+    """How often the correct answer sits in each position, across the collection.
+
+    The check that catches the failure this exists to fix: an even spread is healthy and
+    anything approaching a single position means the shuffle is not running.
+    """
+    counts = {"A": 0, "B": 0, "C": 0, "D": 0, "other": 0}
+    labels = ["A", "B", "C", "D"]
+    for doc in collection().find({}, {"_id": False, "options": True}):
+        for index, option in enumerate(doc.get("options") or []):
+            if option.get("is_correct"):
+                counts[labels[index] if index < len(labels) else "other"] += 1
+    return counts
+
+
+def counts_by_badge() -> dict[str, int]:
+    """How many questions each badge has, for the coverage screen.
+
+    A question filed under several badges counts once for each, because the question
+    that matters is "does this badge have enough", not "how many questions exist".
+    """
+    pipeline = [
+        {"$unwind": "$skill_badges"},
+        {"$group": {"_id": "$skill_badges", "n": {"$sum": 1}}},
+    ]
+    return {row["_id"]: row["n"] for row in collection().aggregate(pipeline)}
+
+
+def drop_status_field() -> int:
+    """Remove `status` from questions stored before the review workflow was dropped.
+
+    Left in place it would ride along in the JSON export, telling whoever consumes it
+    that a question is a "draft" when no such state exists any more. Returns how many
+    documents were changed; safe to run repeatedly.
+    """
+    result = collection().update_many(
+        {"status": {"$exists": True}}, {"$unset": {"status": ""}}
+    )
+    return result.modified_count
 
 
 def categories_in_use() -> list[str]:

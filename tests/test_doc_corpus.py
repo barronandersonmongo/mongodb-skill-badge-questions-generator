@@ -926,3 +926,75 @@ def test_a_block_stops_the_remaining_batches_of_the_current_source(web, stored, 
     assert result["blocked"] is True
     attempted = [u for u in requested if u.startswith("https://x/p")]
     assert len(attempted) < len(refused)
+
+
+# --- fetching a page to render it ---
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://www.mongodb.com/docs/manual/replication.md",
+        "https://www.mongodb.com.evil.example/docs/manual/replication.md",
+        "https://evil.example/?u=https://www.mongodb.com/docs/manual/replication.md",
+        "http://169.254.169.254/latest/meta-data/",
+        "file:///etc/passwd",
+        "",
+    ],
+)
+def test_only_documentation_pages_may_be_fetched(url, settings):
+    """
+    Intent: The rendered-source view fetches a caller-supplied URL server-side. Unpinned that
+        is a server-side request forgery hole — a crafted URL reaches anything the server can
+        reach, including a cloud metadata endpoint, and returns it to whoever asked. Prefix
+        matching is not enough either: www.mongodb.com.evil.example starts with the right
+        string and is not the right host.
+    Success: Anything that is not an https page on the documentation host is refused.
+    Feature: Documentation rendering — only the documentation host is fetched.
+    """
+    assert doc_corpus.is_docs_url(url, settings) is False
+
+
+def test_a_documentation_page_is_accepted(settings):
+    """
+    Intent: The guard has to admit the pages the corpus is made of, or every citation link
+        becomes an error — a check that refuses everything is as broken as one that allows
+        everything.
+    Success: An https page on the documentation host is accepted.
+    Feature: Documentation rendering — real documentation URLs are allowed.
+    """
+    assert doc_corpus.is_docs_url(
+        "https://www.mongodb.com/docs/manual/replication.md", settings
+    ) is True
+
+
+def test_fetching_outside_the_host_is_refused_rather_than_attempted(settings):
+    """
+    Intent: A caller that forgets the guard must not be able to make the request anyway. The
+        check belongs at the point of fetching, not only at the route, so the protection does
+        not depend on every future caller remembering it.
+    Success: Fetching a non-documentation URL raises before any request is made.
+    Feature: Documentation rendering — the fetcher enforces its own guard.
+    """
+    with pytest.raises(ValueError, match="Refusing to fetch"):
+        doc_corpus.fetch_live_page("https://evil.example/x.md", settings=settings)
+
+
+def test_a_live_page_comes_back_ready_to_render(monkeypatch, settings):
+    """
+    Intent: The renderer needs the same shape the stored viewer takes — title, text, size and
+        a fetch time — or the template has to special-case it. The title comes from the page's
+        own heading, as it does for a stored page.
+    Success: A fetched page carries its url, title, text, size and fetch time.
+    Feature: Documentation rendering — a live page is shaped like a stored one.
+    """
+    monkeypatch.setattr(
+        doc_corpus, "_get", lambda url, s: "# Replication\n\nHow replica sets work."
+    )
+    page = doc_corpus.fetch_live_page(
+        "https://www.mongodb.com/docs/manual/replication.md", settings=settings
+    )
+    assert page["title"] == "Replication"
+    assert "How replica sets work." in page["text"]
+    assert page["bytes"] > 0
+    assert page["fetched_at"] is not None

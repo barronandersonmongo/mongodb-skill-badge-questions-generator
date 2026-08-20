@@ -33,7 +33,6 @@ def stored(question_id: str, stem: str, **overrides) -> dict:
         "stem": stem,
         "explanation": "Because.",
         "embedding_text": f"Question: {stem}\nExplanation: Because.",
-        "status": "draft",
         "skill_badges": ["atlas-search"],
         "created_at": datetime(2026, 8, 1, tzinfo=timezone.utc),
         **overrides,
@@ -51,8 +50,16 @@ def collection(monkeypatch):
         deleted: list[str] = []
         calls: list[dict] = []
 
-        def list_questions(*args, **kwargs):
-            return [d for d in docs if d["question_id"] not in deleted]
+        def list_questions(skill_badge=None, category=None, **kwargs):
+            # The real repository applies these in the query, so the double has to as
+            # well: a scoped sweep whose double ignored the scope would pass while the
+            # scope did nothing.
+            live = [d for d in docs if d["question_id"] not in deleted]
+            if skill_badge:
+                live = [d for d in live if skill_badge in (d.get("skill_badges") or [])]
+            if category:
+                live = [d for d in live if category in (d.get("categories") or [])]
+            return live
 
         def reranked(text, index_name, *, model, limit=5, exclude_question_id=None, **kw):
             calls.append(
@@ -84,22 +91,6 @@ def collection(monkeypatch):
     return install
 
 
-def test_a_pair_the_reranker_is_sure_about_loses_one_question(collection, settings):
-    """
-    Intent: The sweep exists to remove repetition from the collection. If a confident pair
-        were only reported, the collection would stay duplicated and the sweep would be a
-        report generator.
-    Success: A pair scoring above the delete threshold has one question deleted, and the
-        deletion is reported.
-    Feature: Question duplicate sweep — clear duplicates are deleted.
-    """
-    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters docs?")]
-    deleted, _ = collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
-    result = question_duplicates.sweep(settings=settings)
-    assert deleted == [result["deleted"][0]["drop"]]
-    assert result["deleted"][0]["rerank_score"] == DUPLICATE_SCORE
-
-
 def test_a_pair_below_the_threshold_is_reported_and_kept(collection, settings):
     """
     Intent: A deletion here has no judge behind it and cannot be undone, so anything short
@@ -110,26 +101,9 @@ def test_a_pair_below_the_threshold_is_reported_and_kept(collection, settings):
     """
     docs = [stored("a", "Which stage filters?"), stored("b", "How do indexes work?")]
     deleted, _ = collection(docs, {"a": [neighbour("b", DISTINCT_SCORE)]})
-    result = question_duplicates.sweep(settings=settings)
+    result = question_duplicates.report(settings=settings)
     assert deleted == []
-    assert result["possible_duplicates"][0]["rerank_score"] == DISTINCT_SCORE
-
-
-def test_a_dry_run_deletes_nothing_but_says_what_it_would(collection, settings):
-    """
-    Intent: The delete threshold governs irreversible removal, so it has to be checkable
-        against live data before it is trusted — and re-checkable when the collection
-        changes character. A dry run is how that check is made safely.
-    Success: With delete=False nothing is deleted, and the pair is marked as one that would
-        have been.
-    Feature: Question duplicate sweep — dry run for calibrating the threshold.
-    """
-    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters docs?")]
-    deleted, _ = collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
-    result = question_duplicates.sweep(delete=False, settings=settings)
-    assert deleted == []
-    assert result["dry_run"] is True
-    assert result["possible_duplicates"][0]["would_delete"] is True
+    assert result["below_threshold"][0]["rerank_score"] == DISTINCT_SCORE
 
 
 def test_each_pair_is_scored_once(collection, settings):
@@ -147,7 +121,7 @@ def test_each_pair_is_scored_once(collection, settings):
             "b": [neighbour("a", DUPLICATE_SCORE)],
         },
     )
-    result = question_duplicates.sweep(settings=settings)
+    result = question_duplicates.report(settings=settings)
     assert result["compared"] == 1
 
 
@@ -161,7 +135,7 @@ def test_the_pair_is_compared_on_the_text_that_was_embedded(collection, settings
     """
     docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters docs?")]
     _, calls = collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
-    question_duplicates.sweep(settings=settings)
+    question_duplicates.report(settings=settings)
     assert calls[0]["text"] == docs[0]["embedding_text"]
 
 
@@ -175,7 +149,7 @@ def test_the_configured_index_and_model_are_used(collection, settings):
     """
     docs = [stored("a", "Which stage filters?")]
     _, calls = collection(docs, {})
-    question_duplicates.sweep(settings=settings)
+    question_duplicates.report(settings=settings)
     assert calls[0]["index"] == settings.questions_vector_index_name
     assert calls[0]["model"] == settings.rerank_model
 
@@ -189,23 +163,24 @@ def test_a_question_is_never_compared_against_itself(collection, settings):
     """
     docs = [stored("a", "Which stage filters?")]
     _, calls = collection(docs, {})
-    question_duplicates.sweep(settings=settings)
+    question_duplicates.report(settings=settings)
     assert calls[0]["exclude"] == "a"
 
 
-def test_an_approved_question_outlives_a_draft(collection, settings):
+def test_the_more_widely_filed_question_outlives_the_narrower_one(fake_questions):
     """
-    Intent: Approval is a human decision the tool exists to capture. Deleting the approved
-        question of a pair and keeping the unreviewed one would throw away exactly the work
-        that matters.
-    Success: The approved question is kept and the draft dropped.
-    Feature: Question duplicate sweep — review work survives.
+    Intent: Replaces a test requiring an approved question to outlive a draft. With no
+        review state there is no decision to preserve, so the tie turns on findability:
+        the question filed under more badges is reachable from more places, and dropping
+        it loses the most.
+    Success: Of a duplicate pair, the one attributed to more badges survives.
+    Feature: Duplicate detection — the most findable question survives.
     """
-    docs = [stored("a", "Draft one?"), stored("b", "Approved one?", status="approved")]
-    collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
-    result = question_duplicates.sweep(settings=settings)
-    assert result["deleted"][0]["keep"] == "b"
-    assert result["deleted"][0]["drop"] == "a"
+    wide = stored("wide", "Which stage filters?", skill_badges=["a", "b"])
+    narrow = stored("narrow", "Which stage filters?", skill_badges=["a"])
+    keep, drop = question_duplicates.choose_survivor(narrow, wide)
+    assert keep["question_id"] == "wide"
+    assert drop["question_id"] == "narrow"
 
 
 def test_the_question_serving_more_badges_is_preferred(collection, settings):
@@ -220,31 +195,8 @@ def test_the_question_serving_more_badges_is_preferred(collection, settings):
         stored("b", "Two badges?", skill_badges=["atlas-search", "aggregation"]),
     ]
     collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
-    result = question_duplicates.sweep(settings=settings)
-    assert result["deleted"][0]["keep"] == "b"
-
-
-def test_a_question_is_not_deleted_twice_over(collection, settings):
-    """
-    Intent: Three near-identical questions produce overlapping pairs. Acting on each pair
-        independently could delete both halves of a pair whose survivor was already removed,
-        leaving no copy of the question at all.
-    Success: With three mutually similar questions, at most two are deleted and the skipped
-        pair is reported.
-    Feature: Question duplicate sweep — never deletes every copy.
-    """
-    docs = [stored(i, f"Near duplicate {i}?") for i in ("a", "b", "c")]
-    deleted, _ = collection(
-        docs,
-        {
-            "a": [neighbour("b", DUPLICATE_SCORE), neighbour("c", DUPLICATE_SCORE)],
-            "b": [neighbour("c", DUPLICATE_SCORE)],
-        },
-    )
-    result = question_duplicates.sweep(settings=settings)
-    assert len(deleted) == 2
-    assert any(p.get("skipped") for p in result["possible_duplicates"])
-    assert len(docs) - len(deleted) == 1
+    result = question_duplicates.report(settings=settings)
+    assert result["flagged"][0]["keep"] == "b"
 
 
 def test_pairs_are_reported_most_similar_first(collection, settings):
@@ -256,8 +208,8 @@ def test_pairs_are_reported_most_similar_first(collection, settings):
     """
     docs = [stored(i, f"Question {i}?") for i in ("a", "b", "c")]
     collection(docs, {"a": [neighbour("b", 0.30), neighbour("c", 0.80)]})
-    result = question_duplicates.sweep(settings=settings)
-    scores = [p["rerank_score"] for p in result["possible_duplicates"]]
+    result = question_duplicates.report(settings=settings)
+    scores = [p["rerank_score"] for p in result["flagged"] + result["below_threshold"]]
     assert scores == sorted(scores, reverse=True)
 
 
@@ -280,8 +232,8 @@ def test_a_failed_comparison_does_not_abandon_the_sweep(collection, settings, mo
     monkeypatch.setattr(
         question_duplicates.questions_repo, "reranked_by_embedding_text", explode
     )
-    result = question_duplicates.sweep(settings=settings)
-    assert result["deleted"] == []
+    result = question_duplicates.report(settings=settings)
+    assert result["flagged"] == []
     assert "index not found" in result["errors"][0]
 
 
@@ -293,7 +245,7 @@ def test_an_empty_collection_sweeps_without_comparing_anything(collection, setti
     Feature: Question duplicate sweep — no needless work.
     """
     _, calls = collection([], {})
-    result = question_duplicates.sweep(settings=settings)
+    result = question_duplicates.report(settings=settings)
     assert result["compared"] == 0 and calls == []
 
 
@@ -308,26 +260,30 @@ def test_a_neighbour_that_is_no_longer_stored_is_ignored(collection, settings):
     """
     docs = [stored("a", "Which stage filters?")]
     collection(docs, {"a": [neighbour("ghost", DUPLICATE_SCORE)]})
-    result = question_duplicates.sweep(settings=settings)
+    result = question_duplicates.report(settings=settings)
     assert result["compared"] == 0
 
 
-def test_the_delete_threshold_is_configurable(collection):
+def test_the_threshold_is_configurable_and_only_flags(collection):
     """
-    Intent: The threshold governs irreversible deletion. It is measured, but the collection
-        will change character as it spans more badges, so it must be tunable from
-        configuration rather than code.
-    Success: Lowering the threshold turns a reported pair into a deleted one.
-    Feature: Question duplicate sweep — tunable delete threshold.
+    Intent: Replaces a test where lowering the threshold turned a reported pair into a
+        deleted one. The sweep no longer deletes, so the threshold decides what is flagged
+        for a person to look at — which makes it a shortlist filter rather than the thing
+        that decides which questions die. It still has to be tunable from configuration,
+        because the collection will change character as it spans more badges.
+    Success: Lowering the threshold moves a pair from below-threshold to flagged, and still
+        deletes nothing.
+    Feature: Question duplicate sweep — a tunable flagging threshold.
     """
     docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters docs?")]
     deleted, _ = collection(docs, {"a": [neighbour("b", DISTINCT_SCORE)]})
     settings = Settings(
         mongodb_uri="mongodb://test", question_rerank_delete_threshold=0.4
     )
-    question_duplicates.sweep(settings=settings)
-    assert len(deleted) == 1
-
+    result = question_duplicates.report(settings=settings)
+    assert len(result["flagged"]) == 1
+    assert result["below_threshold"] == []
+    assert deleted == []
 
 def test_the_number_of_neighbours_compared_is_bounded_by_configuration(collection, settings):
     """
@@ -339,5 +295,206 @@ def test_the_number_of_neighbours_compared_is_bounded_by_configuration(collectio
     """
     docs = [stored("a", "Which stage filters?")]
     _, calls = collection(docs, {})
-    question_duplicates.sweep(settings=settings)
+    question_duplicates.report(settings=settings)
     assert calls[0]["limit"] == settings.question_duplicate_neighbours
+
+
+# --- finding reports, deleting is separate ---
+
+
+def test_a_confident_pair_is_flagged_rather_than_deleted(collection, settings):
+    """
+    Intent: Replaces a test requiring a confident pair to lose a question. Deleting during
+        the sweep made the operator choose between a safe mode and a destructive one before
+        seeing the collection — and since the safe mode is strictly more informative, nobody
+        should have run the other first. The sweep now reports and deletion is a separate
+        act on a list somebody has read.
+    Success: A pair above the threshold is flagged, with the question to drop and the one to
+        keep both named, and nothing is deleted.
+    Feature: Question duplicate sweep — finding never deletes.
+    """
+    docs = [stored("a", "Which stage filters?"), stored("b", "Which stage filters docs?")]
+    deleted, _ = collection(docs, {"a": [neighbour("b", DUPLICATE_SCORE)]})
+    result = question_duplicates.report(settings=settings)
+    assert deleted == []
+    assert len(result["flagged"]) == 1
+    assert result["flagged"][0]["drop"] and result["flagged"][0]["keep"]
+    assert result["flagged"][0]["rerank_score"] == DUPLICATE_SCORE
+
+
+def test_the_report_says_which_threshold_it_used(collection, settings):
+    """
+    Intent: The threshold is a measured judgement, not a fact, and the operator is being
+        asked to act on a list it produced. Reporting the number is what lets them see that
+        a pair at 0.86 was flagged by a hair rather than by certainty.
+    Success: The report carries the threshold it flagged against.
+    Feature: Question duplicate sweep — the threshold is visible in the report.
+    """
+    collection([], {})
+    result = question_duplicates.report(settings=settings)
+    assert result["threshold"] == settings.question_rerank_delete_threshold
+
+
+def test_the_sweep_calls_back_after_every_question(collection, settings):
+    """
+    Intent: Progress has to be reported per question, because that is the unit of work — one
+        vector search and rerank per stored question. Reporting only at the end, or only per
+        batch, is what left the screen with nothing to show for minutes at a time.
+    Success: The callback fires once before any work and once per stored question, with a
+        rising count and a total that is known from the start.
+    Feature: Question duplicate sweep — per-question progress.
+    """
+    docs = [
+        stored("a", "Which stage filters?"),
+        stored("b", "Which stage groups?"),
+        stored("c", "Which stage sorts?"),
+    ]
+    collection(docs, {})
+
+    seen: list[tuple[int, int]] = []
+    question_duplicates.find_pairs(
+        settings=settings,
+        progress=lambda state: seen.append((state["compared"], state["total"])),
+    )
+    assert seen == [(0, 3), (1, 3), (2, 3), (3, 3)]
+
+
+def test_the_reported_percentage_is_of_the_whole_sweep(collection, settings):
+    """
+    Intent: A bar is only worth showing if it measures the whole job. The total is known
+        before the first comparison — it is the size of the collection — so the percentage is
+        a fact rather than an estimate.
+    Success: The reported percentage matches the fraction of questions compared.
+    Feature: Question duplicate sweep — the percentage measures the whole sweep.
+    """
+    collection([stored("a", "One?"), stored("b", "Two?"), stored("c", "Three?"), stored("d", "Four?")], {})
+
+    seen: list[float] = []
+    question_duplicates.find_pairs(
+        settings=settings, progress=lambda state: seen.append(state["percent"])
+    )
+    assert seen == [0.0, 25.0, 50.0, 75.0, 100.0]
+
+
+def test_a_question_that_cannot_be_compared_still_advances_the_count(
+    collection, settings, monkeypatch
+):
+    """
+    Intent: One unsearchable question must not abandon the sweep — and must not stall the
+        bar either, or the sweep looks stuck at exactly the moment something has gone wrong.
+    Success: The count advances past a question whose search failed, and the failure is
+        counted in the reported state.
+    Feature: Question duplicate sweep — progress survives a failed comparison.
+    """
+    collection([stored("a", "One?"), stored("b", "Two?")], {})
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("index not queryable")
+
+    monkeypatch.setattr(
+        question_duplicates.questions_repo, "reranked_by_embedding_text", explode
+    )
+
+    seen: list[dict] = []
+    question_duplicates.find_pairs(settings=settings, progress=seen.append)
+    assert [state["compared"] for state in seen] == [0, 1, 2]
+    assert seen[-1]["errors"] == 2
+
+
+def test_an_empty_collection_reports_a_finished_sweep(collection, settings):
+    """
+    Intent: Sweeping an empty collection is a legitimate thing to do, and its size is the
+        denominator of the percentage — so it must not be divided by.
+    Success: The sweep reports complete rather than failing.
+    Feature: Question duplicate sweep — an empty collection does not divide by zero.
+    """
+    collection([], {})
+
+    seen: list[dict] = []
+    question_duplicates.find_pairs(settings=settings, progress=seen.append)
+    assert seen == [{"phase": "comparing", "compared": 0, "total": 0,
+                     "percent": 100.0, "pairs": 0, "errors": 0}]
+
+
+def test_a_sweep_can_be_scoped_to_one_badge(collection, settings):
+    """
+    Intent: A sweep costs one round trip per question scanned, so on a bank of thousands the
+        unscoped sweep is the thing you run once. Asking "are there duplicates in this badge"
+        should cost what that badge costs, not what the collection costs.
+    Success: Only questions filed under the badge are compared.
+    Feature: Question duplicate sweep — scoped to a skill badge.
+    """
+    docs = [
+        stored("a", "One?", skill_badges=["atlas-search"]),
+        stored("b", "Two?", skill_badges=["atlas-search"]),
+        stored("c", "Three?", skill_badges=["data-modeling"]),
+    ]
+    _, calls = collection(docs, {})
+
+    seen: list[dict] = []
+    question_duplicates.find_pairs(
+        settings=settings, skill_badge="atlas-search", progress=seen.append
+    )
+    assert seen[-1]["total"] == 2
+    assert {call["exclude"] for call in calls} == {"a", "b"}
+
+
+def test_a_sweep_can_be_scoped_to_a_skill_level(collection, settings):
+    """
+    Intent: Difficulty is the one scope not already a repository filter, so it is the one that
+        could quietly be ignored — a scope that is accepted and not applied is worse than one
+        that is refused, because the report then describes something else.
+    Success: Only questions at that level are compared.
+    Feature: Question duplicate sweep — scoped to a skill level.
+    """
+    docs = [
+        stored("a", "One?", difficulty="advanced"),
+        stored("b", "Two?", difficulty="advanced"),
+        stored("c", "Three?", difficulty="foundational"),
+    ]
+    _, calls = collection(docs, {})
+
+    seen: list[dict] = []
+    question_duplicates.find_pairs(
+        settings=settings, difficulty="advanced", progress=seen.append
+    )
+    assert seen[-1]["total"] == 2
+    assert {call["exclude"] for call in calls} == {"a", "b"}
+
+
+def test_a_scoped_sweep_only_reports_pairs_inside_the_scope(collection, settings):
+    """
+    Intent: A subset compared against the whole collection would flag pairs whose other half
+        is outside the scope the operator asked about — a duplicate they cannot judge from
+        where they are, and cannot act on without leaving it.
+    Success: A neighbour outside the scope produces no pair.
+    Feature: Question duplicate sweep — a scoped pair is scoped on both sides.
+    """
+    docs = [
+        stored("a", "One?", skill_badges=["atlas-search"]),
+        stored("outside", "One?", skill_badges=["data-modeling"]),
+    ]
+    collection(docs, {"a": [neighbour("outside", DUPLICATE_SCORE)]})
+
+    pairs, _ = question_duplicates.find_pairs(
+        settings=settings, skill_badge="atlas-search"
+    )
+    assert pairs == []
+
+
+def test_the_report_says_what_it_covered(collection, settings):
+    """
+    Intent: "No duplicates" means something very different about one badge than about the whole
+        bank. A report that did not name its scope would be read as covering everything.
+    Success: The report echoes the scope it was given.
+    Feature: Question duplicate sweep — the report states its scope.
+    """
+    collection([stored("a", "One?")], {})
+    result = question_duplicates.report(
+        settings=settings, skill_badge="atlas-search", difficulty="advanced"
+    )
+    assert result["scope"] == {
+        "skill_badge": "atlas-search",
+        "category": None,
+        "difficulty": "advanced",
+    }

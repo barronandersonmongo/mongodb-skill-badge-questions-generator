@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models.question import GeneratedQuestion, QuestionOption
 from app.repositories import questions
+from app.repositories import runs as runs_repo
 from app.routers import questions as api_module
 
 API = "/api/questions"
@@ -71,43 +72,47 @@ def test_generation_runs_in_the_background(client, monkeypatch, fake_questions):
     """
     calls: list[tuple] = []
     monkeypatch.setattr(
-        api_module, "generate_questions", lambda *a, **k: calls.append((a, k)) or {}
+        api_module, "generate_for_badge", lambda *a, **k: calls.append((a, k)) or {}
     )
-    response = client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 2})
+    response = client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 2})
     assert response.status_code == 200
     assert response.json() == {"started": True}
     assert calls  # the background task ran when the TestClient closed the request
 
 
-def test_the_selected_badges_and_count_reach_the_generator(client, monkeypatch, fake_questions):
+def test_the_selected_badges_and_walk_size_reach_the_generator(client, monkeypatch, fake_questions):
     """
-    Intent: The picker and the count are the author's only control over a run. If the
-        endpoint dropped them the run would silently generate something else.
-    Success: The badge slugs, count, material and instructions all arrive as given.
+    Intent: Replaces a test that passed a question count. A run is now sized in pages —
+        the badge's documentation is walked a page at a time and each page is worth
+        several questions — so pages and questions-per-page are the author's controls,
+        and a dropped one would silently walk a different amount of material.
+    Success: Each selected badge is walked, with the page cap, questions per page and
+        instructions arriving as given.
     Feature: Question generation — the author's selection is honoured.
     """
-    seen: dict = {}
+    seen: list = []
 
-    def record(slugs, count, **kwargs):
-        seen.update(slugs=slugs, count=count, **kwargs)
-        return {}
+    def record(slug, **kwargs):
+        seen.append((slug, kwargs))
+        return {"skill_badge": slug, "inserted": 0, "pages_done": 0, "pages_available": 0}
 
-    monkeypatch.setattr(api_module, "generate_questions", record)
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
     client.post(
         API + "/generate",
         json={
             "skill_badges": ["atlas-search", "aggregation"],
-            "count": 4,
-            "source_material": "lesson text",
+            "max_pages": 4,
+            "questions_per_page": 2,
             "extra_instructions": "advanced only",
         },
     )
-    assert seen == {
-        "slugs": ["atlas-search", "aggregation"],
-        "count": 4,
-        "source_material": "lesson text",
-        "extra_instructions": "advanced only",
-    }
+    assert [slug for slug, _ in seen] == ["atlas-search", "aggregation"]
+    assert all(
+        kwargs["max_pages"] == 4
+        and kwargs["questions_per_page"] == 2
+        and kwargs["extra_instructions"] == "advanced only"
+        for _, kwargs in seen
+    )
 
 
 def test_a_run_without_a_badge_is_rejected_before_it_starts(client, fake_questions):
@@ -117,20 +122,22 @@ def test_a_run_without_a_badge_is_rejected_before_it_starts(client, fake_questio
     Success: POST /generate with an empty badge list is a validation error.
     Feature: Question generation — a badge scope is required.
     """
-    response = client.post(API + "/generate", json={"skill_badges": [], "count": 3})
+    response = client.post(API + "/generate", json={"skill_badges": [], "max_pages": 3})
     assert response.status_code == 422
 
 
-@pytest.mark.parametrize("count", [0, 26], ids=["none", "too-many"])
-def test_an_unreasonable_batch_size_is_rejected(client, fake_questions, count):
+@pytest.mark.parametrize("max_pages", [0, 201], ids=["none", "too-many"])
+def test_an_unreasonable_walk_size_is_rejected(client, fake_questions, max_pages):
     """
-    Intent: Zero questions is a pointless run, and an unbounded count is an unbounded
-        bill and a turn that will not finish. Both must be refused at the boundary.
-    Success: A count outside 1–25 is a validation error.
-    Feature: Question generation — bounded batch size.
+    Intent: Replaces a test bounding a question count at 25. A run is now bounded by
+        pages, and the old ceiling would cap a badge at 25 questions when a badge needs
+        hundreds. Zero pages is still a pointless run, and an unbounded walk is still an
+        unbounded bill and a run that will not finish.
+    Success: A page count outside 1–200 is a validation error.
+    Feature: Question generation — bounded walk size.
     """
     response = client.post(
-        API + "/generate", json={"skill_badges": ["atlas-search"], "count": count}
+        API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": max_pages}
     )
     assert response.status_code == 422
 
@@ -143,7 +150,7 @@ def test_a_second_run_is_refused_while_one_is_in_progress(client, fake_questions
     Feature: Question generation — one run at a time.
     """
     api_module._run_state["running"] = True
-    response = client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 1})
+    response = client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
     assert response.status_code == 409
 
 
@@ -159,8 +166,8 @@ def test_a_failed_run_is_reported_with_its_traceback(client, monkeypatch, fake_q
     def explode(*args, **kwargs):
         raise RuntimeError("no credentials")
 
-    monkeypatch.setattr(api_module, "generate_questions", explode)
-    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 1})
+    monkeypatch.setattr(api_module, "generate_for_badge", explode)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
     state = client.get(API + "/generate/status").json()
     assert state["running"] is False
     assert "no credentials" in state["last_error"]
@@ -174,8 +181,8 @@ def test_the_status_endpoint_reports_a_finished_runs_result(client, monkeypatch,
     Success: A completed run's summary is returned with no error.
     Feature: Question generation — run status polling.
     """
-    monkeypatch.setattr(api_module, "generate_questions", lambda *a, **k: {"inserted": 3})
-    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 3})
+    monkeypatch.setattr(api_module, "generate_for_badge", lambda *a, **k: {"inserted": 3})
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 3})
     state = client.get(API + "/generate/status").json()
     assert state["last_result"] == {"inserted": 3}
     assert state["last_error"] is None
@@ -194,51 +201,6 @@ def test_questions_are_returned_as_plain_json(client, fake_questions):
     assert isinstance(body, list) and len(body) == 1
     assert body[0]["stem"] == "Which stage filters documents?"
     assert "_id" not in body[0]
-
-
-def test_the_export_honours_the_screens_filters(client, fake_questions):
-    """
-    Intent: The author exports what they are looking at. If the endpoint ignored the
-        filters, the exported file would contain questions they had deliberately
-        excluded — silently, since it is downloaded not displayed.
-    Success: Filtering by badge, category and status each narrow the response.
-    Feature: Question export — filtered by badge, category and status.
-    """
-    questions.insert_questions(
-        [
-            make("Search one?", skill_badges=["atlas-search"], categories=["search"]),
-            make("Agg one?", skill_badges=["aggregation"], categories=["aggregation"]),
-        ]
-    )
-    assert len(client.get(API, params={"skill_badge": "atlas-search"}).json()) == 1
-    assert len(client.get(API, params={"category": "aggregation"}).json()) == 1
-    assert client.get(API, params={"status": "approved"}).json() == []
-
-
-def test_a_question_can_be_approved(client, fake_questions):
-    """
-    Intent: Approval is the decision the tool exists to record; the screen's button
-        must actually persist it.
-    Success: POST /{id}/status stores the new status and reports it.
-    Feature: Question lifecycle — approve and reject.
-    """
-    question_id = questions.insert_questions([make()])["question_ids"][0]
-    response = client.post(f"{API}/{question_id}/status", json={"status": "approved"})
-    assert response.status_code == 200
-    assert response.json()["status"] == "approved"
-    assert questions.list_questions()[0]["status"] == "approved"
-
-
-def test_an_unrecognised_status_is_rejected(client, fake_questions):
-    """
-    Intent: The status vocabulary is what the review tabs and filters are built on. An
-        arbitrary value would create a question that appears under no tab at all.
-    Success: A status outside draft/approved/rejected is a validation error.
-    Feature: Question lifecycle — controlled status vocabulary.
-    """
-    question_id = questions.insert_questions([make()])["question_ids"][0]
-    response = client.post(f"{API}/{question_id}/status", json={"status": "published"})
-    assert response.status_code == 422
 
 
 def test_acting_on_an_unknown_question_is_a_404(client, fake_questions):
@@ -300,9 +262,9 @@ def test_a_running_run_reports_when_it_started(client, monkeypatch, fake_questio
         started["running"] = api_module._run_state["running"]
         return {}
 
-    monkeypatch.setattr(api_module, "generate_questions", slow)
+    monkeypatch.setattr(api_module, "generate_for_badge", slow)
     before = time.time()
-    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 1})
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
     assert started["running"] is True
     assert before <= started["at"] <= time.time()
 
@@ -328,8 +290,8 @@ def test_a_finished_run_reports_when_it_finished(client, monkeypatch, fake_quest
         running.
     Feature: Question generation — a finished run reports its real duration.
     """
-    monkeypatch.setattr(api_module, "generate_questions", lambda *a, **k: {"inserted": 1})
-    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "count": 1})
+    monkeypatch.setattr(api_module, "generate_for_badge", lambda *a, **k: {"inserted": 1})
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
     state = client.get(API + "/generate/status").json()
     assert state["running"] is False
     assert state["finished_at"] >= state["started_at"]
@@ -345,8 +307,8 @@ def test_a_new_run_does_not_inherit_the_previous_runs_start_time(
     Success: The second run's start time is later than the first run's.
     Feature: Question generation — each run is timed from its own start.
     """
-    monkeypatch.setattr(api_module, "generate_questions", lambda *a, **k: {"inserted": 1})
-    payload = {"skill_badges": ["atlas-search"], "count": 1}
+    monkeypatch.setattr(api_module, "generate_for_badge", lambda *a, **k: {"inserted": 1})
+    payload = {"skill_badges": ["atlas-search"], "max_pages": 1}
     client.post(API + "/generate", json=payload)
     first = client.get(API + "/generate/status").json()["started_at"]
     client.post(API + "/generate", json=payload)
@@ -453,28 +415,15 @@ def test_the_sweep_runs_in_the_background(client, monkeypatch, fake_questions):
     """
     calls: list[dict] = []
     monkeypatch.setattr(
-        "app.services.question_duplicates.sweep",
+        "app.services.question_duplicates.report",
         lambda **kwargs: calls.append(kwargs) or {},
     )
     response = client.post(API + "/duplicates/sweep")
     assert response.json() == {"started": True}
-    assert calls == [{"delete": True}]
-
-
-def test_a_dry_run_is_passed_through_as_one(client, monkeypatch, fake_questions):
-    """
-    Intent: The dry run is the safeguard for an unmeasured delete threshold. If the flag were
-        dropped between the button and the sweep, a "dry run" would delete questions.
-    Success: dry_run=true reaches the sweep as delete=False.
-    Feature: Question duplicate sweep — a dry run never deletes.
-    """
-    calls: list[dict] = []
-    monkeypatch.setattr(
-        "app.services.question_duplicates.sweep",
-        lambda **kwargs: calls.append(kwargs) or {},
-    )
-    client.post(API + "/duplicates/sweep", params={"dry_run": True})
-    assert calls == [{"delete": False}]
+    # One call, the work having run. What it is called with is no longer empty — the
+    # sweep is handed a progress callback — and that is asserted where it belongs, in
+    # the test for the sweep reporting its progress.
+    assert len(calls) == 1
 
 
 def test_a_sweep_is_refused_while_another_run_is_going(client, fake_questions):
@@ -499,7 +448,7 @@ def test_a_failed_sweep_is_reported_with_its_traceback(client, monkeypatch, fake
     def explode(**kwargs):
         raise RuntimeError("No Voyage API key found")
 
-    monkeypatch.setattr("app.services.question_duplicates.sweep", explode)
+    monkeypatch.setattr("app.services.question_duplicates.report", explode)
     client.post(API + "/duplicates/sweep")
     state = client.get(API + "/generate/status").json()
     assert state["running"] is False
@@ -514,7 +463,855 @@ def test_the_sweep_is_timed_like_any_other_run(client, monkeypatch, fake_questio
     Success: A completed sweep reports started_at and finished_at in order.
     Feature: Question duplicate sweep — timed on the server.
     """
-    monkeypatch.setattr("app.services.question_duplicates.sweep", lambda **k: {"compared": 0})
+    monkeypatch.setattr("app.services.question_duplicates.report", lambda **k: {"compared": 0})
     client.post(API + "/duplicates/sweep")
     state = client.get(API + "/generate/status").json()
     assert state["finished_at"] >= state["started_at"]
+
+
+# --- coverage ---
+
+
+def test_coverage_reports_every_badge(client, fake_collection, fake_questions, fake_doc_pages):
+    """
+    Intent: A badge with no questions is exactly the one an author needs to find, and it
+        is the one that would be missing if coverage were built from the questions rather
+        than the catalog.
+    Success: A badge with no questions appears with zero counts.
+    Feature: Question coverage — every badge is listed, including the empty ones.
+    """
+    fake_collection.docs.append(
+        {"slug": "atlas-search", "name": "Atlas Search", "status": "approved"}
+    )
+    rows = client.get(API + "/coverage").json()
+    assert [r["skill_badge"] for r in rows] == ["atlas-search"]
+    assert rows[0]["total"] == 0
+
+
+def test_coverage_lists_the_thinnest_badge_first(client, fake_collection, fake_questions, fake_doc_pages):
+    """
+    Intent: The screen exists to answer "where do I spend the next run". Sorted by name
+        it would answer "what is alphabetically first", and the author would have to scan
+        34 rows to find the thin ones.
+    Success: Badges come back in ascending order of total questions.
+    Feature: Question coverage — thinnest badges first.
+    """
+    fake_collection.docs.extend([
+        {"slug": "busy", "name": "Busy", "status": "approved"},
+        {"slug": "thin", "name": "Thin", "status": "approved"},
+    ])
+    fake_questions.docs.extend([
+        {"skill_badges": ["busy"], "status": "draft"},
+        {"skill_badges": ["busy"], "status": "draft"},
+        {"skill_badges": ["thin"], "status": "draft"},
+    ])
+    rows = client.get(API + "/coverage").json()
+    assert [r["skill_badge"] for r in rows] == ["thin", "busy"]
+
+
+def test_coverage_says_how_much_material_a_badge_has_left(
+    client, fake_collection, fake_questions, fake_doc_pages, fake_doc_chunks
+):
+    """
+    Intent: "Few questions" is not actionable on its own — a badge with 300 unused pages
+        needs another run, while one with none has exhausted its material and needs the
+        corpus widened instead. The two look identical without this number.
+    Success: Coverage reports the pages a badge has used and how many remain unused.
+    Feature: Question coverage — remaining documentation per badge.
+    """
+    from app.repositories import doc_chunks
+
+    fake_collection.docs.append(
+        {
+            "slug": "atlas-search",
+            "name": "Atlas Search",
+            "status": "approved",
+            "categories": ["indexes"],
+        }
+    )
+    doc_chunks.replace_page_chunks("https://x/a.md", [{
+        "chunk_id": "c1", "url": "https://x/a.md", "source": "ix",
+        "page_title": "Atlas Search indexes", "heading": "Atlas Search indexes",
+        "heading_path": [], "ordinal": 0, "text": "Atlas Search indexes.",
+        "embed_text": "Atlas Search indexes", "chars": 20, "bytes": 20,
+    }])
+    rows = client.get(API + "/coverage").json()
+    assert rows[0]["pages_used"] == 0
+    assert rows[0]["pages_available"] is not None
+
+
+# --- stopping a run ---
+
+
+def test_a_run_can_be_asked_to_stop(client, monkeypatch, fake_questions):
+    """
+    Intent: A 200-page walk is a long commitment and the only reason to stop one is to stop
+        it spending. Without an endpoint the only way out is restarting the server, which
+        loses the run state as well.
+    Success: POST /generate/stop sets the stop flag while a run is in progress.
+    Feature: Question generation — a run can be stopped.
+    """
+    api_module._run_state.update(running=True, stop_requested=False)
+    try:
+        response = client.post(API + "/generate/stop")
+        assert response.status_code == 200
+        assert response.json() == {"stopping": True}
+        assert api_module._run_state["stop_requested"] is True
+    finally:
+        api_module._run_state.update(running=False, stop_requested=False)
+
+
+def test_stopping_when_nothing_is_running_is_refused(client, fake_questions):
+    """
+    Intent: A stop with no run to stop would leave the flag set, and the next run would
+        halt after its first page for no reason the author could see.
+    Success: Stopping with no run in progress is a 409.
+    Feature: Question generation — a stop needs a run to stop.
+    """
+    api_module._run_state.update(running=False, stop_requested=False)
+    assert client.post(API + "/generate/stop").status_code == 409
+    assert api_module._run_state["stop_requested"] is False
+
+
+def test_the_walk_is_given_the_stop_flag(client, monkeypatch, fake_questions):
+    """
+    Intent: The endpoint only sets a flag; if the walk is not reading it, the button does
+        nothing and the author watches the cost keep climbing after pressing it.
+    Success: The generator is passed a stop callable that reflects the run state.
+    Feature: Question generation — the stop request reaches the walk.
+    """
+    seen: dict = {}
+
+    def record(slug, **kwargs):
+        seen["stop"] = kwargs.get("stop")
+        return {"skill_badge": slug, "inserted": 0, "pages_done": 0, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
+    assert seen["stop"] is not None
+    api_module._run_state["stop_requested"] = True
+    try:
+        assert seen["stop"]() is True
+    finally:
+        api_module._run_state["stop_requested"] = False
+
+
+def test_progress_is_reported_separately_from_the_finished_run(
+    client, monkeypatch, fake_questions
+):
+    """
+    Intent: The panel reads progress while a walk runs and the final figures when it ends.
+        Written to the same field, a mid-walk snapshot would be indistinguishable from a
+        finished run, and the screen would report a run as complete at page three.
+    Success: A walk's progress appears under `progress`, leaving `last_result` for the
+        finished run.
+    Feature: Question generation — progress and result are separate.
+    """
+    def record(slug, **kwargs):
+        kwargs["progress"]({"phase": "writing", "pages_done": 1})
+        return {"skill_badge": slug, "inserted": 2, "pages_done": 1, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
+    state = client.get(API + "/generate/status").json()
+    assert state["progress"]["phase"] == "writing"
+    assert state["last_result"]["inserted"] == 2
+
+
+# --- no review workflow ---
+
+
+def test_there_is_no_status_endpoint(client, fake_questions):
+    """
+    Intent: Replaces tests for approving a question and for rejecting an unrecognised
+        status. With no review state the endpoint has nothing to write, and leaving it in
+        place would let a stale page put questions into a state the screen cannot show.
+    Success: Posting a status is a 404 — the route does not exist.
+    Feature: Question lifecycle — no review endpoint.
+    """
+    question_id = questions.insert_questions([make()])["question_ids"][0]
+    response = client.post(f"{API}/{question_id}/status", json={"status": "approved"})
+    assert response.status_code == 404
+
+
+def test_the_export_honours_the_badge_and_category_filters(client, fake_questions):
+    """
+    Intent: Replaces a test that also filtered by status. The author exports what they are
+        looking at, and an endpoint ignoring the filters would hand over questions they had
+        deliberately excluded — silently, since the export is downloaded rather than shown.
+    Success: Filtering by badge and by category each narrow the response.
+    Feature: Question export — filtered by badge and category.
+    """
+    questions.insert_questions(
+        [
+            make("Search one?", skill_badges=["atlas-search"], categories=["search"]),
+            make("Agg one?", skill_badges=["aggregation"], categories=["aggregation"]),
+        ]
+    )
+    assert len(client.get(API, params={"skill_badge": "atlas-search"}).json()) == 1
+    assert len(client.get(API, params={"category": "aggregation"}).json()) == 1
+
+
+def test_an_exported_question_carries_no_review_state(client, fake_questions):
+    """
+    Intent: The export is the deliverable — questions are copied out of here into whatever
+        builds a quiz. A leftover "status": "draft" tells that consumer the question is
+        unfinished when no such state exists, which is a lie in the thing being handed
+        over.
+    Success: An exported question has no status field.
+    Feature: Question export — no review state in the output.
+    """
+    questions.insert_questions([make()])
+    exported = client.get(API).json()
+    assert exported and "status" not in exported[0]
+
+
+def test_the_legacy_review_field_can_be_stripped_from_the_api(client, fake_questions):
+    """
+    Intent: Questions written before the workflow was dropped still carry the field, and it
+        is the export they pollute. An operator needs a way to clean that up without
+        reaching for a mongo shell.
+    Success: The endpoint reports how many documents it changed.
+    Feature: Question storage — the legacy review field is cleanable from the UI.
+    """
+    fake_questions.docs.append({"question_id": "a", "status": "draft"})
+    response = client.post(API + "/drop-status")
+    assert response.status_code == 200
+    assert response.json() == {"changed": 1}
+    assert "status" not in fake_questions.docs[0]
+
+
+# --- deleting from a duplicate report ---
+
+
+def test_questions_chosen_from_a_report_can_be_deleted(client, fake_questions):
+    """
+    Intent: The sweep only reports now, so there has to be a way to act on what it found —
+        otherwise moving deletion out of the sweep would have removed the ability to clean
+        the collection at all.
+    Success: The endpoint deletes the named questions and reports how many went.
+    Feature: Question duplicate sweep — deleting a reviewed selection.
+    """
+    ids = questions.insert_questions([make("One?"), make("Two?")])["question_ids"]
+    response = client.post(API + "/duplicates/delete", json={"question_ids": ids[:1]})
+    assert response.status_code == 200
+    assert response.json() == {"requested": 1, "deleted": 1}
+    assert [q["stem"] for q in questions.list_questions()] == ["Two?"]
+
+
+def test_only_the_chosen_questions_are_deleted(client, fake_questions):
+    """
+    Intent: The point of moving deletion out of the sweep is that the operator decides, pair
+        by pair. If the endpoint deleted everything the sweep had flagged, the threshold would
+        be deciding again and unticking a pair would achieve nothing.
+    Success: A question the request does not name survives.
+    Feature: Question duplicate sweep — an unticked pair is left alone.
+    """
+    ids = questions.insert_questions([make("One?"), make("Two?"), make("Three?")])["question_ids"]
+    client.post(API + "/duplicates/delete", json={"question_ids": [ids[1]]})
+    assert len(questions.list_questions()) == 2
+
+
+def test_a_stale_selection_deletes_what_it_can(client, fake_questions):
+    """
+    Intent: A report can be minutes old and another tab may have deleted from it already. An
+        id that matches nothing is the expected case, not an error — failing the whole request
+        would leave the operator unable to act on the rest of a list they had reviewed.
+    Success: Unknown ids are absent from the count rather than raising.
+    Feature: Question duplicate sweep — a stale report still works.
+    """
+    ids = questions.insert_questions([make("One?")])["question_ids"]
+    response = client.post(
+        API + "/duplicates/delete", json={"question_ids": [ids[0], "already-gone"]}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"requested": 2, "deleted": 1}
+
+
+def test_an_empty_selection_is_refused(client, fake_questions):
+    """
+    Intent: A request with no ids is a bug in the caller, and answering it with "deleted 0"
+        would hide that. Refusing at the boundary keeps the endpoint's meaning — delete these
+        — rather than making it a no-op that looks like success.
+    Success: An empty id list is a validation error.
+    Feature: Question duplicate sweep — an empty selection is refused.
+    """
+    assert client.post(API + "/duplicates/delete", json={"question_ids": []}).status_code == 422
+
+
+# --- run history and dismissing a result ---
+
+
+def test_a_finished_walk_is_recorded(client, monkeypatch, fake_questions, fake_runs):
+    """
+    Intent: Run state is in memory and dies with the process, so a run that is not written
+        down cannot be reflected on later. Recording has to happen as part of finishing the
+        run, not as something an operator remembers to do.
+    Success: After a run, the walk's summary is in the run history with its timings.
+    Feature: Run history — a finished run records itself.
+    """
+    def record(slug, **kwargs):
+        return {
+            "source": "badge-page-walk",
+            "run_id": "walk-1",
+            "skill_badge": slug,
+            "skill_badges": [slug],
+            "inserted": 4,
+            "pages_done": 2,
+        }
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 2})
+    stored = runs_repo.get_run("walk-1")
+    assert stored["inserted"] == 4
+    assert stored["finished_at"] >= stored["started_at"]
+
+
+def test_a_failed_run_is_recorded_too(client, monkeypatch, fake_questions, fake_runs):
+    """
+    Intent: "We tried this badge and it broke" is exactly the thing that gets forgotten and
+        then retried. A history that only holds successes would make a recurring failure
+        look like a badge nobody had got round to.
+    Success: A run that raised is recorded with its error and a failed phase.
+    Feature: Run history — failures are recorded.
+    """
+    def explode(*args, **kwargs):
+        raise RuntimeError("no credentials")
+
+    monkeypatch.setattr(api_module, "generate_for_badge", explode)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
+    recorded = runs_repo.list_runs()
+    assert len(recorded) == 1
+    assert recorded[0]["phase"] == "failed"
+    assert "no credentials" in recorded[0]["error"]
+
+
+def test_the_history_is_readable_with_its_totals(client, fake_questions, fake_runs):
+    """
+    Intent: Per-run cost is small enough to ignore and large enough to matter in aggregate,
+        so the cumulative figure has to come back with the list rather than being something
+        the screen adds up itself and gets wrong.
+    Success: The endpoint returns the runs and the totals together.
+    Feature: Run history — listed with cumulative totals.
+    """
+    runs_repo.record_run(
+        {"run_id": "r1", "inserted": 3, "pages_done": 1, "cost": {"dollars": 0.1},
+         "elapsed_seconds": 30.0, "finished_at": 1000.0}
+    )
+    payload = client.get(API + "/runs").json()
+    assert [r["run_id"] for r in payload["runs"]] == ["r1"]
+    assert payload["totals"]["questions"] == 3
+    assert payload["totals"]["dollars"] == 0.1
+
+
+def test_one_run_can_be_read_in_full(client, fake_questions, fake_runs):
+    """
+    Intent: The listing drops the pages a run read, because fifty runs' worth is megabytes.
+        Judging one run still needs them — which pages produced questions is the evidence
+        for whether the page set was any good.
+    Success: Fetching a run by id returns its source pages.
+    Feature: Run history — one run in full.
+    """
+    runs_repo.record_run(
+        {"run_id": "r1", "source_pages": [{"url": "https://x/a.md", "questions": 3}]}
+    )
+    detail = client.get(API + "/runs/r1").json()
+    assert detail["source_pages"][0]["url"] == "https://x/a.md"
+
+
+def test_an_unknown_run_is_a_404(client, fake_questions, fake_runs):
+    """
+    Intent: A link to a run can outlive the record. A 200 with an empty body would read as
+        "this run did nothing" rather than "this run is gone".
+    Success: An unknown run id is a 404.
+    Feature: Run history — an unknown run is reported as missing.
+    """
+    assert client.get(API + "/runs/nope").status_code == 404
+
+
+def test_a_finished_run_can_be_dismissed(client, fake_questions, fake_runs):
+    """
+    Intent: The green summary is rendered from run state, so hiding it in the browser only
+        lasts until the next reload — it then sits on the screen permanently until somebody
+        starts another run. Nothing is lost by clearing it, because the run is recorded.
+    Success: Dismissing clears the last result from the status endpoint.
+    Feature: Question generation — a finished run's notice can be dismissed.
+    """
+    api_module._run_state["last_result"] = {"source": "badge-page-walk", "inserted": 1}
+    assert client.post(API + "/generate/dismiss").json() == {"dismissed": True}
+    assert client.get(API + "/generate/status").json()["last_result"] is None
+
+
+def test_dismissing_clears_a_failure_as_well(client, fake_questions, fake_runs):
+    """
+    Intent: A failed run leaves an error and a stack trace on the screen, which is the most
+        insistent thing on it. If dismissing cleared only successes, a fixed problem would
+        keep announcing itself.
+    Success: Dismissing clears the error and its traceback too.
+    Feature: Question generation — a failure notice can be dismissed.
+    """
+    api_module._run_state.update(last_error="boom", last_traceback="Traceback…")
+    client.post(API + "/generate/dismiss")
+    state = client.get(API + "/generate/status").json()
+    assert state["last_error"] is None and state["last_traceback"] is None
+
+
+# --- choosing a skill level ---
+
+
+def test_the_chosen_skill_level_reaches_the_generator(client, monkeypatch, fake_questions):
+    """
+    Intent: The dropdown is the author's control over who the questions are for. If the
+        endpoint dropped it, every run would be mixed and the control would be decoration.
+    Success: The requested level arrives at the generator.
+    Feature: Question generation — the chosen skill level is honoured.
+    """
+    seen: dict = {}
+
+    def record(slug, **kwargs):
+        seen.update(kwargs)
+        return {"skill_badge": slug, "inserted": 0, "pages_done": 0, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["atlas-search"], "max_pages": 1, "difficulty": "advanced"},
+    )
+    assert seen["difficulty"] == "advanced"
+
+
+def test_no_skill_level_means_a_mixed_run(client, monkeypatch, fake_questions):
+    """
+    Intent: Mixed is the default and has to stay reachable — a request that omits the field
+        must mean "spread them", not fail validation or silently pick a level.
+    Success: Omitting the level passes None through.
+    Feature: Question generation — a mixed run is the default.
+    """
+    seen: dict = {}
+
+    def record(slug, **kwargs):
+        seen.update(kwargs)
+        return {"skill_badge": slug, "inserted": 0, "pages_done": 0, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(API + "/generate", json={"skill_badges": ["atlas-search"], "max_pages": 1})
+    assert seen["difficulty"] is None
+
+
+def test_an_unrecognised_skill_level_is_refused(client, fake_questions):
+    """
+    Intent: The level names are the same vocabulary every stored question is tagged with. An
+        arbitrary value would reach the prompt as guidance nobody wrote and tag questions with
+        a level nothing filters on.
+    Success: A level outside the three is a validation error.
+    Feature: Question generation — a controlled skill-level vocabulary.
+    """
+    response = client.post(
+        API + "/generate",
+        json={"skill_badges": ["atlas-search"], "max_pages": 1, "difficulty": "expert"},
+    )
+    assert response.status_code == 422
+
+
+# --- answer positions ---
+
+
+def test_stored_options_can_be_reshuffled(client, fake_questions):
+    """
+    Intent: The first 125 questions were stored with the correct answer in position A every
+        time. They are otherwise fine, so they need repairing rather than deleting — and an
+        operator should not need a mongo shell to do it.
+    Success: The endpoint reshuffles stored questions and reports the resulting positions.
+    Feature: Question quality — existing questions can be repaired.
+    """
+    questions.insert_questions([make(f"Q{n}?") for n in range(40)])
+    response = client.post(API + "/shuffle-options", params={"seed": 5})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changed"] > 0
+    assert sum(body["positions"].values()) == 40
+
+
+def test_the_answer_positions_are_reportable(client, fake_questions):
+    """
+    Intent: This failure was invisible until someone read the questions. A count per position is
+        the check that catches it recurring — an even spread is healthy, and everything in one
+        position means the shuffle has stopped running.
+    Success: The endpoint reports how many correct answers sit in each position.
+    Feature: Question quality — answer positions are measurable.
+    """
+    questions.insert_questions([make("Only?")])
+    positions = client.get(API + "/answer-positions").json()
+    assert sum(positions.values()) == 1
+    assert set(positions) >= {"A", "B", "C", "D"}
+
+
+def test_a_multi_badge_run_says_which_badge_it_is_on(client, monkeypatch, fake_questions):
+    """
+    Intent: A multi-badge run is several walks in sequence, each with its own 0-100%, so the bar
+        reaches the end and starts again. With nothing saying why, that reads as the run having
+        restarted — which is exactly how it was reported.
+    Success: Progress carries the badge's position and the total.
+    Feature: Question generation — multi-badge progress is legible.
+    """
+    seen: list[dict] = []
+
+    def record(slug, **kwargs):
+        kwargs["progress"]({"phase": "writing", "pages_done": 1, "badge_name": slug})
+        return {"skill_badge": slug, "inserted": 1, "pages_done": 1, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", record)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["atlas-search", "aggregation", "indexing"], "max_pages": 1},
+    )
+    state = client.get(API + "/generate/status").json()
+    assert state["progress"]["badge_count"] == 3
+    assert state["progress"]["badge_index"] == 3
+
+
+def test_the_question_count_is_cheap_to_poll(client, fake_questions):
+    """
+    Intent: The screen polls this every couple of seconds while a run is going, and the answer
+        is usually "no change". Fetching every question to discover that would make watching a
+        run more expensive than the run.
+    Success: The endpoint returns just a count.
+    Feature: Question review screen — a countable collection.
+    """
+    questions.insert_questions([make("One?"), make("Two?")])
+    assert client.get(API + "/count").json() == {"count": 2}
+
+
+def test_the_count_honours_the_screens_filters(client, fake_questions):
+    """
+    Intent: The screen polls the count for the view it is showing. An unfiltered count would
+        reload a badge-filtered list every time any badge gained a question, which is most of
+        the time during a multi-badge run.
+    Success: Filtering by badge narrows the count.
+    Feature: Question review screen — the count matches the view.
+    """
+    questions.insert_questions([
+        make("One?", skill_badges=["atlas-search"]),
+        make("Two?", skill_badges=["aggregation"]),
+    ])
+    assert client.get(API + "/count", params={"skill_badge": "atlas-search"}).json() == {"count": 1}
+
+
+def test_a_question_is_fetchable_by_either_identifier(client, fake_questions):
+    """
+    Intent: The program keys on question_id and Atlas shows ObjectId, so a caller holding one
+        should not have to know which it is. An endpoint accepting only one of them makes the
+        identifier on screen and the identifier in Atlas do different things.
+    Success: Both identifiers fetch the same question.
+    Feature: Question lookup — reachable by either identifier over the API.
+    """
+    question_id = questions.insert_questions([make("One?")])["question_ids"][0]
+    object_id = str(fake_questions.docs[0]["_id"])
+    by_question_id = client.get(f"{API}/by-id/{question_id}")
+    by_object_id = client.get(f"{API}/by-id/{object_id}")
+    assert by_question_id.status_code == 200 and by_object_id.status_code == 200
+    assert by_question_id.json()["stem"] == by_object_id.json()["stem"] == "One?"
+
+
+def test_an_unknown_identifier_is_a_404(client, fake_questions):
+    """
+    Intent: A 200 with an empty body would read as "this question has no content" rather than
+        "there is no such question", and a link to a deleted question is a normal thing to
+        follow.
+    Success: An unknown identifier is a 404.
+    Feature: Question lookup — an unknown identifier is reported as missing.
+    """
+    assert client.get(f"{API}/by-id/{'a' * 32}").status_code == 404
+
+
+def test_the_lookup_route_does_not_shadow_the_named_ones(
+    client, fake_questions, fake_collection, fake_doc_chunks
+):
+    """
+    Intent: Mounting the lookup at /{identifier} would capture every named route added under
+        this prefix later — and the shadowing would surface as a puzzling 422 on whichever
+        route lost, not as an obvious conflict.
+    Success: The named routes still answer with the lookup route registered.
+    Feature: Question lookup — the route does not collide with named endpoints.
+    """
+    assert client.get(API + "/coverage").status_code == 200
+    assert client.get(API + "/answer-positions").status_code == 200
+    assert client.get(API + "/count").status_code == 200
+
+
+# --- which of the two jobs is running ---
+
+
+def test_the_sweep_reports_itself_as_a_sweep(client, monkeypatch, fake_questions):
+    """
+    Intent: A generation run and a duplicate sweep share one piece of run state and one
+        status endpoint, but they are not interchangeable: one writes questions and spends
+        money, the other only compares what is already stored. With nothing naming which is
+        running, the screen had to guess, guessed generation, and announced that questions
+        were being written when an operator started a sweep — with no badge selected, which
+        reads as the tool having gone off on its own.
+    Success: While a sweep runs, the status names it as a sweep rather than as generation.
+    Feature: Question duplicate sweep — reported as itself, not as a generation run.
+    """
+    seen: list[str | None] = []
+    monkeypatch.setattr(
+        "app.services.question_duplicates.report",
+        lambda **kwargs: seen.append(api_module._run_state["kind"]) or {},
+    )
+    client.post(API + "/duplicates/sweep")
+    assert seen == ["duplicate-sweep"]
+
+
+def test_a_generation_run_reports_itself_as_generation(
+    client, monkeypatch, fake_collection, fake_questions
+):
+    """
+    Intent: The distinction is only useful if both sides declare themselves — a kind that is
+        set for one job and left stale from the previous one for the other is worse than
+        none, because it is confidently wrong.
+    Success: While a generation run runs, the status names it as generation.
+    Feature: Question generation — reported as itself.
+    """
+    seen: list[str | None] = []
+
+    monkeypatch.setattr(
+        api_module,
+        "generate_for_badge",
+        lambda *a, **k: seen.append(api_module._run_state["kind"]) or {},
+    )
+    api_module._run_state["kind"] = "duplicate-sweep"
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["atlas-search"], "max_pages": 1, "per_page": 1},
+    )
+    assert seen == ["generation"]
+
+
+def test_the_status_endpoint_publishes_which_job_is_running(client, fake_questions):
+    """
+    Intent: The page cannot tell the two jobs apart unless the state it polls says so, and it
+        must survive a reload — the browser cannot be the one remembering which button was
+        pressed, since the run outlives the page.
+    Success: The status response carries the kind of work in progress.
+    Feature: Question generation — run kind is published with run state.
+    """
+    api_module._run_state.update(running=True, kind="duplicate-sweep")
+    assert client.get(API + "/generate/status").json()["kind"] == "duplicate-sweep"
+
+
+def test_the_sweep_reports_how_far_it_has_got(client, monkeypatch, fake_questions):
+    """
+    Intent: A sweep is one round trip per stored question, so on a collection of thousands it
+        is minutes long — and it showed nothing but an indeterminate bar for all of them.
+        There was no way to tell a slow sweep from a stuck one, or to judge whether to wait.
+        How many questions there are is known before the first comparison, so the progress is
+        genuinely measurable rather than guessed at.
+    Success: While the sweep runs, the run state carries how many questions have been
+        compared of how many, a percentage, and how long is left.
+    Feature: Question duplicate sweep — progress is reported as it runs.
+    """
+    def fake_report(*, progress=None, **kwargs):
+        progress({"phase": "comparing", "compared": 3, "total": 12,
+                  "percent": 25.0, "pairs": 1, "errors": 0})
+        return {}
+
+    monkeypatch.setattr("app.services.question_duplicates.report", fake_report)
+    client.post(API + "/duplicates/sweep")
+    reported = api_module._run_state["progress"]
+    assert reported["compared"] == 3 and reported["total"] == 12
+    assert reported["percent"] == 25.0
+    assert reported["eta_seconds"] is not None
+
+
+def test_the_sweeps_scope_reaches_the_service(client, monkeypatch, fake_questions):
+    """
+    Intent: The screen's pickers are only worth having if what they say arrives. A scope
+        accepted by the endpoint and dropped before the work would produce a report describing
+        something other than what was asked for, and nothing on screen would show it.
+    Success: The badge, category and level posted with a sweep are passed through.
+    Feature: Question duplicate sweep — the requested scope reaches the sweep.
+    """
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.question_duplicates.report",
+        lambda **kwargs: seen.append(kwargs) or {},
+    )
+    client.post(
+        API + "/duplicates/sweep",
+        json={"skill_badge": "atlas-search", "category": "search",
+              "difficulty": "advanced"},
+    )
+    assert seen[0]["skill_badge"] == "atlas-search"
+    assert seen[0]["category"] == "search"
+    assert seen[0]["difficulty"] == "advanced"
+
+
+def test_a_sweep_with_no_scope_covers_everything(client, monkeypatch, fake_questions):
+    """
+    Intent: The unscoped sweep is the useful thing to run once, and it is what the button does
+        with nothing chosen. A missing body must mean "everything" rather than an error.
+    Success: A sweep posted with no scope runs with every filter unset.
+    Feature: Question duplicate sweep — no scope means the whole collection.
+    """
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.question_duplicates.report",
+        lambda **kwargs: seen.append(kwargs) or {},
+    )
+    client.post(API + "/duplicates/sweep")
+    assert seen[0]["skill_badge"] is None
+    assert seen[0]["category"] is None
+    assert seen[0]["difficulty"] is None
+
+
+def test_an_unoffered_skill_level_is_refused(client, fake_questions):
+    """
+    Intent: The level is compared against a stored value, so a typo or a hand-edited request
+        would silently scan nothing and report no duplicates — the one conclusion that must
+        never be reached by accident.
+    Success: A level outside the three the program uses is rejected.
+    Feature: Question duplicate sweep — the scope is validated.
+    """
+    response = client.post(API + "/duplicates/sweep", json={"difficulty": "expert"})
+    assert response.status_code == 422
+
+
+# --- the whole job, not the badge in flight ---
+
+
+def test_progress_reports_the_whole_job_as_well_as_the_badge(
+    client, monkeypatch, fake_collection, fake_questions
+):
+    """
+    Intent: Every figure on the progress panel belonged to the badge being walked, so a run
+        over several badges showed a cost, a count and a percentage that reset at each badge
+        while the clock ran on. There was no way to see what the job as a whole had produced or
+        would cost — which is the thing the author actually asked for.
+    Success: Progress carries an overall block summing the badges finished and the one in
+        flight.
+    Feature: Question generation — the whole job's progress is reported.
+    """
+    seen: list[dict] = []
+
+    def fake_badge(slug, **kwargs):
+        kwargs["progress"]({"phase": "writing", "pages_done": 2, "pages_total": 4,
+                            "inserted": 3, "cost": {"dollars": 0.10}})
+        seen.append(dict(api_module._run_state["progress"]["overall"]))
+        return {"skill_badge": slug, "inserted": 3, "pages_done": 4,
+                "pages_available": 0, "cost": {"dollars": 0.20}}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", fake_badge)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["one", "two"], "max_pages": 4, "per_page": 3},
+    )
+    # First badge: nothing finished yet, so the job shows only what is in flight.
+    assert seen[0]["badges_done"] == 0
+    assert seen[0]["inserted"] == 3
+    assert seen[0]["dollars"] == pytest.approx(0.10)
+    # Second badge: the first badge's finished totals are added to the one in flight.
+    assert seen[1]["badges_done"] == 1
+    assert seen[1]["inserted"] == 6
+    assert seen[1]["dollars"] == pytest.approx(0.30)
+    assert seen[1]["pages_done"] == 6
+
+
+def test_the_whole_job_is_measured_in_badges(
+    client, monkeypatch, fake_collection, fake_questions
+):
+    """
+    Intent: A badge's chunk set is only resolved when its walk begins, so the total work in a
+        job is not known at the start. Deriving a percentage from the requested maximum would
+        make it jump backwards whenever a badge turned out to have less material than asked
+        for — worse than a coarser number that only ever rises.
+    Success: Overall progress is the badges finished plus the fraction of the one in flight,
+        out of the badges requested.
+    Feature: Question generation — overall progress does not guess at unresolved work.
+    """
+    seen: list[dict] = []
+
+    def fake_badge(slug, **kwargs):
+        kwargs["progress"]({"phase": "writing", "pages_done": 1, "pages_total": 2,
+                            "inserted": 1})
+        seen.append(dict(api_module._run_state["progress"]["overall"]))
+        return {"skill_badge": slug, "inserted": 1, "pages_done": 2, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", fake_badge)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["one", "two", "three", "four"], "max_pages": 2},
+    )
+    # Half of the first badge, of four: an eighth of the job.
+    assert seen[0]["percent"] == pytest.approx(12.5)
+    # One badge done and half of the second: three eighths.
+    assert seen[1]["percent"] == pytest.approx(37.5)
+
+
+def test_the_job_projects_a_question_count_and_a_cost(
+    client, monkeypatch, fake_collection, fake_questions
+):
+    """
+    Intent: Replaces a test requiring no projection until a badge had finished. Waiting was
+        the wrong caution: a run can be forty minutes and seven badges, and the figures an
+        author needs to decide whether to stop — how many questions this is heading for, and
+        what it will cost — were withheld for the first eight minutes and then derived by
+        scaling spend by badge count, which breaks when badges differ in size. Both are now
+        measured per chunk, which is the unit the work is actually done in, and are answerable
+        after the first chunk.
+    Success: The overall block projects a question count from the questions-per-chunk yield so
+        far, and a spend from that count times the cost per question so far.
+    Feature: Question generation — the whole job's size and cost are projected.
+    """
+    seen: list[dict] = []
+
+    def fake_badge(slug, **kwargs):
+        kwargs["progress"]({"phase": "writing", "pages_done": 2, "pages_total": 4,
+                            "inserted": 4, "cost": {"dollars": 0.20}})
+        seen.append(dict(api_module._run_state["progress"]["overall"]))
+        return {"skill_badge": slug, "inserted": 8, "pages_done": 4,
+                "pages_available": 0, "cost": {"dollars": 0.40}}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", fake_badge)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["one", "two"], "max_pages": 4, "per_page": 3},
+    )
+    # Two chunks read of a job heading for eight — this badge's four plus the other
+    # badge's requested four — at two questions a chunk, so sixteen questions.
+    first = seen[0]
+    assert first["projected_chunks"] == 8
+    assert first["projected_questions"] == 16
+    # And the spend that many questions implies at the rate measured so far: $0.20 for
+    # four questions is $0.05 each, so sixteen is $0.80.
+    assert first["dollars_per_question"] == pytest.approx(0.05)
+    assert first["projected_dollars"] == pytest.approx(0.80)
+
+
+def test_the_projection_uses_measured_yield_not_the_requested_one(
+    client, monkeypatch, fake_collection, fake_questions
+):
+    """
+    Intent: A chunk is asked for three questions and may give two, or none — the model decides
+        what the material supports. Projecting from the number on the form would state the
+        ceiling as the expectation, which is the same overstatement that made "25 pages at 3
+        questions each" read as 75 for a seven-badge run.
+    Success: The projected count follows the questions actually written per chunk, not the
+        questions-per-chunk requested.
+    Feature: Question generation — the projection measures rather than assumes.
+    """
+    seen: list[dict] = []
+
+    def fake_badge(slug, **kwargs):
+        # Asked for three per chunk; this material is giving one.
+        kwargs["progress"]({"phase": "writing", "pages_done": 4, "pages_total": 4,
+                            "inserted": 4})
+        seen.append(dict(api_module._run_state["progress"]["overall"]))
+        return {"skill_badge": slug, "inserted": 4, "pages_done": 4, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", fake_badge)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["one"], "max_pages": 4, "per_page": 3},
+    )
+    assert seen[0]["projected_questions"] == 4
+

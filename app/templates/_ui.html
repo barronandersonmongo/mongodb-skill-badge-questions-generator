@@ -1,0 +1,66 @@
+{#
+  The shared vocabulary every screen is built from.
+
+  Before this existed each template laid out its own header, its own row of
+  buttons and its own empty state, which is why no two screens agreed on type
+  size or control size. A screen that calls these cannot drift: the decisions
+  live here and in app/static/theme.css, not in the markup.
+#}
+
+{# A screen's title, one sentence of standing explanation, and its actions. The
+   lede is optional: a screen whose purpose the title already gives does not need
+   a paragraph, and an absent one is better than a filler one. #}
+{% macro page_header(title, lede=None, title_hook=None) %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title" {% if title_hook %}data-{{ title_hook }}="true"{% endif %}>{{ title }}</h1>
+    {% if lede %}<p class="page-lede">{{ lede }}</p>{% endif %}
+  </div>
+  <div class="toolbar">{{ caller() if caller is defined }}</div>
+</div>
+{% endmacro %}
+
+{# The controls that narrow a list. Small, baseline-aligned, quietly labelled —
+   subordinate to the list they act on, unlike the page's actions. #}
+{% macro filter_bar() %}
+<div class="filter-bar">{{ caller() }}</div>
+{% endmacro %}
+
+{% macro field(label, for_id) %}
+<div>
+  <label class="form-label" for="{{ for_id }}">{{ label }}</label>
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+{# The one card treatment in the program. #}
+{% macro panel(header=None) %}
+<div class="panel {{ kwargs.get('class', '') }}"
+     {% for name, value in kwargs.items() if name != 'class' %}{{ name }}="{{ value }}"{% endfor %}>
+  {% if header %}
+  <div class="panel-header"><span class="section-title">{{ header }}</span></div>
+  {% endif %}
+  <div class="panel-body">{{ caller() }}</div>
+</div>
+{% endmacro %}
+
+{# Nothing to show, said as a deliberate answer. Callers pass the reason there is
+   nothing, which differs by screen and by whether a filter is applied. #}
+{% macro empty_state() %}
+<div class="empty-state" data-empty="true">{{ caller() }}</div>
+{% endmacro %}
+
+{# A skill badge a question is filed under. Links to the badge's definition: a
+   slug is not self-explanatory, and checking what it covers should not mean
+   hunting through the admin screen for it. #}
+{% macro badge_tag(slug) %}
+<a class="tag tag-badge" href="/admin/skill-badges#badge-{{ slug }}"
+   title="Skill badge: {{ slug }} — open its definition"
+   data-badge-tag="{{ slug }}">{{ slug }}</a>
+{% endmacro %}
+
+{# A topic area the question exercises. #}
+{% macro category_tag(name) %}
+<span class="tag tag-category" title="Topic area: {{ name }}"
+      data-category-tag="{{ name }}">{{ name }}</span>
+{% endmacro %}

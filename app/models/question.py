@@ -70,6 +70,13 @@ class GeneratedQuestion(BaseModel):
         default_factory=list,
         description="Slugs of the skill badges this question belongs to",
     )
+    # Which documentation sections the question came from. The URL says what a reader
+    # opens; this says what was actually read, which is what lets a walk skip the
+    # sections of a page it has already used.
+    source_chunk_ids: list[str] = Field(
+        default_factory=list,
+        description="Ids of the documentation sections the question was written from",
+    )
     source_urls: list[str] = Field(
         default_factory=list,
         description="URLs of the material this question was written from",
@@ -103,6 +110,5 @@ class QuestionDoc(GeneratedQuestion):
     question_id: str
     created_at: datetime
     generation_run_id: str
-    status: Literal["draft", "approved", "rejected"] = "draft"
     # Written on insert by the repository; the path a vector index points at.
     embedding_text: str = ""

@@ -18,6 +18,25 @@ from app.main import app
 from app.repositories import doc_pages
 from app.routers import admin_docs as api_module
 
+
+def seed_chunk(heading: str, text: str, url: str, page_title: str = "A page", **overrides):
+    """Store one section, as a refresh does after splitting a page."""
+    from app.repositories import doc_chunks
+
+    doc_chunks.replace_page_chunks(url, [{
+        "chunk_id": overrides.get("chunk_id", url + "#0"),
+        "url": url,
+        "source": overrides.get("source", "ix-1"),
+        "page_title": page_title,
+        "heading": heading,
+        "heading_path": overrides.get("heading_path", [page_title]),
+        "ordinal": 0,
+        "text": text,
+        "embed_text": f"{page_title} > {heading}\n\n{text}",
+        "chars": len(text),
+        "bytes": len(text.encode("utf-8")),
+    }])
+
 API = "/api/admin/docs"
 PAGE = "/admin/docs"
 
@@ -564,16 +583,27 @@ def seed_content(title: str, body: str, url: str, source: str = "ix-1") -> None:
     doc_pages.upsert_pages([{"url": url, "source": source, "title": title, "text": body}])
 
 
-def test_the_search_endpoint_returns_ranked_results_with_excerpts(client, fake_doc_pages):
+def test_the_search_endpoint_returns_ranked_sections_with_excerpts(client, fake_doc_chunks):
     """
-    Intent: Finding source material for a question means searching the whole corpus by
-        keyword; a result without an excerpt cannot be judged without opening it.
-    Success: The endpoint returns the matching page with a score and an excerpt.
-    Feature: Documentation search — the API answers keyword queries.
+    Intent: Replaces a page-level search test. Corpus search now answers with sections, which
+        is what makes a result worth reading: a page-level hit says "somewhere in these 40 KB"
+        and a section-level hit says which part — and the heading is the part a reader scans.
+    Success: The endpoint returns the matching section with its heading, score and excerpt.
+    Feature: Documentation search — the API answers with sections.
     """
-    seed_content("Pipelines", "The $lookup stage joins another collection.", "https://x/a.md")
+    from app.repositories import doc_chunks
+
+    doc_chunks.replace_page_chunks("https://x/a.md", [{
+        "chunk_id": "c1", "url": "https://x/a.md", "source": "ix",
+        "page_title": "Pipelines", "heading": "The $lookup stage",
+        "heading_path": ["Pipelines"], "ordinal": 0,
+        "text": "The $lookup stage joins another collection.",
+        "embed_text": "Pipelines > The $lookup stage\n\nThe $lookup stage joins another collection.",
+        "chars": 42, "bytes": 42,
+    }])
     body = client.get(API + "/search", params={"q": "lookup"}).json()
     assert body and body[0]["url"] == "https://x/a.md"
+    assert body[0]["heading"] == "The $lookup stage"
     assert "lookup" in body[0]["excerpt"]
     assert body[0]["score"] > 0
 
@@ -582,7 +612,7 @@ def test_the_search_endpoint_returns_ranked_results_with_excerpts(client, fake_d
     "params", [{"q": "a"}, {"q": ""}, {"q": "ok", "limit": 0}, {"q": "ok", "limit": 5000}],
     ids=["too-short", "empty", "no-limit", "limit-too-high"],
 )
-def test_a_malformed_search_is_refused(client, fake_doc_pages, params):
+def test_a_malformed_search_is_refused(client, fake_doc_chunks, params):
     """
     Intent: A one-character query matches most of a 7,000-page corpus, and an unbounded
         limit would return all of it with an excerpt each. Both are caught at the boundary.
@@ -611,7 +641,7 @@ def test_stubs_can_be_pruned_without_a_full_crawl(client, fake_doc_pages):
 # --- the search screen ---
 
 
-def test_the_search_screen_finds_pages_across_every_source(client, fake_doc_pages):
+def test_the_search_screen_finds_pages_across_every_source(client, fake_doc_chunks):
     """
     Intent: The corpus looked useless because its content was reachable only by guessing
         which of 74 sources held it — the C# driver's real documentation is not under the
@@ -621,8 +651,8 @@ def test_the_search_screen_finds_pages_across_every_source(client, fake_doc_page
         links to the viewer.
     Feature: Documentation search — corpus-wide, from the screen.
     """
-    seed_content("LINQ", "The aggregation pipeline is built from stages.", "https://x/a.md",
-                 source="ix-csharp")
+    seed_chunk("LINQ", "The aggregation pipeline is built from stages.", "https://x/a.md",
+               source="ix-csharp")
     response = client.get("/admin/docs/search", params={"q": "aggregation pipeline"})
     assert response.status_code == 200
     assert 'data-search-result="true"' in response.text
@@ -642,14 +672,14 @@ def test_the_corpus_screen_offers_the_search(client, fake_doc_pages):
     assert 'action="/admin/docs/search"' in body
 
 
-def test_the_search_screen_reports_how_many_results_it_found(client, fake_doc_pages):
+def test_the_search_screen_reports_how_many_results_it_found(client, fake_doc_chunks):
     """
     Intent: Results are capped, so a reader needs to know whether they are seeing everything
         or the top of a broad match they should narrow.
     Success: The count is shown for a query.
     Feature: Documentation search — honest result count.
     """
-    seed_content("Pipelines", "The $lookup stage joins.", "https://x/a.md")
+    seed_chunk("Pipelines", "The $lookup stage joins.", "https://x/a.md")
     body = client.get("/admin/docs/search", params={"q": "lookup"}).text
     assert 'data-result-count="true"' in body
     assert "1 result(s)" in body
@@ -680,24 +710,28 @@ def test_the_search_screen_prompts_before_a_query_is_entered(client, fake_doc_pa
     assert "result(s)" not in body
 
 
-def test_a_missing_text_index_is_explained_rather_than_crashing(client, monkeypatch, fake_doc_pages):
+def test_a_search_index_that_is_not_ready_is_explained(client, monkeypatch, fake_doc_chunks):
     """
-    Intent: A corpus stored before search existed has no text index, so the query fails. That
-        is a fixable state — refresh once — and saying so is more useful than a stack trace
-        or an empty result that reads as "we have nothing on that".
+    Intent: Replaces a test about a missing MongoDB text index, which no longer exists. Search
+        now runs on an Atlas Vector Search index over chunks, whose definition lives in Atlas
+        rather than here — so it can be missing, still building, or pointed at the old page
+        field, and it will certainly be absent right after this change. That is a fixable state,
+        and saying so beats a stack trace or an empty result reading as "we have nothing".
     Success: The screen returns 200 and explains, naming the failure.
-    Feature: Documentation search — a missing index is explained.
+    Feature: Documentation search — an unready index is explained.
     """
     from pymongo.errors import OperationFailure
 
-    def explode(*args, **kwargs):
-        raise OperationFailure("text index required for $text query")
+    from app.repositories import doc_chunks
 
-    monkeypatch.setattr(doc_pages, "search_pages", explode)
+    def explode(*args, **kwargs):
+        raise OperationFailure("index doc_chunks_embed_text_vector not found")
+
+    monkeypatch.setattr(doc_chunks, "search_chunks", explode)
     response = client.get("/admin/docs/search", params={"q": "anything"})
     assert response.status_code == 200
     assert 'data-search-error="true"' in response.text
-    assert "text index required" in response.text
+    assert "not found" in response.text
 
 
 # --- recovering a partial load ---
@@ -779,3 +813,77 @@ def test_a_fill_run_reports_what_it_left_alone(client, fake_doc_pages):
     body = client.get(PAGE).text
     assert 'data-fill-summary="true"' in body
     assert "6800 page(s) already present" in body
+
+
+# --- chunking the corpus ---
+
+
+def test_the_corpus_can_be_rechunked_without_recrawling(client, monkeypatch, fake_doc_pages, fake_doc_chunks):
+    """
+    Intent: This is the reason chunks are derived from pages rather than crawled. The band —
+        where to cut, what to merge, what ceiling to allow — is a measured judgement that will
+        want re-tuning against real question quality, and trying a different one should cost
+        seconds rather than a twelve-minute crawl and another round of CloudFront refusals.
+    Success: The endpoint starts a rebuild in the background and returns immediately.
+    Feature: Documentation chunking — rebuildable without a crawl.
+    """
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "app.services.doc_corpus.rebuild_chunks", lambda **kwargs: calls.append(kwargs) or {}
+    )
+    response = client.post(API + "/rechunk")
+    assert response.json() == {"started": True}
+    assert len(calls) == 1
+
+
+def test_a_rechunk_is_refused_while_another_run_is_going(client, fake_doc_pages, fake_doc_chunks):
+    """
+    Intent: A refresh and a rebuild both write chunks, and they share one run state. Run
+        together, each would overwrite the other's progress and the screen would report
+        whichever wrote last.
+    Success: A rebuild during another documentation run is a 409.
+    Feature: Documentation chunking — one documentation run at a time.
+    """
+    api_module._run_state["running"] = True
+    try:
+        assert client.post(API + "/rechunk").status_code == 409
+    finally:
+        api_module._run_state["running"] = False
+
+
+def test_the_chunking_shape_is_reportable(client, fake_doc_chunks):
+    """
+    Intent: The band is a judgement, so the only way to tell whether a change helped is the
+        shape it produced — how many sections, over how many pages, at what mean size. Left
+        unqueryable it would have to be checked with a mongo shell.
+    Success: The endpoint reports the chunk, page and mean-size figures.
+    Feature: Documentation chunking — the shape of the corpus is visible.
+    """
+    from app.repositories import doc_chunks
+
+    doc_chunks.replace_page_chunks("https://x/a.md", [{
+        "chunk_id": "c1", "url": "https://x/a.md", "text": "t", "embed_text": "t",
+        "chars": 100, "bytes": 100, "ordinal": 0,
+    }])
+    totals = client.get(API + "/chunks").json()
+    assert totals["chunks"] == 1 and totals["pages"] == 1 and totals["mean_chars"] == 100
+
+
+def test_one_pages_sections_can_be_listed(client, fake_doc_chunks):
+    """
+    Intent: Judging the chunking means looking at what a real page became — whether the cuts
+        landed on sensible boundaries and whether the merges produced anything coherent. That
+        needs the sections of one page, in order.
+    Success: The endpoint lists a page's sections with their headings.
+    Feature: Documentation chunking — a page's sections are inspectable.
+    """
+    from app.repositories import doc_chunks
+
+    doc_chunks.replace_page_chunks("https://x/a.md", [
+        {"chunk_id": "c1", "url": "https://x/a.md", "heading": "First", "ordinal": 0,
+         "text": "t", "embed_text": "t", "chars": 1, "bytes": 1},
+        {"chunk_id": "c2", "url": "https://x/a.md", "heading": "Second", "ordinal": 1,
+         "text": "t", "embed_text": "t", "chars": 1, "bytes": 1},
+    ])
+    listed = client.get(API + "/chunks/page", params={"url": "https://x/a.md"}).json()
+    assert [c["heading"] for c in listed] == ["First", "Second"]
