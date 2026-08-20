@@ -16,7 +16,6 @@ from uuid import uuid4
 
 from bson.binary import Binary
 from pymongo import ASCENDING, UpdateOne
-from pymongo.operations import SearchIndexModel
 from pymongo.collection import Collection
 
 from app.config import get_settings

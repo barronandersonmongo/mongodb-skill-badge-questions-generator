@@ -20,7 +20,7 @@ from fastapi.templating import Jinja2Templates
 from pymongo.errors import PyMongoError
 
 from app.config import get_settings
-from app.logging_config import DEFAULT_LINES, MAX_BYTES, TOTAL_FILES, log_file_path
+from app.logging_config import MAX_BYTES, TOTAL_FILES, log_file_path
 from app.repositories import doc_pages, skill_badges
 from app.routers.admin_docs import run_state as docs_run_state
 from app.routers.admin_skill_badges import run_state
@@ -154,7 +154,6 @@ def docs_source_page(request: Request, source: str, q: str | None = None):
             "pages": pages,
             "total": total,
             "shown": len(pages),
-            "limit": PAGE_LIST_LIMIT,
             "query": q or "",
             "storage_error": storage_error,
         },
@@ -260,7 +259,6 @@ def logs_page(request: Request):
         {
             "active_page": "logs",
             "log_file": str(log_file_path()),
-            "default_lines": DEFAULT_LINES,
             "max_megabytes": MAX_BYTES // (1024 * 1024),
             "total_files": TOTAL_FILES,
         },

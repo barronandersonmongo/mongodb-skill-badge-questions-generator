@@ -11,7 +11,6 @@ Only confident matches are applied; everything else is left to insert as new and
 be reviewed by a human.
 """
 
-import anthropic
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings

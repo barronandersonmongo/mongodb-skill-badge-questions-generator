@@ -20,7 +20,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from pymongo import ASCENDING, DESCENDING, DeleteMany, InsertOne
+from pymongo import ASCENDING, DeleteMany, InsertOne
 from pymongo.collection import Collection
 
 from app.config import get_settings

@@ -1209,13 +1209,6 @@ def generate_for_badge(
     return summary
 
 
-def doc_pages_page(url: str) -> dict[str, Any] | None:
-    """One page by URL. Indirected so a test can stand in for the corpus."""
-    from app.repositories import doc_pages
-
-    return doc_pages.page_by_url(url)
-
-
 def doc_chunk(chunk_id: str) -> dict[str, Any] | None:
     """One documentation section by id. Indirected so a test can stand in for it."""
     from app.repositories import doc_chunks
