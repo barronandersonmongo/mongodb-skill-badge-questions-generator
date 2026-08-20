@@ -1,28 +1,66 @@
 # mongodb-skill-badge-questions-generator
 
-Internal authoring tool for the MongoDB teams who build Credly skill badge quizzes. It
-generates, validates, stores, filters and exports quiz questions. It is **not** a
-quiz-taking platform — no learners, no scoring, no attempts.
+A MongoDB skill badge quiz draws on a small set of questions that hardly ever changes.
+Everyone involved knows what that means: if the questions and answers get out, they can be
+memorised, and the badge stops saying anything about whether the holder can use MongoDB.
+Anything kept on the company network is also findable through Glean, so the safest thing to
+do with the questions has been to keep them locked away — including from DevRel, who need
+that same material to train customers and help them earn the badge in the first place.
 
-## The problem, and why it is not "call an LLM in a loop"
+Meanwhile the product keeps moving. Features ship, documentation is rewritten, and a
+question written last year quietly becomes incomplete or wrong. Every new badge starts the
+writing effort over from nothing, by hand, and there is never a good week to do it.
 
-Volume is easy. Quality is the entire job, and three constraints make it hard.
+This tool exists to make the leak stop mattering. If there are thousands of current
+questions instead of a few dozen, every quiz and every practice test can be a different
+draw, and a leaked set is worth very little. DevRel gets material it can actually use.
+Learners get practice tests that change, with an explanation attached to each answer.
+Questions can be refreshed as the documentation changes, and a new badge is a run rather
+than a project.
 
-**A question has to discriminate.** Four options, exactly one defensibly correct, and
-three distractors that a competent practitioner might actually pick. A model asked for
-multiple-choice questions will happily produce one right answer and three obviously wrong
-ones, which tests nothing.
+It generates, validates, stores, filters and exports questions. Nobody takes a quiz in it —
+there are no learners, no scoring and no attempts here.
 
-**The bank has to be large enough that leaking a quiz does not compromise it.** The target
-is thousands of questions across 34 badges (and growing). That only holds if the questions
-are genuinely independent: knowing a leaked question's answer must not let someone answer
-another one *without knowing the material*. Same concept in a different scenario is fine —
-answering both needs the understanding the badge certifies. The same question reworded is
-fatal. So deduplication is a core requirement, not housekeeping.
+## Contents
 
-**Questions must be grounded and checkable.** A question written from the model's memory
-of MongoDB cannot be verified without redoing the research, so every question cites the
-documentation it came from, and the run that produced it is recorded.
+Top-level sections only, because those are the ones that stay put.
+
+- [What makes a question worth having](#what-makes-a-question-worth-having) — the three
+  constraints everything else answers to
+- [Stack](#stack) — what it is built from, and what it deliberately is not
+- [Getting started](#getting-started) — build, configure, the Atlas indexes, first run
+- [Tests](#tests) — how to run them, and why every test carries a requirement block
+- [Implementation strategies](#implementation-strategies) — the recurring decisions, each
+  written down because it has been re-derived at least once
+- [How it works](#how-it-works) — the corpus, chunks, retrieval, the walk, cost, duplicates
+- [Screens](#screens) — every view and its address
+- [API](#api) — the endpoints behind those screens
+- [Layout](#layout) — every file, and a reading order for someone new
+- [Known limitations](#known-limitations) — what it does not do well, stated plainly
+- [Next phase](#next-phase) — the standing backlog, ordered by benefit
+- [Open questions](#open-questions) — decisions still outstanding
+
+## What makes a question worth having
+
+Volume turned out to be the easy part. Three things make the difference between a bank
+people can rely on and a large pile of text.
+
+**A question has to be able to tell people apart.** Four options, exactly one defensibly
+correct, and three that a competent practitioner might genuinely consider. Ask a model for
+multiple-choice questions and it will hand back one right answer and three obviously silly
+ones, which tests nothing and teaches nothing. Being hard to read is not the same as being
+hard to answer: the question should be plain, and the choice between the options is where
+the understanding is proved.
+
+**A large bank only helps if the questions are independent.** The target is thousands of
+questions across 34 badges, and growing. Knowing one leaked answer must not hand someone
+another question for free. The same concept in a different scenario is fine — answering both
+still takes the understanding the badge certifies. The same question reworded is not, so
+finding near-duplicates is part of the job rather than tidying up afterwards.
+
+**Every question has to be checkable.** A question written from a model's memory of MongoDB
+cannot be verified without doing the research again, which nobody will do. So each one cites
+the documentation it was written from, and the run that produced it is kept.
 
 Everything below follows from those three.
 
@@ -1097,6 +1135,21 @@ item up.
   a way in that is not a browser session. Worth settling first whether the audience is
   other tools inside MongoDB or an agent, because that decides whether this is a REST
   surface, an MCP server, or both over one core.
+
+- **Ask the bank a question, in words.** A chat panel over the same material the screens
+  already show: "which badges are thinnest", "show me the aggregation questions rated
+  advanced", "is anything here contradicted by the docs as they stand", "write me a practice
+  test for Atlas Search". Everything it would need to answer is already stored and already
+  searchable; what it adds is that nobody has to know which screen holds which figure, or
+  that Material and Coverage are different questions. It also suits how people ask for this
+  work — the requests that produced most of this tool arrived as sentences, not as filters.
+
+  This is the one item that genuinely wants the HTTP API above to exist first, because a
+  chat turn is only useful if it can call the same operations a screen can. Two things to
+  decide: whether it may act — start a run, delete a duplicate — or only read and report,
+  which is the difference between a convenience and something that needs confirming at every
+  step; and how an answer cites itself, since a figure quoted in prose with no link back to
+  the screen it came from is exactly the ungrounded claim this tool exists to avoid.
 
 - **A balloon map of the bank on the coverage screen.** One circle per badge, sized by how
   many questions it holds and clicking through to `/?skill_badge=…`. Coverage already answers
