@@ -1141,7 +1141,7 @@ def test_a_page_and_its_badge_reach_the_authoring_call(fake_client, walk_setting
     Feature: Question generation — one page authored at a time.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     prompt = client.messages.parse_calls[0]["messages"][0]["content"]
     assert "An Atlas Search index defines how fields are analysed." in prompt
     assert "https://x/a.md" in prompt
@@ -1159,7 +1159,7 @@ def test_the_badge_catalog_reaches_the_authoring_call(fake_client, walk_settings
     """
     other = {"slug": "indexing", "name": "Indexing", "description": "Index design."}
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE, other], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE, other], settings=walk_settings)
     prompt = client.messages.parse_calls[0]["messages"][0]["content"]
     assert "indexing" in prompt and "atlas-search" in prompt
 
@@ -1173,7 +1173,7 @@ def test_page_authoring_is_one_pass_not_two(fake_client, walk_settings):
     Feature: Question generation — a single structured pass per page.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     assert len(client.messages.parse_calls) == 1
     assert client.messages.stream_calls == []
     assert "tools" not in client.messages.parse_calls[0]
@@ -1189,7 +1189,7 @@ def test_page_authoring_effort_is_tuned_separately(fake_client, walk_settings):
     Feature: Question generation — effort tuned for page authoring.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     call = client.messages.parse_calls[0]
     assert call["output_config"]["effort"] == walk_settings.page_author_effort
 
@@ -1206,7 +1206,7 @@ def test_a_truncated_page_authoring_response_is_reported(fake_client, walk_setti
     client.messages.parsed = FakeParsedResponse(None, stop_reason="max_tokens")
     client.messages.parsed_by_format = None
     with pytest.raises(RuntimeError, match="no structured output"):
-        question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+        question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
 
 
 def test_every_question_cites_the_page_it_came_from(fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings):
@@ -1509,7 +1509,7 @@ def test_the_author_is_told_who_the_reader_is(fake_client, walk_settings):
     Feature: Question quality — written for a developer audience.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     system = client.messages.parse_calls[0]["system"]
     assert "software developer" in system
     assert "engineer" in system
@@ -1525,7 +1525,7 @@ def test_the_author_is_given_the_words_not_to_use(fake_client, walk_settings):
     Feature: Question quality — the machine-written register is named and excluded.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     system = client.messages.parse_calls[0]["system"]
     for word in ("leverage", "utilize", "seamless", "crucial", "delve"):
         assert word in system
@@ -1543,7 +1543,7 @@ def test_the_author_is_told_to_be_specific(fake_client, walk_settings):
     Feature: Question quality — concrete situations over abstract ones.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     system = client.messages.parse_calls[0]["system"]
     assert "second person" in system
     assert "Name real things" in system
@@ -1560,7 +1560,7 @@ def test_the_rationales_are_held_to_the_same_voice(fake_client, walk_settings):
     Feature: Question quality — rationales in the same voice as the question.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     system = client.messages.parse_calls[0]["system"]
     assert "rationale" in system and "same voice" in system
 
@@ -1578,7 +1578,7 @@ def test_the_author_is_told_not_to_make_everything_a_scenario(fake_client, walk_
     Feature: Question quality — a mix of question forms.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     system = client.messages.parse_calls[0]["system"]
     assert "Do not write every question as a scenario" in system
     assert "Do not force a scenario" in system
@@ -1593,7 +1593,7 @@ def test_the_author_is_given_the_forms_to_choose_between(fake_client, walk_setti
     Feature: Question quality — the question forms are named.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     system = client.messages.parse_calls[0]["system"]
     for form in ("Situational", "Factual", "Procedural", "Best practice", "Diagnostic", "Comparative"):
         assert form in system
@@ -1608,7 +1608,7 @@ def test_best_practices_are_asked_directly(fake_client, walk_settings):
     Feature: Question quality — best practices stated plainly.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     system = client.messages.parse_calls[0]["system"]
     assert "Ask these directly" in system
     assert "a direct question is not a lesser question" in system
@@ -1623,7 +1623,7 @@ def test_the_form_is_chosen_by_the_material(fake_client, walk_settings):
     Feature: Question quality — the form follows the material.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     assert "Let the material choose the form" in client.messages.parse_calls[0]["system"]
 
 
@@ -1689,8 +1689,8 @@ def test_a_requested_skill_level_reaches_the_prompt(fake_client, walk_settings):
     Feature: Question generation — questions pitched at a chosen skill level.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(
-        PAGE, BADGE, [BADGE], difficulty="advanced", settings=walk_settings
+    question_generation.questions_from_chunk(
+        CHUNK, BADGE, [BADGE], difficulty="advanced", settings=walk_settings
     )
     prompt = client.messages.parse_calls[0]["messages"][0]["content"]
     assert "ADVANCED" in prompt
@@ -1722,7 +1722,7 @@ def test_no_chosen_level_spreads_the_questions(fake_client, walk_settings):
     Feature: Question generation — a mixed run spreads across levels.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     prompt = client.messages.parse_calls[0]["messages"][0]["content"]
     assert "spread the questions across" in prompt
 
@@ -1749,45 +1749,6 @@ def test_the_level_asked_for_is_recorded_with_the_run(
 # --- a huge page must not cost a fortune ---
 
 
-def test_a_huge_page_is_cut_short_before_it_is_sent(fake_client, walk_settings):
-    """
-    Intent: Measured on a real run on 2026-08-19: the corpus holds documentation pages up to
-        1.7 MB — driver tutorials repeating every example in a dozen languages — and one sent
-        whole was 505,435 input tokens, $2.58 for three questions, about a hundred times the
-        expected cost per question. The per-page cap existed for the single-prompt path and was
-        never applied to the walk.
-    Success: Only the first `doc_context_page_chars` of a page reach the prompt.
-    Feature: Question generation — a page's contribution to a prompt is bounded.
-    """
-    # A filler that cannot occur anywhere else in the prompt, so the count is the
-    # page's contribution and nothing else's — "x" also appears in the fixture URL.
-    huge = {**PAGE, "text": "Q" * 500_000}
-    capped = replace(walk_settings, doc_context_page_chars=1000)
-    client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(huge, BADGE, [BADGE], settings=capped)
-    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
-    assert "Q" * 1000 in prompt
-    assert "Q" * 1001 not in prompt
-
-
-def test_a_cut_page_tells_the_author_it_was_cut(fake_client, walk_settings):
-    """
-    Intent: A model shown a page truncated mid-sentence can reasonably conclude the feature has
-        no more to it, and write a question asserting something the full page contradicts. It
-        has to be told, and told not to guess at the rest.
-    Success: A truncated page is marked as cut short, with an instruction not to assume the
-        remainder.
-    Feature: Question generation — truncation is disclosed to the author model.
-    """
-    huge = {**PAGE, "text": "Q" * 500_000}
-    capped = replace(walk_settings, doc_context_page_chars=1000)
-    client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(huge, BADGE, [BADGE], settings=capped)
-    prompt = client.messages.parse_calls[0]["messages"][0]["content"]
-    assert "cut short" in prompt
-    assert "do not assume what the rest says" in prompt
-
-
 def test_a_page_within_the_cap_is_sent_whole(fake_client, walk_settings):
     """
     Intent: The cap is a guard against outliers, not a summariser. Most pages are a few
@@ -1797,7 +1758,7 @@ def test_a_page_within_the_cap_is_sent_whole(fake_client, walk_settings):
     Feature: Question generation — an ordinary page is not truncated.
     """
     client = fake_client(parsed_by_format=walk_run())
-    question_generation.questions_from_page(PAGE, BADGE, [BADGE], settings=walk_settings)
+    question_generation.questions_from_chunk(CHUNK, BADGE, [BADGE], settings=walk_settings)
     prompt = client.messages.parse_calls[0]["messages"][0]["content"]
     assert PAGE["text"] in prompt
     assert "cut short" not in prompt

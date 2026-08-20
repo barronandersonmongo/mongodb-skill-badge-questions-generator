@@ -50,6 +50,9 @@
 const API = "{{ api }}";
 const body = document.getElementById("log-body");
 const alertBox = document.getElementById("log-alert");
+
+// The one shared helper this screen needs, from /static/app.js.
+const showAlert = (kind, message) => UI.showAlert(alertBox, null, kind, message);
 const lineCount = document.querySelector("[data-line-count]");
 const rotatedBox = document.getElementById("rotated");
 let followTimer = null;
@@ -89,11 +92,6 @@ function render(lines) {
     span.dataset.level = level || "continuation";
     body.append(span);
   }
-}
-
-function showAlert(kind, message) {
-  alertBox.className = "alert alert-" + kind;
-  alertBox.textContent = message;
 }
 
 function clearAlert() {

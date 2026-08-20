@@ -448,11 +448,17 @@ def test_the_elapsed_timer_is_driven_by_the_servers_start_time(
     Feature: Question generation — elapsed time survives leaving the page.
     """
     body = client.get(PAGE).text
+    shared = client.get("/static/app.js").text
+    # The clock itself moved to /static/app.js when five copies of it were consolidated,
+    # so the behaviour now spans the page and that file: the page adopts the server's
+    # clock, and app.js is what reads started_at and server_time. Both are asserted, and
+    # the requirement recorded above is unchanged.
     assert "adoptServerClock(state)" in body
-    assert "state.started_at" in body
-    assert "state.server_time" in body
+    assert "state.started_at" in shared
+    assert "state.server_time" in shared
     # The old behaviour: starting the count from whenever the browser noticed.
     assert "startedAt = Date.now()" not in body
+    assert "startedAt = Date.now()" not in shared
 
 
 def test_a_run_already_in_progress_shows_its_true_elapsed_time(

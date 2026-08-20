@@ -709,56 +709,6 @@ def _attribute_or_keep_going(
 # --- the badge-scoped page walk ---
 
 
-def build_page_prompt(
-    page: dict[str, Any],
-    badge: dict[str, Any],
-    catalog: list[dict[str, Any]],
-    count: int,
-    *,
-    difficulty: str | None = None,
-    extra_instructions: str | None = None,
-    settings: Settings | None = None,
-) -> str:
-    """Assemble the request for one page. Kept separate so it can be asserted on."""
-    settings = settings or get_settings()
-    badge_lines = [
-        f"- {b['slug']}: {b.get('name')} — {b.get('description') or ''}" for b in catalog
-    ]
-    prompt = (
-        f"Write up to {count} question(s) from the documentation page below.\n\n"
-        f"The page was selected for this badge:\n{_badge_brief(badge)}\n\n"
-        "Every MongoDB skill badge, by slug — file each question under every one it "
-        "genuinely tests:\n" + "\n".join(badge_lines) + "\n\n"
-    )
-    if difficulty:
-        prompt += DIFFICULTY_GUIDANCE.get(difficulty, "") + "\n\n"
-    else:
-        prompt += (
-            "Difficulty is yours to judge per question — let the material decide, and "
-            "spread the questions across foundational, intermediate and advanced "
-            "rather than pitching them all the same.\n\n"
-        )
-    if extra_instructions:
-        prompt += f"Additional instructions from the author:\n{extra_instructions}\n\n"
-
-    # Capped, and the cap matters more than it looks: the corpus holds pages up to 1.7 MB
-    # — driver tutorials that repeat every example in a dozen languages — and one of them
-    # sent whole is half a million input tokens, about $2.50 for a single page. Measured
-    # on a real run, 2026-08-19. A page cut short is still usable material to write from;
-    # a page that costs more than the rest of the badge put together is not.
-    text = page.get("text") or ""
-    limit = settings.doc_context_page_chars
-    truncated = len(text) > limit
-    body = text[:limit]
-    header = f"### {page.get('title') or page['url']}\nSource: {page['url']}"
-    if truncated:
-        header += (
-            "\n(This page is longer than shown; it has been cut short. Write only from "
-            "what is here — do not assume what the rest says.)"
-        )
-    return prompt + f"{header}\n\n{body}"
-
-
 def build_chunk_prompt(
     chunk: dict[str, Any],
     badge: dict[str, Any],
@@ -877,66 +827,6 @@ class PageResult:
 
     questions: list[GeneratedQuestion]
     usage: Any = None
-
-
-def questions_from_page(
-    page: dict[str, Any],
-    badge: dict[str, Any],
-    catalog: list[dict[str, Any]],
-    *,
-    count: int | None = None,
-    difficulty: str | None = None,
-    extra_instructions: str | None = None,
-    settings: Settings | None = None,
-) -> PageResult:
-    """Questions this one page supports, structured, in a single Claude call.
-
-    One pass, not the draft-then-extract pair the badge-wide path uses. That pair
-    exists because a research turn benefits from thinking in prose before being made
-    structured, and because tool use and structured output did not sit well together.
-    Reading one page needs no tools and no research, so the second pass would only pay
-    output tokens a second time to restate questions already written.
-
-    Badge attribution is folded in for the same reason: the catalog is small, the model
-    is already holding the question, and a separate pass would re-send every question
-    to decide something it could have decided when it wrote it.
-    """
-    from app.services.badge_discovery import _client, _translate_auth_error
-
-    settings = settings or get_settings()
-    count = count or settings.questions_per_page
-
-    try:
-        response = _client(settings).messages.parse(
-            model=settings.model,
-            max_tokens=16000,
-            system=PAGE_AUTHOR_SYSTEM,
-            output_format=GeneratedQuestions,
-            output_config={"effort": settings.page_author_effort},
-            messages=[
-                {
-                    "role": "user",
-                    "content": build_page_prompt(
-                        page,
-                        badge,
-                        catalog,
-                        count,
-                        difficulty=difficulty,
-                        extra_instructions=extra_instructions,
-                        settings=settings,
-                    ),
-                }
-            ],
-        )
-    except Exception as exc:
-        _translate_auth_error(exc)
-        raise
-    if response.parsed_output is None:
-        raise RuntimeError(
-            f"Page authoring produced no structured output (stop_reason="
-            f"{response.stop_reason}, details={response.stop_details})."
-        )
-    return PageResult(response.parsed_output.questions, getattr(response, "usage", None))
 
 
 def generate_for_badge(

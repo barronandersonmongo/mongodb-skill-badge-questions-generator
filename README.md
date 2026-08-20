@@ -193,6 +193,13 @@ so "this is the right answer" and "this succeeded" are one colour rather than tw
 the ground under a question's identifier, date and source, because none of that is the
 question.
 
+The JavaScript that watches a background run lives once, in `app/static/app.js`:
+formatters, a `RunClock` that takes its start time from the server, and the alert and
+panel helpers, each taking the elements it acts on. Five screens used to carry their own
+copies — `showAlert` five times, the clock four — and they had already drifted: two copies
+had lost the timed-elapsed branch. Each screen now binds the shared helpers to its own
+elements in a few lines and keeps none of the logic.
+
 ### 3. One shell, with authoring separated from curation
 
 The screens are not a flat list of peers. Writing questions is the job; the badge catalog,
