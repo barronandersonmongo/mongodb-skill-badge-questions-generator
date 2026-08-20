@@ -1136,9 +1136,9 @@ item up.
   other tools inside MongoDB or an agent, because that decides whether this is a REST
   surface, an MCP server, or both over one core.
 
-- **Ask the bank a question, in words.** A chat panel over the same material the screens
-  already show: "which badges are thinnest", "show me the aggregation questions rated
-  advanced", "is anything here contradicted by the docs as they stand", "write me a practice
+- **A chatbot: ask the bank a question in words.** A chat panel over the same material the
+  screens already show: "which badges are thinnest", "show me the aggregation questions
+  rated advanced", "is anything here contradicted by the docs as they stand", "write me a practice
   test for Atlas Search". Everything it would need to answer is already stored and already
   searchable; what it adds is that nobody has to know which screen holds which figure, or
   that Material and Coverage are different questions. It also suits how people ask for this
