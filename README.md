@@ -186,9 +186,9 @@ its JavaScript, but almost none of its appearance survives: the theme is loaded 
 and replaces its components, keeping the class names the scripts and tests hook onto.
 Surfaces are separated by elevation and whitespace rather than by hairline borders, and
 MongoDB forest green appears only where something is the primary action or the current
-screen. Colour means one thing each — forest for a primary action and for a skill badge,
-spring green for focus, red for destructive, a warm neutral for a topic area, and nothing else is a chip
-at all. The same green, at its palest, is the ground under the correct option in a question,
+screen. Colour means one thing each — forest for a primary action and for a topic
+area, gold for a skill badge because that is the colour of a badge, spring green for focus,
+red for destructive, and nothing else is a chip at all. The same green, at its palest, is the ground under the correct option in a question,
 so "this is the right answer" and "this succeeded" are one colour rather than two; grey is
 the ground under a question's identifier, date and source, because none of that is the
 question.
@@ -511,7 +511,7 @@ output is any good before the other 33 are paid for.
 each one with the full budget in turn, so 25 pages at 3 questions each over 34 badges is up
 to 2,550 questions and 850 pages, not 75. The form projects the multiplication as the
 selection changes, and calls it a ceiling: pages already written from are skipped, so a
-badge with little unused material contributes fewer, and **Stop after this page** ends the
+badge with little unused material contributes fewer, and **Stop after this chunk** ends the
 whole run rather than the badge being walked.
 
 **One section, one structured call.** Not the draft-then-extract pair the older
@@ -674,7 +674,7 @@ filters on screen, and the reload is skipped while a dialog is open or the tab i
 up exactly what it consumed and prices it from rates that live next to the model in
 `Settings` — meaning the published price is the only thing here that can be wrong. The
 status panel shows spend so far and the projected total at the current rate, which is what
-makes **Stop after this page** an informed decision rather than a guess. Nothing is
+makes **Stop after this chunk** an informed decision rather than a guess. Nothing is
 projected until a section has finished, because a projection from zero reads as "this run is
 free" at exactly the wrong moment.
 
@@ -701,6 +701,16 @@ would state the ceiling as the expectation; the model decides what a chunk's mat
 supports, and it is often fewer. The chunk total is itself a ceiling for badges not yet
 started, since a badge can hold less material than the budget asked for — one held 7
 against a budget of 25 — which is why it feeds the projection and not the progress bar.
+
+The panel reports the job and the badge in flight in two grids of the same shape, so a
+figure and its counterpart sit in the same place and carry the same name. Every label leads with what it
+measures and qualifies it after — Questions created, Questions projected, Chunks evaluated,
+Spend, Spend projected — because a grid is scanned down its first words, and "Projected
+questions" put the qualifier where the subject should be and separated a figure from its own
+projection. Ratios name both terms in order, Questions/chunk and Cost/question rather than
+"Per chunk" and "Per question", and every duration reads hh:mm:ss whether it is a clock
+ticking in the browser or a figure the server measured. The run history uses the same names,
+so a run being watched and the same run recorded read against each other.
 
 **Questions per minute and cost per question** are the two derived figures worth watching.
 Total spend cannot be compared between runs because it depends on how much was walked; cost
@@ -988,6 +998,119 @@ in order.
 - **A wipe-and-rebuild reproduces everything machine-derived** (badges, slugs, name
   sources, artwork, links) but **not** reviewed titles, approvals or curated links. Back up
   before testing that.
+
+## Next phase
+
+Wanted, not built. This list is the standing record — it grows as things are asked for, and
+an item leaves it only by shipping or by being ruled out here.
+
+**Ordered by benefit, not by effort.** Quality is what the tool is for, so the two items that
+raise the quality of questions already written come first, followed by what makes the bank
+usable as quizzes and what keeps it true as the documentation moves. Cheapness is noted where
+it applies — the run detail screen is a template and nothing more — but it does not move an
+item up.
+
+- **An LLM judge on question quality, with the option to rewrite.** Score each stored
+  question on how easily it reads, how clearly the task is stated, and whether the answer it
+  calls correct really is — then, where the prose is the problem, rewrite it and keep the
+  question. The goal is that the difficulty lives entirely in choosing between the options: a
+  candidate who understands MongoDB should pass, and nobody should lose a badge to a sentence
+  they had to read three times. Hard to *understand* is a defect; hard to *answer without
+  knowing the material* is the product. The prompt already argues this at generation time —
+  see [What makes a question good](#what-makes-a-question-good), where a described skill
+  level exists precisely because "advanced" gets read as harder wording rather than harder
+  judgement — but nothing measures it afterwards, and the questions already written were
+  written under earlier versions of those rules.
+
+  A rewrite is a heavier act than the rest of this list: it changes a stored question rather
+  than removing one, so it needs the deterministic validation every generated question passes
+  (four options, exactly one correct, no duplicates, the answer position re-randomised), it
+  must be shown to leave the correct answer *the same option*, and the original wants keeping
+  so a rewrite can be judged and undone. Reading ease also needs an operational definition
+  before it can be scored — a readability metric is cheap and mechanical, a judge's opinion
+  is neither, and the two disagree on exactly the technical vocabulary a MongoDB question has
+  to use.
+
+- **Diverse retrieval: fetch N questions that are semantically dissimilar to each other.**
+  Filter by badge, category and difficulty as now, but have the result set spread out
+  rather than cluster — pick greedily against the embeddings already stored, so each
+  question added is the one least like those already chosen. This inverts the duplicate
+  problem instead of solving it again: near-duplicates may stay in the bank, where they
+  add difficulty variety and reuse, because the pull is what guarantees a quiz does not
+  ask the same thing twice. It also serves the reason the bank has to be
+  large at all — a leaked quiz must not compromise it. Needs a decision on
+  whether "dissimilar" is a threshold or a target count, and what happens when the filter
+  leaves too few questions to spread.
+
+- **Re-checking stored questions against a refreshed corpus.** A question is grounded in the
+  chunks it was written from, and MongoDB's documentation moves: a chunk can vanish, be
+  rewritten, or come to say the opposite of what a question asserts, and nothing currently
+  notices. A sweep over `source_chunk_ids` would sort every question into aligned, orphaned
+  (its chunks no longer exist) and changed (they exist but the text has moved on), report the
+  last two for a human to judge, and offer to retire them in bulk. Three things to settle:
+  the cheap structural half — has the chunk gone, is its text different — needs no Claude
+  call and should run first, while "does this chunk still support this answer" needs one per
+  question and is the expensive half; a re-chunk renumbers chunks without the documentation
+  having changed at all, so identity has to survive re-chunking or every question looks
+  orphaned; and retiring, unlike deleting, would want to release the chunks back so the
+  material can be written from again.
+
+- **Removing a badge from a question by hand.** A question written from one badge's
+  material is often defensible for a second badge and not for a third, and that is a
+  judgement the model is not well placed to make. A small × on each badge pill, with a
+  confirmation, would let an author take one badge off a question without deleting the
+  question. This is the first editorial act other than deletion, so it reopens
+  [No review workflow](#no-review-workflow) narrowly: not a review state, but a second way
+  to correct a stored question. Two decisions it needs — whether removing the last badge is
+  refused or is the same as deleting the question, and whether the removal is recorded, since
+  a later re-run resolving that badge to the same chunks would otherwise be free to write the
+  question again.
+
+- **Sample tests, and crowd-sourced judgement on the questions in them.** Generate a sample
+  quiz from the bank — the diverse-retrieval pull above is exactly the right way to choose
+  its questions — put it in front of colleagues, and collect an opinion per question: is this
+  fair, is it answerable, is the "correct" option actually correct. Enough low marks against
+  one question and it is retired rather than reused. This is the only measure of question
+  quality that comes from outside the model, which is worth a great deal given that quality
+  is the whole point of the tool.
+
+  It also pushes hardest on what this program is: a sample test is not far from a quiz-taking
+  platform, and the line to hold is that nobody is scored — the *question* is being marked,
+  not the person answering. Needs the same retired state as the corpus re-check above, so the
+  two should be designed together; needs a decision on how a rater is identified, since
+  anonymous feedback cannot be weighted or audited and identified feedback on a colleague's
+  authoring is a different social contract; and needs a threshold that a handful of ratings
+  cannot trip, which is the same calibration problem as the duplicate threshold.
+
+- **A run detail screen.** `/runs` lists finished runs and `GET /api/questions/runs/{id}`
+  already returns one in full, including the chunk-by-chunk detail — so this is a
+  template, not a pipeline change. Clicking a run should show what the live status window
+  shows: cost, duration, questions written, chunks read and skipped, and the per-chunk
+  outcome.
+
+- **A complete, documented HTTP API over every business function.** Much of the surface
+  already exists — the endpoints in [API](#api) are what the screens call — but it grew
+  screen by screen, so it is neither uniform nor a contract: generation, question search
+  and fetch, corpus refresh, the duplicate sweep and the log tail all answer in shapes
+  chosen for the page that asked. The work is deciding what an external caller is
+  promised, then honouring it: stable request and response shapes, consistent errors, and
+  a way in that is not a browser session. Worth settling first whether the audience is
+  other tools inside MongoDB or an agent, because that decides whether this is a REST
+  surface, an MCP server, or both over one core.
+
+- **A balloon map of the bank on the coverage screen.** One circle per badge, sized by how
+  many questions it holds and clicking through to `/?skill_badge=…`. Coverage already answers
+  "what should I run next" as a table sorted thinnest-first, which is the precise answer; a
+  map answers a different question — how lopsided is the bank overall — in one glance, and it
+  is the one view of this data that reads at presentation distance. Cheap, too: Chart.js is
+  already loaded and coverage already fetches the per-badge counts, so this is a second
+  rendering of data the screen has.
+
+  One thing to get right, and it is the usual way a bubble chart lies: size the circles by
+  **area**, not radius. Chart.js takes a radius, so the radius has to be the square root of
+  the count, or a badge with four times the questions looks sixteen times the size. With 34
+  badges and counts spanning an order of magnitude, labels will not all fit either — the
+  large circles can carry a name, the rest need hover.
 
 ## Open questions
 
