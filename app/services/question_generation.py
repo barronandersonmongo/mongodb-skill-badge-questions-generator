@@ -922,6 +922,13 @@ def generate_for_badge(
             if elapsed > 0 and summary["inserted"]
             else None
         )
+        # What this badge is heading for: the yield the model is actually giving on this
+        # material, over the chunks resolved for it. The job reports the same figure
+        # across every badge, and a badge with no chunk finished yet reports nothing
+        # rather than a guess.
+        state["projected_questions"] = (
+            round(summary["inserted"] / done * total) if done and total else None
+        )
         # No confident estimate before any page has finished: "0%, 0 seconds left" is
         # worse than saying nothing.
         state["percent"] = round(done / total * 100, 1) if total else None

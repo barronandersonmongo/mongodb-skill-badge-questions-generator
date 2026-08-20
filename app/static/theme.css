@@ -745,8 +745,9 @@ a:focus-visible,
 /* ---------- tags ---------- */
 
 /* Colour means one thing each, and the meaning is repeated in the title
-   attribute because colour alone is not a label: forest for the skill badge a
-   question is filed under, a warmer neutral for the topic area it exercises,
+   attribute because colour alone is not a label: gold for the skill badge a
+   question is filed under, because that is the colour of a badge; forest for the
+   topic area it exercises, which has no colour of its own and takes the theme's;
    flat grey for anything that is only an identifier. */
 .tag {
   display: inline-flex;
@@ -761,9 +762,9 @@ a:focus-visible,
   white-space: nowrap;
 }
 
-.tag-badge { color: var(--forest); background: var(--forest-wash); border-color: #cfe6dc; }
-.tag-badge:hover { background: #dcece5; color: var(--forest-hover); text-decoration: none; }
-.tag-category { color: var(--warn); background: var(--warn-wash); border-color: #f0e3bf; }
+.tag-badge { color: var(--warn); background: var(--warn-wash); border-color: #f0e3bf; }
+.tag-badge:hover { background: #f8eecf; color: #7a5b00; text-decoration: none; }
+.tag-category { color: var(--forest); background: var(--forest-wash); border-color: #cfe6dc; }
 
 /* Bootstrap's own badges, wherever a template still uses one, are given the same
    pill shape so they cannot look like a different species of chip. */

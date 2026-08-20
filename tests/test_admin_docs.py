@@ -887,3 +887,19 @@ def test_one_pages_sections_can_be_listed(client, fake_doc_chunks):
     ])
     listed = client.get(API + "/chunks/page", params={"url": "https://x/a.md"}).json()
     assert [c["heading"] for c in listed] == ["First", "Second"]
+
+
+def test_the_crawl_rate_label_names_the_unit_it_counts(client):
+    """
+    Intent: Every status panel in the tool labelled its throughput "Rate", each counting a
+        different thing at a different interval — chunks a minute here, pages a second there.
+        The label is the only place the unit can be read.
+    Success: The crawl's throughput is labelled Pages/sec rather than Rate, and the value is
+        a bare number because the label carries the unit.
+    Feature: Documentation corpus — the refresh rate names its unit.
+    """
+    body = client.get(PAGE).text
+    assert ">Pages/sec</div>" in body
+    assert ">Rate</div>" not in body
+    script = body[body.index('setStat("rate"'):]
+    assert '"/s"' not in script[: script.index("\n")]

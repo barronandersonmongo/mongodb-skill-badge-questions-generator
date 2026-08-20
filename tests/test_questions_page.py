@@ -815,7 +815,7 @@ def test_the_status_panel_offers_a_stop_button(client, fake_collection, fake_que
     seed_badge()
     body = client.get(PAGE).text
     assert 'data-stop-run="true"' in body
-    assert "Stop after this page" in body
+    assert "Stop after this chunk" in body
 
 
 def test_a_finished_run_reports_what_it_cost(client, fake_collection, fake_questions):
@@ -1465,3 +1465,163 @@ def test_the_panel_shows_the_whole_job_only_when_there_is_one(
     assert 'class="d-none" data-overall="true"' in body
     script = body[body.index("const all = p.overall"):]
     assert "(all.badge_count || 0) > 1" in script[: script.index("\n\n")]
+
+
+def test_the_clock_is_reported_against_the_job_not_the_badge(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: The elapsed figure runs from the moment the run started and never restarts at a
+        badge boundary, so it measures the job. Reported only in the badge block, it read as
+        that badge's walk and overstated it by every badge already finished.
+    Success: The whole-job stats carry an elapsed cell, the browser tick writes to it, and
+        the badge cell is fed the server's per-badge figure once more than one badge is in
+        flight.
+    Feature: Question generation — the job's elapsed time sits with the job's figures.
+    """
+    body = client.get(PAGE).text
+    overall = body[body.index('data-overall-stats="true"'):body.index('data-progress-stats="true"')]
+    assert 'data-stat="all-elapsed"' in overall
+    assert 'data-stat="elapsed"' not in overall
+    script = body[body.index("function startPanelClock"):]
+    assert 'setStat("all-elapsed", text)' in script[: script.index("\n}")]
+    assert 'if (many || !clock.ticking())' in script
+
+
+def test_the_job_and_badge_figures_stand_in_the_same_order(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: The two grids reported the same quantities in different positions, so a figure
+        and its per-badge counterpart never lined up and the reader had to find each one
+        again. Both are four-column grids, so equal ordering means equal columns.
+    Success: Questions, chunks, spend, per-question, projected spend, questions/min, elapsed
+        and remaining appear in the same order in the job grid as in the badge grid.
+    Feature: Question generation — job and badge figures share one layout.
+    """
+    body = client.get(PAGE).text
+    overall = body[body.index('data-overall-stats="true"'):body.index('data-progress-stats="true"')]
+    badge = body[body.index('data-progress-stats="true"'):body.index('data-stat="tokens"')]
+    shared = ("questions", "pages", "spent", "per-question", "projected", "qpm", "elapsed", "eta")
+    positions = [overall.index('data-stat="all-' + name + '"') for name in shared]
+    assert positions == sorted(positions)
+    positions = [badge.index('data-stat="' + name + '"') for name in shared]
+    assert positions == sorted(positions)
+
+
+def test_the_two_grids_report_the_same_figures_under_the_same_labels(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: Reporting "Projected spend" for the job and "Projected" for the badge, a rate for
+        the badge and none for the job, and a question projection for the job and none for the
+        badge, made two panels that look alike say different things. A reader comparing a
+        badge against the job it is part of has to be comparing like with like.
+    Success: Every label in the whole-job grid appears in the badge grid, in the same order,
+        including a rate for the job and a question projection for the badge.
+    Feature: Question generation — job and badge report the same figures under the same names.
+    """
+    body = client.get(PAGE).text
+    overall = body[body.index('data-overall-stats="true"'):body.index('data-progress-stats="true"')]
+    badge = body[body.index('data-progress-stats="true"'):body.index('data-stat="tokens"')]
+    labels = ("Questions created", "Chunks evaluated", "Spend", "Cost/question",
+              "Questions projected", "Chunks/min", "Spend projected", "Questions/min",
+              "Time elapsed", "Time remaining")
+    for grid in (overall, badge):
+        positions = [grid.index(">" + label + "</div>") for label in labels]
+        assert positions == sorted(positions)
+    assert 'data-stat="all-rate"' in overall
+    assert 'data-stat="projected-questions"' in badge
+
+
+def test_a_rate_label_names_the_unit_it_counts(client, fake_collection, fake_questions):
+    """
+    Intent: "Rate" sat beside Questions/min and Per chunk — three figures that are all
+        rates — and named neither the thing it counted nor the interval, so the only way to
+        learn it meant chunks per minute was to read the JavaScript.
+    Success: The chunk rate is labelled Chunks/min in both grids, no cell is labelled just
+        "Rate", and the value is a bare number because the label carries the unit.
+    Feature: Question generation — rate labels name their unit.
+    """
+    body = client.get(PAGE).text
+    panel = body[body.index('data-progress-panel="true"'):body.index('data-stat="tokens"')]
+    assert panel.count(">Chunks/min</div>") == 2
+    assert ">Rate</div>" not in panel
+    script = body[body.index("setStat(\"all-rate\""):]
+    assert '"/min"' not in script[: script.index("\n")]
+
+
+def test_a_time_label_says_it_is_a_time(client, fake_collection, fake_questions):
+    """
+    Intent: "Elapsed" and "Remaining" sat in a grid of counts and amounts, where "Remaining"
+        could as easily have meant chunks left as time left — and it is the only cell whose
+        unit was ambiguous rather than merely unstated.
+    Success: Both cells are labelled with the word time, in both grids.
+    Feature: Question generation — time cells say they are times.
+    """
+    body = client.get(PAGE).text
+    panel = body[body.index('data-progress-panel="true"'):body.index('data-stat="tokens"')]
+    assert panel.count(">Time elapsed</div>") == 2
+    assert panel.count(">Time remaining</div>") == 2
+    assert ">Elapsed</div>" not in panel and ">Remaining</div>" not in panel
+
+
+def test_every_ratio_label_names_both_of_its_terms(client, fake_collection, fake_questions):
+    """
+    Intent: "Per chunk" and "Per question" named the denominator and left the numerator to be
+        guessed — one counts questions, the other counts dollars, and neither said which. The
+        panel's other ratios already read numerator/denominator.
+    Success: The yield is labelled Questions/chunk and the unit cost Cost/question, and
+        neither reads as a bare "Per …".
+    Feature: Question generation — ratio labels name what they divide.
+    """
+    body = client.get(PAGE).text
+    panel = body[body.index('data-progress-panel="true"'):body.index('data-stat="tokens"')]
+    assert ">Questions/chunk</div>" in panel
+    assert panel.count(">Cost/question</div>") == 2
+    assert ">Per chunk</div>" not in panel and ">Per question</div>" not in panel
+
+
+def test_the_chunk_being_read_is_named_above_the_phase(client, fake_collection, fake_questions):
+    """
+    Intent: The phase line says what the walk is doing; the chunk name says what it is doing
+        it to, which is what tells an author the budget is going on the right material. Below
+        ten figures it was the last thing read rather than the first.
+    Success: The current-chunk line comes before the phase line in the panel.
+    Feature: Question generation — the chunk in flight is named first.
+    """
+    body = client.get(PAGE).text
+    panel = body[body.index('data-progress-panel="true"'):body.index('data-stat="tokens"')]
+    assert panel.index('data-stat="current-page"') < panel.index('data-phase="true"')
+
+
+def test_a_label_leads_with_what_it_measures(client, fake_collection, fake_questions):
+    """
+    Intent: A grid is scanned down its first words, so the subject has to come first and the
+        qualifier after it: "Questions created" and "Questions projected" sort together under
+        the thing they both count, where "Projected questions" put the qualifier in the
+        scanning position and separated a figure from its own projection.
+    Success: The panel's labels lead with the noun — questions, chunks, spend — and no label
+        leads with a qualifier or states a bare noun where a qualifier is needed.
+    Feature: Question generation — labels lead with what they measure.
+    """
+    body = client.get(PAGE).text
+    panel = body[body.index('data-progress-panel="true"'):body.index('data-stat="tokens"')]
+    for label in ("Questions created", "Questions projected", "Chunks evaluated",
+                  "Spend", "Spend projected"):
+        assert ">" + label + "</div>" in panel
+    for label in ("Questions", "Chunks", "Spent", "Projected questions", "Projected spend"):
+        assert ">" + label + "</div>" not in panel
+
+
+def test_the_headline_counts_chunks(client, fake_collection, fake_questions):
+    """
+    Intent: The headline said "12 / 25 sections" while every label, form field and log line
+        around it said chunk. One unit, one word — and "section" overstated the material,
+        because a chunk is a heading and its passage, not an article.
+    Success: The headline counts chunks.
+    Feature: Question generation — the panel says chunk.
+    """
+    body = client.get(PAGE).text
+    assert 'p.pages_total + " chunks"' in body
+    assert '" sections"' not in body

@@ -21,13 +21,11 @@ window.UI = (function () {
       ":" + pad(total % 60);
   }
 
+  // Every duration on screen reads hh:mm:ss, whether it is a clock counting up or a
+  // figure the server measured, so two of them can be compared without conversion.
   function formatDuration(seconds) {
     if (seconds === null || seconds === undefined) return "—";
-    const total = Math.max(0, Math.round(seconds));
-    if (total < 60) return total + "s";
-    const minutes = Math.floor(total / 60);
-    if (minutes < 60) return minutes + "m " + String(total % 60).padStart(2, "0") + "s";
-    return Math.floor(minutes / 60) + "h " + String(minutes % 60).padStart(2, "0") + "m";
+    return formatElapsed(Math.max(0, Math.round(seconds)) * 1000);
   }
 
   function formatMoney(value) {
