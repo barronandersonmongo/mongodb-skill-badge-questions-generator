@@ -124,7 +124,10 @@ a:hover { color: var(--forest-hover); text-decoration: underline; }
   height: 100vh;
   display: flex;
   flex-direction: column;
-  padding: var(--s5) var(--s3) var(--s4);
+  /* Stated rather than relied on: the items belong at the top, and a stray auto
+     margin or a future footer would otherwise push them down the column. */
+  justify-content: flex-start;
+  padding: var(--s4) var(--s3);
   background: var(--surface);
   border-right: 1px solid var(--line);
 }
@@ -133,7 +136,7 @@ a:hover { color: var(--forest-hover); text-decoration: underline; }
   display: flex;
   align-items: center;
   gap: var(--s2);
-  padding: 0 var(--s2) var(--s6);
+  padding: 0 var(--s2) var(--s4);
   font-size: 0.9375rem;
   font-weight: 600;
   letter-spacing: -0.015em;
