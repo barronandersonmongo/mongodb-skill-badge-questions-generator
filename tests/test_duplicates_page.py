@@ -525,3 +525,19 @@ def test_an_unscoped_report_says_that_too(client):
     api_module._run_state["last_result"] = sweep_result()
     body = client.get(PAGE).text
     assert "across the whole collection" in body
+
+
+def test_the_sweep_rate_label_names_the_unit_it_counts(client):
+    """
+    Intent: Every status panel in the tool labelled its throughput "Rate", each counting a
+        different thing — the sweep counts questions compared a minute, which is the same
+        unit the generation panel calls Questions/min. One quantity, one name.
+    Success: The sweep's throughput is labelled Questions/min rather than Rate, and the value
+        is a bare number because the label carries the unit.
+    Feature: Duplicate detection — the sweep rate names its unit.
+    """
+    body = client.get(PAGE).text
+    assert ">Questions/min</div>" in body
+    assert ">Rate</div>" not in body
+    script = body[body.index('setStat("sweep-rate"'):]
+    assert '"/min"' not in script[: script.index(";")]

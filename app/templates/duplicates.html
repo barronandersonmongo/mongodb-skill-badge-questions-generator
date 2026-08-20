@@ -98,11 +98,11 @@
     {# A sweep's figures. A generation run's — sections walked, cost, questions per
        page — describe work a sweep does not do. #}
     <div class="row row-cols-2 row-cols-md-4 g-2 small" data-sweep-stats="true">
-      <div><div class="text-body-secondary">Compared</div><div data-stat="sweep-compared">—</div></div>
+      <div><div class="text-body-secondary">Questions compared</div><div data-stat="sweep-compared">—</div></div>
       <div><div class="text-body-secondary">Pairs found</div><div data-stat="sweep-pairs">—</div></div>
-      <div><div class="text-body-secondary">Rate</div><div data-stat="sweep-rate">—</div></div>
-      <div><div class="text-body-secondary">Remaining</div><div data-stat="sweep-eta">—</div></div>
-      <div><div class="text-body-secondary">Elapsed</div><div class="font-monospace" data-stat="elapsed">—</div></div>
+      <div><div class="text-body-secondary">Questions/min</div><div data-stat="sweep-rate">—</div></div>
+      <div><div class="text-body-secondary">Time remaining</div><div data-stat="sweep-eta">—</div></div>
+      <div><div class="text-body-secondary">Time elapsed</div><div class="font-monospace" data-stat="elapsed">—</div></div>
     </div>
   </div>
 </div>
@@ -330,7 +330,7 @@ function showProgress(p) {
   setStat("sweep-pairs", String(p.pairs || 0)
     + (p.errors ? " · " + p.errors + " could not be compared" : ""));
   setStat("sweep-rate", p.questions_per_minute
-    ? p.questions_per_minute.toFixed(0) + "/min" : "—");
+    ? p.questions_per_minute.toFixed(0) : "—");
   setStat("sweep-eta", formatDuration(p.eta_seconds));
   if (!clock.ticking()) setStat("elapsed", formatDuration(p.elapsed_seconds));
 }

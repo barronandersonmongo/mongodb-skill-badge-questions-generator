@@ -164,3 +164,44 @@ def test_the_questions_screen_no_longer_carries_the_history_dialog(client, fake_
     body = client.get("/").text
     assert 'id="history-modal"' not in body
     assert 'id="history-btn"' not in body
+
+
+def test_a_recorded_duration_reads_in_the_same_format_as_a_running_one(
+    client, stub_history
+):
+    """
+    Intent: A finished run's time was written "13m 35s" while the live panel counted in
+        00:13:35, so the same quantity had two shapes and comparing a run against the one in
+        flight meant converting between them.
+    Success: A run of 815 seconds renders as 00:13:35 — hours, minutes and seconds, padded.
+    Feature: Run history — one duration format across the tool.
+    """
+    stub_history["runs"] = [a_run()]
+    body = client.get(PAGE).text
+    assert "00:13:35" in body
+    assert "13m 35s" not in body
+
+
+def test_the_history_uses_the_same_column_names_as_the_run_panel(client, stub_history):
+    """
+    Intent: History and the live panel report the same quantities, so a run being watched and
+        the same run recorded have to be readable against each other. "Cost" here and "Spend"
+        there, "Took" here and "Time elapsed" there, made that a translation exercise.
+    Success: The totals and the table lead with the noun — questions created, chunks
+        evaluated, spend, time — and no column is headed Cost, Took, Chunks or Questions
+        alone.
+    Feature: Run history — column names match the run panel.
+    """
+    stub_history["runs"] = [a_run()]
+    stub_history["totals"] = {"runs": 1, "questions": 34, "pages": 12, "dollars": 0.18,
+                              "seconds": 815.0, "questions_per_minute": 2.5,
+                              "dollars_per_question": 0.0054}
+    body = client.get(PAGE).text
+    # The figures only: the sidebar links to a screen called Questions, which is a
+    # destination rather than a measurement.
+    figures = body[body.index('data-run-totals="true"'):body.index("</table>")]
+    for label in ("Questions created", "Chunks evaluated", "Spend", "Time taken",
+                  "Cost/question", "Questions/chunk"):
+        assert ">" + label + "<" in figures
+    for label in ("Cost", "Took", "Chunks", "Questions", "Spent"):
+        assert ">" + label + "<" not in figures

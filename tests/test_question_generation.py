@@ -1874,3 +1874,29 @@ def test_a_badge_whose_sections_cannot_be_resolved_is_reported_as_failed(
     assert summary["inserted"] == 0
     assert not summary.get("exhausted")
     assert not summary.get("fell_back_to_research")
+
+
+def test_a_walk_projects_the_questions_this_badge_will_yield(
+    fake_client, fake_collection, fake_questions, fake_doc_pages, walk_settings
+):
+    """
+    Intent: The whole-job panel projects a question total, so a single badge needs the same
+        figure or the two cannot be compared. Measured yield, not the number requested: a
+        chunk asked for three questions may produce two or none.
+    Success: A progress snapshot reports projected_questions as questions written per chunk
+        read, over the chunks resolved for the badge, and reports nothing before the first
+        chunk has finished.
+    Feature: Question generation — a badge projects its own question total.
+    """
+    fake_collection.docs.append({**BADGE, "status": "approved"})
+    seed_corpus([PAGE, {**PAGE, "url": "https://x/b.md"}], walk_settings)
+    fake_client(parsed_by_format=walk_run())
+    seen = []
+    question_generation.generate_for_badge(
+        "atlas-search", settings=walk_settings, progress=seen.append
+    )
+    assert seen[0]["projected_questions"] is None
+    mid = [s for s in seen if s["pages_done"] == 1][-1]
+    assert mid["projected_questions"] == round(
+        mid["inserted"] / mid["pages_done"] * mid["pages_total"]
+    )

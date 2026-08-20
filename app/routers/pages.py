@@ -58,14 +58,12 @@ def _duration(seconds: object) -> str:
     number = _number(seconds)
     if number is None:
         return "—"
+    # hh:mm:ss, the same format the panels' clocks tick in, so a recorded duration and
+    # a running one are the same shape and can be compared at a glance.
     total = max(0, round(number))
-    if total < 60:
-        return f"{total}s"
-    minutes, remainder = divmod(total, 60)
-    if minutes < 60:
-        return f"{minutes}m {remainder:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes:02d}m"
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def _when(epoch_seconds: object) -> str:

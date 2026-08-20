@@ -64,12 +64,12 @@
            id="progress-bar" data-progress-bar="true" style="width: 0%;">0%</div>
     </div>
     <div class="row row-cols-2 row-cols-md-6 g-2 small" data-progress-stats="true">
-      <div><div class="text-body-secondary">Pages</div><div data-stat="pages">—</div></div>
-      <div><div class="text-body-secondary">Rate</div><div data-stat="rate">—</div></div>
-      <div><div class="text-body-secondary">Elapsed</div><div data-stat="elapsed">—</div></div>
-      <div><div class="text-body-secondary">Remaining</div><div data-stat="eta">—</div></div>
-      <div><div class="text-body-secondary">Sources</div><div data-stat="sources">—</div></div>
-      <div><div class="text-body-secondary">Stored</div><div data-stat="stored">—</div></div>
+      <div><div class="text-body-secondary">Pages fetched</div><div data-stat="pages">—</div></div>
+      <div><div class="text-body-secondary">Pages/sec</div><div data-stat="rate">—</div></div>
+      <div><div class="text-body-secondary">Time elapsed</div><div data-stat="elapsed">—</div></div>
+      <div><div class="text-body-secondary">Time remaining</div><div data-stat="eta">—</div></div>
+      <div><div class="text-body-secondary">Sources read</div><div data-stat="sources">—</div></div>
+      <div><div class="text-body-secondary">Pages stored</div><div data-stat="stored">—</div></div>
     </div>
   </div>
 </div>
@@ -337,7 +337,7 @@ function showProgress(p) {
     : p.sources_done + " / " + p.sources_total + " indexes read";
 
   setStat("pages", p.pages_total ? p.pages_seen + " of " + p.pages_total : String(p.pages_seen));
-  setStat("rate", p.pages_per_second ? p.pages_per_second.toFixed(1) + "/s" : "—");
+  setStat("rate", p.pages_per_second ? p.pages_per_second.toFixed(1) : "—");
   setStat("elapsed", formatDuration(p.elapsed_seconds));
   setStat("eta", p.phase === "done" ? "—" : formatDuration(p.eta_seconds));
   setStat("sources", p.sources_done + " of " + p.sources_total);

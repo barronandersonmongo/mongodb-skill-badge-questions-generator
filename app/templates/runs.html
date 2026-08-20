@@ -25,12 +25,12 @@
 {% call ui.panel() %}
 <div class="row row-cols-2 row-cols-md-4 g-3" data-run-totals="true">
   <div><div class="meta">Runs</div><div class="fs-5 fw-semibold">{{ totals.runs }}</div></div>
-  <div><div class="meta">Questions</div><div class="fs-5 fw-semibold">{{ totals.questions }}</div></div>
-  <div><div class="meta">Chunks read</div><div class="fs-5 fw-semibold">{{ totals.pages }}</div></div>
-  <div><div class="meta">Spent</div><div class="fs-5 fw-semibold">{{ totals.dollars | money }}</div></div>
-  <div><div class="meta">Time</div><div>{{ totals.seconds | duration }}</div></div>
+  <div><div class="meta">Questions created</div><div class="fs-5 fw-semibold">{{ totals.questions }}</div></div>
+  <div><div class="meta">Chunks evaluated</div><div class="fs-5 fw-semibold">{{ totals.pages }}</div></div>
+  <div><div class="meta">Spend</div><div class="fs-5 fw-semibold">{{ totals.dollars | money }}</div></div>
+  <div><div class="meta">Time total</div><div>{{ totals.seconds | duration }}</div></div>
   <div><div class="meta">Questions/min</div><div>{{ totals.questions_per_minute | rate }}</div></div>
-  <div><div class="meta">Per question</div><div>{{ totals.dollars_per_question | unit_cost }}</div></div>
+  <div><div class="meta">Cost/question</div><div>{{ totals.dollars_per_question | unit_cost }}</div></div>
 </div>
 {% endcall %}
 {% endif %}
@@ -43,15 +43,15 @@
         <tr>
           <th>When</th>
           <th>Badge</th>
-          <th class="text-end">Chunks</th>
-          <th class="text-end">Questions</th>
-          <th class="text-end">Per page</th>
+          <th class="text-end">Chunks evaluated</th>
+          <th class="text-end">Questions created</th>
+          <th class="text-end">Questions/chunk</th>
           <th>Level</th>
           <th>Effort</th>
-          <th class="text-end">Q/min</th>
-          <th class="text-end">Took</th>
-          <th class="text-end">Cost</th>
-          <th class="text-end">Per question</th>
+          <th class="text-end">Questions/min</th>
+          <th class="text-end">Time taken</th>
+          <th class="text-end">Spend</th>
+          <th class="text-end">Cost/question</th>
           <th>Outcome</th>
         </tr>
       </thead>

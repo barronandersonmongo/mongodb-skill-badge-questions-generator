@@ -1315,3 +1315,38 @@ def test_the_projection_uses_measured_yield_not_the_requested_one(
     )
     assert seen[0]["projected_questions"] == 4
 
+
+
+def test_the_job_reports_its_own_chunk_rate(
+    client, monkeypatch, fake_collection, fake_questions
+):
+    """
+    Intent: The badge panel reports chunks per minute and the job panel did not, so two grids
+        that look alike reported different quantities and a badge's rate had nothing to be
+        compared against.
+    Success: The overall block reports pages_per_minute over the chunks the whole job has
+        read, against the job's own clock.
+    Feature: Question generation — the whole job reports a chunk rate.
+    """
+    seen: list[dict] = []
+
+    def fake_badge(slug, **kwargs):
+        kwargs["progress"]({"phase": "writing", "pages_done": 2, "pages_total": 4,
+                            "inserted": 4, "cost": {"dollars": 0.20}})
+        seen.append(dict(api_module._run_state["progress"]["overall"]))
+        return {"skill_badge": slug, "inserted": 4, "pages_done": 2,
+                "pages_available": 0, "cost": {"dollars": 0.20}}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", fake_badge)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["one", "two"], "max_pages": 4, "per_page": 3},
+    )
+    # The chunks the job has read so far over its elapsed time, per minute — the same
+    # arithmetic as the questions figure beside it.
+    first, second = seen[0], seen[1]
+    assert first["pages_per_minute"] == pytest.approx(
+        first["pages_done"] / first["elapsed_seconds"] * 60
+    )
+    # Counted across badges, not restarted at each one.
+    assert second["pages_done"] == 4

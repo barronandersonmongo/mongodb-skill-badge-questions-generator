@@ -43,6 +43,14 @@ per_page={{ pagination.per_page }}&
 
 <div class="card mb-3 d-none" id="progress-panel" data-progress-panel="true">
   <div class="card-body py-3">
+    {# Above both blocks, because it stops the run rather than the badge in flight, and
+       outside the whole-job block, which is hidden when there is only one badge. #}
+    <div class="d-flex justify-content-end mb-2">
+      <button class="btn btn-sm btn-outline-danger text-nowrap d-none" id="stop-run-btn"
+              type="button" data-stop-run="true">
+        Stop after this chunk
+      </button>
+    </div>
     <div class="d-none" data-overall="true">
       <div class="d-flex justify-content-between align-items-baseline mb-1">
         <span class="fw-semibold">Whole job</span>
@@ -51,29 +59,37 @@ per_page={{ pagination.per_page }}&
       <div class="progress mb-2" role="progressbar" style="height: 1.25rem;">
         <div class="progress-bar" data-overall-bar="true" style="width: 0%;">0%</div>
       </div>
-      {# Written and projected side by side in each pair, so the projection is read as
-         an extrapolation of the figure next to it rather than as a separate claim. #}
+      {# The same grid as the badge panel below: column 1 questions, 2 chunks, 3 money,
+         4 rates, and the clock on the last row — so a figure and its per-badge
+         counterpart sit in the same place. Written and projected are stacked in one
+         column, so the projection reads as an extrapolation of the figure above it
+         rather than a separate claim. #}
       <div class="row row-cols-2 row-cols-md-4 g-2 small mb-3" data-overall-stats="true">
-        <div><div class="text-body-secondary">Questions</div><div data-stat="all-questions">—</div></div>
+        <div><div class="text-body-secondary">Questions created</div><div data-stat="all-questions">—</div></div>
+        <div><div class="text-body-secondary">Chunks evaluated</div><div data-stat="all-pages">—</div></div>
+        <div><div class="text-body-secondary">Spend</div><div data-stat="all-spent">—</div></div>
+        <div><div class="text-body-secondary">Cost/question</div><div data-stat="all-per-question" title="Spend so far divided by the questions written so far.">—</div></div>
         <div>
-          <div class="text-body-secondary">Projected questions</div>
+          <div class="text-body-secondary">Questions projected</div>
           <div data-stat="all-projected-questions"
                title="Questions per chunk so far, over the chunks this job is heading for. A ceiling: a badge can hold less material than the budget asked for.">—</div>
         </div>
-        <div><div class="text-body-secondary">Chunks</div><div data-stat="all-pages">—</div></div>
-        <div><div class="text-body-secondary">Spent</div><div data-stat="all-spent">—</div></div>
+        <div><div class="text-body-secondary">Chunks/min</div><div data-stat="all-rate">—</div></div>
         <div>
-          <div class="text-body-secondary">Projected spend</div>
+          <div class="text-body-secondary">Spend projected</div>
           <div data-stat="all-projected"
                title="Projected questions × cost per question so far.">—</div>
         </div>
-        <div><div class="text-body-secondary">Per question</div><div data-stat="all-per-question">—</div></div>
         <div><div class="text-body-secondary">Questions/min</div><div data-stat="all-qpm">—</div></div>
-        <div><div class="text-body-secondary">Remaining</div><div data-stat="all-eta">—</div></div>
+        {# The clock belongs to the job, not the badge: it runs from the moment the run
+           started and never restarts, which is why it is reported here. #}
+        <div><div class="text-body-secondary">Time elapsed</div><div class="font-monospace" data-stat="all-elapsed">—</div></div>
+        <div><div class="text-body-secondary">Time remaining</div><div data-stat="all-eta">—</div></div>
       </div>
       <hr class="my-2">
     </div>
 
+    <div class="small text-body-secondary text-truncate mb-1" data-stat="current-page">—</div>
     <div class="d-flex justify-content-between align-items-baseline mb-1">
       <span class="fw-semibold" data-phase="true">Starting…</span>
       <span class="font-monospace small" data-headline="true"></span>
@@ -84,23 +100,28 @@ per_page={{ pagination.per_page }}&
            id="progress-bar" data-progress-bar="true" style="width: 0%;">0%</div>
     </div>
     <div class="row row-cols-2 row-cols-md-4 g-2 small mb-2" data-progress-stats="true">
-      <div><div class="text-body-secondary">Chunks</div><div data-stat="pages">—</div></div>
-      <div><div class="text-body-secondary">Questions</div><div data-stat="questions">—</div></div>
-      <div><div class="text-body-secondary">Rate</div><div data-stat="rate">—</div></div>
-      <div><div class="text-body-secondary">Per chunk</div><div data-stat="per-page">—</div></div>
-      <div><div class="text-body-secondary">Elapsed</div><div class="font-monospace" data-stat="elapsed">—</div></div>
-      <div><div class="text-body-secondary">Remaining</div><div data-stat="eta">—</div></div>
-      <div><div class="text-body-secondary">Spent</div><div data-stat="spent">—</div></div>
-      <div><div class="text-body-secondary">Projected</div><div data-stat="projected">—</div></div>
+      <div><div class="text-body-secondary">Questions created</div><div data-stat="questions">—</div></div>
+      <div><div class="text-body-secondary">Chunks evaluated</div><div data-stat="pages">—</div></div>
+      <div><div class="text-body-secondary">Spend</div><div data-stat="spent">—</div></div>
+      <div><div class="text-body-secondary">Cost/question</div><div data-stat="per-question" title="Spend so far divided by the questions written so far, for this badge.">—</div></div>
+      <div>
+        <div class="text-body-secondary">Questions projected</div>
+        <div data-stat="projected-questions"
+             title="Questions per chunk so far, over the chunks resolved for this badge.">—</div>
+      </div>
+      <div><div class="text-body-secondary">Chunks/min</div><div data-stat="rate">—</div></div>
+      <div>
+        <div class="text-body-secondary">Spend projected</div>
+        <div data-stat="projected"
+             title="Projected questions × cost per question so far, for this badge.">—</div>
+      </div>
       <div><div class="text-body-secondary">Questions/min</div><div data-stat="qpm">—</div></div>
-      <div><div class="text-body-secondary">Per question</div><div data-stat="per-question">—</div></div>
-    </div>
-    <div class="d-flex justify-content-between align-items-center gap-2">
-      <div class="small text-body-secondary text-truncate" data-stat="current-page">—</div>
-      <button class="btn btn-sm btn-outline-danger text-nowrap d-none" id="stop-run-btn"
-              type="button" data-stop-run="true">
-        Stop after this page
-      </button>
+      {# This badge's own walk, from the server. The job's clock is in the panel above;
+         with one badge that panel is hidden and this is the only clock, so the browser
+         ticks it then. #}
+      <div><div class="text-body-secondary">Time elapsed</div><div class="font-monospace" data-stat="elapsed">—</div></div>
+      <div><div class="text-body-secondary">Time remaining</div><div data-stat="eta">—</div></div>
+      <div><div class="text-body-secondary">Questions/chunk</div><div data-stat="per-page" title="Questions written divided by chunks read: the yield the model is giving on this material, against the number requested per chunk.">—</div></div>
     </div>
     <div class="small text-body-secondary mt-2" data-stat="tokens">—</div>
   </div>
@@ -624,11 +645,17 @@ const setPanelState = (kind, message) => UI.setPanelState(panel, kind, message);
 const showAlert = (kind, message, options) => UI.showAlert(alertBox, clock, kind, message, options);
 
 // Elapsed ticks in the browser against the server's start time, so it advances every
-// second instead of jumping whenever a poll happens to answer.
+// second instead of jumping whenever a poll happens to answer. It is the job's clock —
+// it runs from the moment the run started and does not restart at each badge — so it
+// belongs to the job panel. With a single badge that panel is hidden and the job is the
+// badge, so the same tick drives the badge figure instead.
+let manyBadges = false;
 function startPanelClock() {
   clock.tick(() => {
     const running = clock.elapsed();
-    setStat("elapsed", running === null ? "—" : formatElapsed(running));
+    const text = running === null ? "—" : formatElapsed(running);
+    setStat("all-elapsed", text);
+    if (!manyBadges) setStat("elapsed", text);
   });
 }
 
@@ -662,6 +689,7 @@ function showProgress(p) {
   const all = p.overall || {};
   const overallPanel = panel.querySelector("[data-overall]");
   const many = (all.badge_count || 0) > 1;
+  manyBadges = many;
   overallPanel.classList.toggle("d-none", !many);
   if (many) {
     const overallBar = panel.querySelector("[data-overall-bar]");
@@ -681,7 +709,11 @@ function showProgress(p) {
     setStat("all-per-question", formatUnitCost(all.dollars_per_question));
     setStat("all-qpm", all.questions_per_minute === null || all.questions_per_minute === undefined
       ? "—" : all.questions_per_minute.toFixed(1));
+    setStat("all-rate", all.pages_per_minute ? all.pages_per_minute.toFixed(1) : "—");
     setStat("all-eta", formatDuration(all.eta_seconds));
+    // Same reason as the badge clock below: a page opened after the run finished has no
+    // start time to tick from, so the server's figure is the honest one.
+    if (!clock.ticking()) setStat("all-elapsed", formatDuration(all.elapsed_seconds));
   }
 
   // A multi-badge run walks each badge in turn, so the bar restarts per badge. Saying
@@ -690,19 +722,23 @@ function showProgress(p) {
     ? " · badge " + p.badge_index + " of " + p.badge_count
     : "";
   panel.querySelector("[data-headline]").textContent = (known
-    ? p.pages_done + " / " + p.pages_total + " sections" +
+    ? p.pages_done + " / " + p.pages_total + " chunks" +
       (p.badge_name ? " · " + p.badge_name : "")
     : (p.badge_name || "")) + ofBadges;
 
   setStat("pages", p.pages_total ? p.pages_done + " of " + p.pages_total : String(p.pages_done || 0));
   setStat("questions", String(p.inserted || 0)
     + (p.failure_count ? " · " + p.failure_count + " chunk(s) failed" : ""));
-  setStat("rate", p.pages_per_minute ? p.pages_per_minute.toFixed(1) + "/min" : "—");
+  setStat("rate", p.pages_per_minute ? p.pages_per_minute.toFixed(1) : "—");
+  setStat("projected-questions", p.projected_questions === null
+    || p.projected_questions === undefined ? "—" : p.projected_questions.toLocaleString());
   setStat("per-page", p.questions_per_page_actual === null || p.questions_per_page_actual === undefined
     ? "—" : p.questions_per_page_actual.toFixed(1));
-  if (!clock.ticking()) {
-    // Only when the browser is not ticking — a page opened after the run finished has
-    // no start time to count from, and the server's figure is the honest one.
+  // This badge's own walk, which restarts at each badge — unlike the job clock above.
+  // Left to the browser only when the job and the badge are the same thing; otherwise
+  // the server's per-badge figure, and always so for a page opened after the run ended,
+  // which has no start time to count from.
+  if (many || !clock.ticking()) {
     setStat("elapsed", formatDuration(p.elapsed_seconds));
   }
   setStat("eta", p.phase === "done" || p.phase === "stopped" ? "—" : formatDuration(p.eta_seconds));
@@ -824,7 +860,10 @@ async function pollStatus() {
     ? elapsedSinceStart(state.finished_at * 1000)
     : elapsedSinceStart();
   const took = duration === null ? "" : " Took " + formatElapsed(duration) + ".";
-  if (duration !== null) setStat("elapsed", formatElapsed(duration));
+  if (duration !== null) {
+    setStat("all-elapsed", formatElapsed(duration));
+    if (!manyBadges) setStat("elapsed", formatElapsed(duration));
+  }
   alertBox.classList.add("d-none");
   setPanelState("success", "Run finished." + took + " Reloading…");
   window.location.reload();
@@ -866,7 +905,7 @@ stopButton.addEventListener("click", async () => {
   if (!response.ok && response.status !== 409) {
     showAlert("danger", "Could not stop the run (HTTP " + response.status + ").");
     stopButton.disabled = false;
-    stopButton.textContent = "Stop after this page";
+    stopButton.textContent = "Stop after this chunk";
   }
 });
 

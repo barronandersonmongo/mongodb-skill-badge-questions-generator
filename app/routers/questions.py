@@ -181,6 +181,9 @@ def _run_generation(request: GenerateRequest) -> None:
                 else None
             ),
             "elapsed_seconds": elapsed,
+            # The job's own throughput in chunks, so the badge panel's rate has a
+            # counterpart at this level rather than the job reporting only questions.
+            "pages_per_minute": (chunks_done / elapsed * 60) if elapsed > 0 else None,
             "questions_per_minute": (inserted / elapsed * 60) if elapsed > 0 else None,
             # Time is projected per chunk rather than per badge: it is the unit the work
             # is actually done in, and it starts answering after the first chunk instead
