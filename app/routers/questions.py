@@ -109,6 +109,57 @@ def _run_generation(request: GenerateRequest) -> None:
     # as the run having restarted.
     badge_count = len(request.skill_badges)
     position = {"index": 0}
+    finished: list[dict] = []
+
+    def overall(state: dict) -> dict:
+        """The whole job, not the badge being walked.
+
+        Every figure the panel showed belonged to one badge, so a run over several of
+        them reported a cost, a count and a percentage that reset at each badge and a
+        clock that did not — leaving no way to see what the job as a whole had done or
+        would cost. Finished badges are summed and the badge in flight added to them.
+
+        Progress is measured in badges rather than chunks: a badge's chunk set is only
+        resolved when its walk starts, so the total for badges not yet begun is not
+        known, and inventing one from the requested maximum would report a percentage
+        that jumped whenever a badge turned out to have less material than asked for.
+        """
+        done_pages = sum(r.get("pages_done") or 0 for r in finished)
+        done_inserted = sum(r.get("inserted") or 0 for r in finished)
+        done_dollars = sum((r.get("cost") or {}).get("dollars") or 0.0 for r in finished)
+        cost = state.get("cost") or {}
+
+        # How far through the badge in flight, as a fraction, so the overall bar moves
+        # within a badge rather than only when one ends.
+        pages_total = state.get("pages_total") or 0
+        fraction = ((state.get("pages_done") or 0) / pages_total) if pages_total else 0.0
+        badges_done = len(finished)
+        progressed = badges_done + min(fraction, 1.0)
+
+        elapsed = time.time() - (_run_state["started_at"] or time.time())
+        inserted = done_inserted + (state.get("inserted") or 0)
+        return {
+            "badges_done": badges_done,
+            "badge_count": badge_count,
+            "percent": progressed / badge_count * 100 if badge_count else None,
+            "pages_done": done_pages + (state.get("pages_done") or 0),
+            "inserted": inserted,
+            "dollars": done_dollars + (cost.get("dollars") or 0.0),
+            "elapsed_seconds": elapsed,
+            "questions_per_minute": (inserted / elapsed * 60) if elapsed > 0 else None,
+            # Only once a badge has finished: a projection from part of the first badge
+            # is a guess about badges whose material has not been looked at yet.
+            "eta_seconds": (
+                (elapsed / progressed) * (badge_count - progressed)
+                if progressed >= 1
+                else None
+            ),
+            "projected_dollars": (
+                (done_dollars + (cost.get("dollars") or 0.0)) / progressed * badge_count
+                if progressed >= 1
+                else None
+            ),
+        }
 
     def progress(state: dict) -> None:
         # Written straight onto the run state, so the polling endpoint reports the
@@ -118,10 +169,11 @@ def _run_generation(request: GenerateRequest) -> None:
             "badge_index": position["index"] + 1,
             "badge_count": badge_count,
             "badges_done": position["index"],
+            "overall": overall(state),
         }
 
     try:
-        results = []
+        results = finished
         for index, slug in enumerate(request.skill_badges):
             position["index"] = index
             results.append(

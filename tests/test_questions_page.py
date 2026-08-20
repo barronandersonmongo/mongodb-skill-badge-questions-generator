@@ -1441,3 +1441,21 @@ def test_the_projection_is_named_as_a_ceiling(client, fake_collection, fake_ques
     body = client.get(PAGE).text
     assert "A ceiling, not an estimate" in body
     assert "already " in body and "skipped" in body
+
+
+def test_the_panel_shows_the_whole_job_only_when_there_is_one(
+    client, fake_collection, fake_questions
+):
+    """
+    Intent: With a single badge selected, the job and the badge are the same thing, and two
+        identical bars reporting the same numbers would be worse than one — the reader would
+        look for the difference between them.
+    Success: The overall block is rendered but hidden, and shown only when more than one badge
+        is being walked.
+    Feature: Question generation — the whole-job panel appears only for a multi-badge run.
+    """
+    body = client.get(PAGE).text
+    assert 'data-overall="true"' in body
+    assert 'class="d-none" data-overall="true"' in body
+    script = body[body.index("const all = p.overall"):]
+    assert "(all.badge_count || 0) > 1" in script[: script.index("\n\n")]

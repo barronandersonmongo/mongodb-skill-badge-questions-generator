@@ -1174,3 +1174,100 @@ def test_an_unoffered_skill_level_is_refused(client, fake_questions):
     """
     response = client.post(API + "/duplicates/sweep", json={"difficulty": "expert"})
     assert response.status_code == 422
+
+
+# --- the whole job, not the badge in flight ---
+
+
+def test_progress_reports_the_whole_job_as_well_as_the_badge(
+    client, monkeypatch, fake_collection, fake_questions
+):
+    """
+    Intent: Every figure on the progress panel belonged to the badge being walked, so a run
+        over several badges showed a cost, a count and a percentage that reset at each badge
+        while the clock ran on. There was no way to see what the job as a whole had produced or
+        would cost — which is the thing the author actually asked for.
+    Success: Progress carries an overall block summing the badges finished and the one in
+        flight.
+    Feature: Question generation — the whole job's progress is reported.
+    """
+    seen: list[dict] = []
+
+    def fake_badge(slug, **kwargs):
+        kwargs["progress"]({"phase": "writing", "pages_done": 2, "pages_total": 4,
+                            "inserted": 3, "cost": {"dollars": 0.10}})
+        seen.append(dict(api_module._run_state["progress"]["overall"]))
+        return {"skill_badge": slug, "inserted": 3, "pages_done": 4,
+                "pages_available": 0, "cost": {"dollars": 0.20}}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", fake_badge)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["one", "two"], "max_pages": 4, "per_page": 3},
+    )
+    # First badge: nothing finished yet, so the job shows only what is in flight.
+    assert seen[0]["badges_done"] == 0
+    assert seen[0]["inserted"] == 3
+    assert seen[0]["dollars"] == pytest.approx(0.10)
+    # Second badge: the first badge's finished totals are added to the one in flight.
+    assert seen[1]["badges_done"] == 1
+    assert seen[1]["inserted"] == 6
+    assert seen[1]["dollars"] == pytest.approx(0.30)
+    assert seen[1]["pages_done"] == 6
+
+
+def test_the_whole_job_is_measured_in_badges(
+    client, monkeypatch, fake_collection, fake_questions
+):
+    """
+    Intent: A badge's chunk set is only resolved when its walk begins, so the total work in a
+        job is not known at the start. Deriving a percentage from the requested maximum would
+        make it jump backwards whenever a badge turned out to have less material than asked
+        for — worse than a coarser number that only ever rises.
+    Success: Overall progress is the badges finished plus the fraction of the one in flight,
+        out of the badges requested.
+    Feature: Question generation — overall progress does not guess at unresolved work.
+    """
+    seen: list[dict] = []
+
+    def fake_badge(slug, **kwargs):
+        kwargs["progress"]({"phase": "writing", "pages_done": 1, "pages_total": 2,
+                            "inserted": 1})
+        seen.append(dict(api_module._run_state["progress"]["overall"]))
+        return {"skill_badge": slug, "inserted": 1, "pages_done": 2, "pages_available": 0}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", fake_badge)
+    client.post(
+        API + "/generate",
+        json={"skill_badges": ["one", "two", "three", "four"], "max_pages": 2},
+    )
+    # Half of the first badge, of four: an eighth of the job.
+    assert seen[0]["percent"] == pytest.approx(12.5)
+    # One badge done and half of the second: three eighths.
+    assert seen[1]["percent"] == pytest.approx(37.5)
+
+
+def test_the_job_is_not_projected_from_part_of_one_badge(
+    client, monkeypatch, fake_collection, fake_questions
+):
+    """
+    Intent: A projected cost or finish time drawn from a fraction of the first badge is a
+        statement about badges whose material has not been looked at yet. Shown as a number it
+        would be read as a quote, and it is the number an author uses to decide whether to stop.
+    Success: No projection or estimate is offered until at least one badge has finished.
+    Feature: Question generation — the job's projection waits for a finished badge.
+    """
+    seen: list[dict] = []
+
+    def fake_badge(slug, **kwargs):
+        kwargs["progress"]({"phase": "writing", "pages_done": 1, "pages_total": 4,
+                            "inserted": 1, "cost": {"dollars": 0.05}})
+        seen.append(dict(api_module._run_state["progress"]["overall"]))
+        return {"skill_badge": slug, "inserted": 1, "pages_done": 4,
+                "pages_available": 0, "cost": {"dollars": 0.20}}
+
+    monkeypatch.setattr(api_module, "generate_for_badge", fake_badge)
+    client.post(API + "/generate", json={"skill_badges": ["one", "two"], "max_pages": 4})
+    assert seen[0]["eta_seconds"] is None
+    assert seen[0]["projected_dollars"] is None
+    assert seen[1]["projected_dollars"] is not None

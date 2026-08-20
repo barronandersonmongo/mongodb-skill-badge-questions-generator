@@ -671,6 +671,16 @@ makes **Stop after this page** an informed decision rather than a guess. Nothing
 projected until a section has finished, because a projection from zero reads as "this run is
 free" at exactly the wrong moment.
 
+**A multi-badge run reports the job as well as the badge.** Every figure on the panel used
+to belong to the badge being walked, so a run over several of them showed a cost, a count
+and a percentage that reset at each badge while the clock ran on — leaving the one thing the
+author actually asked for unreported. Finished badges are summed and the badge in flight
+added to them. Overall progress is counted in badges, not chunks: a badge's chunk set is
+only resolved when its walk begins, so a percentage derived from the requested maximum would
+jump backwards whenever a badge turned out to have less material than asked for. Nothing is
+projected until at least one badge has finished, since a projection drawn from part of the
+first badge is a statement about badges whose material has not been looked at.
+
 **Questions per minute and cost per question** are the two derived figures worth watching.
 Total spend cannot be compared between runs because it depends on how much was walked; cost
 per question says whether a prompt or effort change paid for itself. Both are absent rather

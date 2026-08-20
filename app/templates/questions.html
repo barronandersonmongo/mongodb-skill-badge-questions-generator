@@ -43,6 +43,25 @@ per_page={{ pagination.per_page }}&
 
 <div class="card mb-3 d-none" id="progress-panel" data-progress-panel="true">
   <div class="card-body py-3">
+    <div class="d-none" data-overall="true">
+      <div class="d-flex justify-content-between align-items-baseline mb-1">
+        <span class="fw-semibold">Whole job</span>
+        <span class="font-monospace small" data-overall-headline="true"></span>
+      </div>
+      <div class="progress mb-2" role="progressbar" style="height: 1.25rem;">
+        <div class="progress-bar" data-overall-bar="true" style="width: 0%;">0%</div>
+      </div>
+      <div class="row row-cols-2 row-cols-md-3 g-2 small mb-3" data-overall-stats="true">
+        <div><div class="text-body-secondary">Questions</div><div data-stat="all-questions">—</div></div>
+        <div><div class="text-body-secondary">Chunks</div><div data-stat="all-pages">—</div></div>
+        <div><div class="text-body-secondary">Spent</div><div data-stat="all-spent">—</div></div>
+        <div><div class="text-body-secondary">Projected</div><div data-stat="all-projected">—</div></div>
+        <div><div class="text-body-secondary">Questions/min</div><div data-stat="all-qpm">—</div></div>
+        <div><div class="text-body-secondary">Remaining</div><div data-stat="all-eta">—</div></div>
+      </div>
+      <hr class="my-2">
+    </div>
+
     <div class="d-flex justify-content-between align-items-baseline mb-1">
       <span class="fw-semibold" data-phase="true">Starting…</span>
       <span class="font-monospace small" data-headline="true"></span>
@@ -721,6 +740,28 @@ function showProgress(p) {
   bar.style.width = (known ? p.percent : 100) + "%";
   bar.textContent = known ? p.percent.toFixed(1) + "%" : "";
   bar.classList.toggle("bg-secondary", !known);
+
+  // The whole job, when there is more than one badge in it. With one badge the job and
+  // the badge are the same thing, and two identical bars would be worse than one.
+  const all = p.overall || {};
+  const overallPanel = panel.querySelector("[data-overall]");
+  const many = (all.badge_count || 0) > 1;
+  overallPanel.classList.toggle("d-none", !many);
+  if (many) {
+    const overallBar = panel.querySelector("[data-overall-bar]");
+    const pct = all.percent || 0;
+    overallBar.style.width = pct + "%";
+    overallBar.textContent = pct.toFixed(1) + "%";
+    panel.querySelector("[data-overall-headline]").textContent =
+      all.badges_done + " / " + all.badge_count + " badges done";
+    setStat("all-questions", String(all.inserted || 0));
+    setStat("all-pages", String(all.pages_done || 0));
+    setStat("all-spent", formatMoney(all.dollars));
+    setStat("all-projected", formatMoney(all.projected_dollars));
+    setStat("all-qpm", all.questions_per_minute === null || all.questions_per_minute === undefined
+      ? "—" : all.questions_per_minute.toFixed(1));
+    setStat("all-eta", formatDuration(all.eta_seconds));
+  }
 
   // A multi-badge run walks each badge in turn, so the bar restarts per badge. Saying
   // which badge of how many is what stops that reading as the run having started over.
