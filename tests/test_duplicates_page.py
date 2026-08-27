@@ -116,14 +116,15 @@ def test_flagged_pairs_are_listed_for_review_with_their_scores(client):
     assert "0.980" in body
     assert 'data-sweep-below="true"' in body and "0.610" in body
 
-def test_a_flagged_pair_can_be_left_alone(client):
+def test_a_flagged_pair_is_a_suggestion_not_a_batch(client):
     """
-    Intent: The threshold is a measured judgement, not a fact, so some flagged pairs will be
-        two genuinely different questions on one topic. Deleting the whole flagged set as a
-        block would make the threshold decide again, which is what moving deletion out of the
-        sweep was meant to stop.
+    Intent: Replaces a test that also required a "Delete ticked questions" button. Deleting the
+        ticked set as a block let the threshold decide again — in one action, over pairs whose
+        questions the operator had never read side by side, which is the one thing the sweep's
+        own scoring cannot be trusted to do. The tick survives as what it always was: this
+        program's suggestion of which one would go, and the flag the threshold moves.
     Success: Each flagged pair carries its own tickbox, pre-ticked, keyed to the question that
-        would be deleted.
+        would be deleted, and no control deletes the ticked set.
     Feature: Question duplicate sweep — pairs are chosen individually.
     """
     api_module._run_state["last_result"] = {
@@ -140,7 +141,7 @@ def test_a_flagged_pair_can_be_left_alone(client):
     body = client.get(PAGE).text
     assert 'data-dupe-id="d1"' in body
     assert "checked" in body
-    assert 'data-delete-dupes="true"' in body
+    assert 'data-delete-dupes="true"' not in body
 
 def test_the_report_says_nothing_was_deleted(client):
     """
@@ -295,18 +296,22 @@ def test_the_comparison_shows_both_questions_at_once(client):
     assert 'data-compare-body="keep"' in body
 
 
-def test_the_comparison_says_which_side_would_be_deleted(client):
+def test_the_comparison_condemns_neither_side_until_one_is_chosen(client):
     """
-    Intent: The two sides are identical in form, and the whole decision is which of them goes.
-        Getting them the wrong way round deletes the question that was meant to be kept, so
-        the distinction cannot rest on position alone.
-    Success: Each side is labelled with what would happen to it.
+    Intent: Replaces a test requiring one side to open labelled "would be deleted". The two
+        sides are identical in form and the whole decision is which of them goes, so each must
+        still be labelled with what would happen to it — but labelling one as going before the
+        reader has chosen answers the question the dialog was opened to ask, and the sweep's
+        suggestion is already on the row they opened it from.
+    Success: Both sides open labelled as kept, and neither carries the deleted styling until a
+        selection is made.
     Feature: Duplicates screen — the two sides of a comparison are named.
     """
     api_module._run_state["last_result"] = sweep_result()
     body = client.get(PAGE).text
-    assert "Would be deleted" in body
-    assert "Would be kept" in body
+    dialog = body[body.index('id="compare-modal"'):body.index('id="delete-modal"')]
+    assert dialog.count('class="compare-heading compare-heading-keep"') == 2
+    assert "compare-heading-drop" not in dialog
 
 
 def test_a_questions_own_words_cannot_become_markup(client):
@@ -382,6 +387,118 @@ def test_neither_column_can_be_widened_by_its_content(client):
     assert "minmax(0, 1fr) minmax(0, 1fr)" in grid[: grid.index("}")]
     side = css[css.index(".compare-side {"):]
     assert "overflow-wrap" in side[: side.index("}")]
+
+
+def test_the_skill_level_picker_is_wider_than_its_widest_option(client):
+    """
+    Intent: Shrunk to its content, the picker was exactly as wide as "foundational" and no
+        wider, so the chosen level sat against the arrow and the open menu was the same width
+        as the closed control. Half again is the room that makes it read as a control rather
+        than a word with a chevron beside it.
+    Success: The picker carries a class that states a width.
+    Feature: Duplicates screen — the skill level picker is given room.
+    """
+    body = client.get(PAGE).text
+    assert 'class="form-select difficulty-select"' in body
+    css = client.get("/static/theme.css").text
+    rule = css[css.index(".difficulty-select {"):]
+    assert "width: 14.25rem" in rule[: rule.index("}")]
+
+
+# --- choosing from a comparison ---
+
+
+def test_either_question_in_a_comparison_can_be_selected(client):
+    """
+    Intent: The comparison is the only place both questions are readable in full, so it is
+        where the judgement is actually made. Sending the reader back to the row's tick to act
+        on what they just read asks them to remember which of two near-identical stems they
+        decided against.
+    Success: Both sides of the comparison offer a selection control, and the two are mutually
+        exclusive so a comparison cannot end with both questions chosen.
+    Feature: Duplicates screen — a question can be selected from a comparison.
+    """
+    body = client.get(PAGE).text
+    assert 'data-compare-select="drop"' in body
+    assert 'data-compare-select="keep"' in body
+    assert body.count('type="radio" name="compare-select"') == 2
+
+
+def test_a_selected_question_is_struck_through_but_still_readable(client):
+    """
+    Intent: Replaces a test that ruled out striking the selected question out, on the grounds
+        that it costs legibility. The greying alone did not carry across the width of the
+        dialog — the two columns are identical in form, and telling them apart still meant
+        reading. A thin strike says which one is going without reading a word of either, and
+        legibility is what the requirement it replaces was really protecting: the question
+        must stay readable up to the confirmation, which a struck line does and a removed or
+        hidden one does not.
+    Success: Selecting a side marks it, and the marked side's question is struck through and
+        greyed rather than removed from the page.
+    Feature: Duplicates screen — the selected question is struck through.
+    """
+    body = client.get(PAGE).text
+    assert 'side.classList.toggle("is-selected", input.checked)' in body
+    css = client.get("/static/theme.css").text
+    rule = css[css.index(".compare-side.is-selected [data-compare-body] {"):]
+    rule = rule[: rule.index("}")]
+    assert "line-through" in rule
+    assert "opacity" in rule
+    assert "color" in rule
+    assert "display: none" not in rule
+    assert "visibility: hidden" not in rule
+
+
+def test_the_strike_reaches_every_part_of_the_question(client):
+    """
+    Intent: A stem, its options and its tags are separate elements, and a link and a tag draw
+        their own decoration or sit in their own inline-block — so an inherited strike stops
+        short of them. Half a question struck through reads as a correction to one line rather
+        than a verdict on the whole thing.
+    Success: The rule covering the elements inside a selected question strikes them too.
+    Feature: Duplicates screen — the whole selected question is struck through.
+    """
+    css = client.get("/static/theme.css").text
+    rule = css[css.index(".compare-side.is-selected [data-compare-body] * {"):]
+    assert "line-through" in rule[: rule.index("}")]
+
+
+def test_the_labels_follow_the_selection(client):
+    """
+    Intent: The two sides are labelled with what would happen to each, and the reader may
+        choose the side the sweep did not. A label fixed to its column while the greying moves
+        leaves the dialog naming one question and marking the other — which is the exact
+        confusion the labels exist to prevent, now stated twice and contradicting itself.
+    Success: Selecting a side re-labels both headings, so the greyed question is the one
+        labelled as going, and the labels revert to the sweep's suggestion when nothing is
+        selected.
+    Feature: Duplicates screen — the comparison's labels name the selected question.
+    """
+    body = client.get(PAGE).text
+    assert 'data-compare-heading="drop"' in body
+    assert 'data-compare-heading="keep"' in body
+    script = body[body.index("function applyCompareSelection"):body.rindex("</script>")]
+    assert "const goes = selected ? input.checked : false" in script
+    assert 'heading.textContent = goes ? "Would be deleted" : "Would be kept"' in script
+    assert 'heading.classList.toggle("compare-heading-drop", goes)' in script
+    assert 'heading.classList.toggle("compare-heading-keep", !goes)' in script
+
+
+def test_the_selected_question_can_be_deleted_from_the_comparison(client):
+    """
+    Intent: Having decided which of the two goes, the reader should be able to say so where
+        they decided it. Deleting is final, so it ends at the same typed confirmation as every
+        other delete in this program — a comparison must be no easier to act on by accident.
+    Success: The comparison offers a delete control, disabled until something is selected, and
+        it deletes the selected identifier through the confirmation dialog.
+    Feature: Duplicates screen — the selected question can be deleted.
+    """
+    body = client.get(PAGE).text
+    assert 'data-compare-delete="true"' in body
+    assert 'id="compare-delete" disabled' in body
+    assert "compareDeleteButton.disabled = !selected" in body
+    assert "pendingDeleteIds = [compareIds[side]]" in body
+    assert "deleteModal.show()" in body
 
 
 # --- choosing the threshold ---

@@ -306,3 +306,24 @@ def test_real_error_lines_are_served_to_the_viewer(client, log_dir):
         handler.flush()
     lines = client.get(API).json()["lines"]
     assert any("ERROR" in line and "404 Not Found" in line for line in lines)
+
+
+def test_the_line_count_picker_is_wider_than_its_widest_option(client):
+    """
+    Intent: Shrunk to its content, the picker was exactly as wide as "10000" and no wider, so
+        the chosen figure sat against the arrow and the open menu was the same width as the
+        closed control. Half again is the room that makes it read as a control rather than a
+        number with a chevron beside it.
+    Success: The picker carries a class that states a width, and nothing on it overrides that
+        width.
+    Feature: Log viewer — the line count picker is given room.
+    """
+    body = client.get(PAGE).text
+    select = body[body.index('<select class="'):]
+    select = select[: select.index(">")]
+    assert 'class="form-select lines-select"' in select
+    # Bootstrap's w-auto is width: auto !important, which would win over the class above.
+    assert "w-auto" not in select
+    css = client.get("/static/theme.css").text
+    rule = css[css.index(".lines-select {"):]
+    assert "width: 9rem" in rule[: rule.index("}")]

@@ -1350,3 +1350,59 @@ def test_the_job_reports_its_own_chunk_rate(
     )
     # Counted across badges, not restarted at each one.
     assert second["pages_done"] == 4
+
+
+# --- unfiling a question from a badge ---
+
+
+def test_a_skill_badge_can_be_removed_from_a_question(client, fake_questions):
+    """
+    Intent: The screen that shows a question's badges is where a wrong one is noticed, so it
+        is where it has to be correctable — otherwise the only remedy for a mis-filed question
+        is deleting it and paying to generate another.
+    Success: The endpoint removes the named badge and the question keeps the rest.
+    Feature: Question lifecycle — removing a skill badge over HTTP.
+    """
+    question_id = questions.insert_questions(
+        [make("One?", skill_badges=["atlas-search", "vector-search"])]
+    )["question_ids"][0]
+    response = client.delete(API + "/" + question_id + "/skill-badges/atlas-search")
+    assert response.status_code == 200
+    assert response.json()["removed"] is True
+    assert questions.list_questions()[0]["skill_badges"] == ["vector-search"]
+
+
+def test_removing_the_last_skill_badge_is_refused(client, fake_questions):
+    """
+    Intent: The screen hides the control when only one badge is left, but a page open since
+        before another tab removed the others is not a screen that can be trusted to have
+        hidden it. The rule belongs where the write happens.
+    Success: The endpoint refuses with a conflict and the badge stays on the question.
+    Feature: Question lifecycle — the last skill badge is refused over HTTP.
+    """
+    question_id = questions.insert_questions(
+        [make("One?", skill_badges=["atlas-search"])]
+    )["question_ids"][0]
+    response = client.delete(API + "/" + question_id + "/skill-badges/atlas-search")
+    assert response.status_code == 409
+    assert questions.list_questions()[0]["skill_badges"] == ["atlas-search"]
+
+
+def test_removing_a_badge_from_an_unknown_question_is_not_a_delete(client, fake_questions):
+    """
+    Intent: This path is two segments longer than the one that deletes a question outright,
+        and both are DELETE. If the router matched the shorter one first, a request to remove
+        a badge would delete the whole question — the worst possible outcome of a routing
+        detail.
+    Success: An unknown question reports not-found from the badge path, and a real question is
+        still there afterwards.
+    Feature: Question lifecycle — removing a badge never deletes a question.
+    """
+    question_id = questions.insert_questions(
+        [make("One?", skill_badges=["atlas-search", "vector-search"])]
+    )["question_ids"][0]
+    assert client.delete(API + "/nope/skill-badges/atlas-search").status_code == 404
+    assert client.delete(
+        API + "/" + question_id + "/skill-badges/atlas-search"
+    ).status_code == 200
+    assert len(questions.list_questions()) == 1

@@ -73,7 +73,7 @@
     </select>
   {% endcall %}
   {% call ui.field("Skill level", "scope-difficulty") %}
-    <select class="form-select" id="scope-difficulty" data-scope="difficulty">
+    <select class="form-select difficulty-select" id="scope-difficulty" data-scope="difficulty">
       <option value="">Every level</option>
       {% for level in difficulties %}
       <option value="{{ level }}">{{ level }}</option>
@@ -175,20 +175,16 @@
   <div class="mt-3" data-sweep-flagged="true">
     <div class="small mb-2">
       <span data-flagged-count="true">{{ last_result.flagged | length }}</span> pair(s)
-      at or above the threshold. The ticked question is the one that would go; its pair is
-      kept because it is filed under more badges, or is older. Untick anything you judge to
-      be a genuinely different question — and tick anything below the threshold you judge
-      to be a duplicate after all.
+      at or above the threshold. The ticked question is the one this program would drop; its
+      pair is kept because it is filed under more badges, or is older. Deleting happens in
+      <strong>Compare</strong>, where both questions can be read in full — the tick is the
+      suggestion, not the act.
     </div>
     <ul class="list-unstyled small mb-2" data-flagged-list="true">
       {% for pair in pairs if pair.rerank_score >= last_result.threshold %}
       {{ pair_row(pair, ticked=true) }}
       {% endfor %}
     </ul>
-    <button class="btn btn-sm btn-danger" id="delete-dupes-btn" type="button"
-            data-delete-dupes="true">
-      Delete ticked questions
-    </button>
   </div>
 
   {# Collapsed, because below the threshold is the answer "probably not a duplicate" —
@@ -236,16 +232,34 @@
           most in common — what tells them apart, if anything does, is the options, the
           badges and the source.
         </p>
+        {# Selecting is done here, on the two questions in full, because this is the only
+           place both are readable at once — the row's tick is the sweep's suggestion, and
+           this is the reader's own. One at a time: a comparison whose answer is "delete
+           both" is not a comparison, and the point of the pair is that one survives. #}
         <div class="compare-grid" data-compare-grid="true">
+          {# Both open as "would be kept", because until something is selected nothing is going:
+             the sweep's suggestion is on the row the reader came from, and repeating it here as
+             a verdict pre-answers the question the dialog was opened to ask. From then on the
+             headings follow the selection, so the named question is the greyed one. #}
           <div class="compare-side" data-compare-side="drop">
-            <div class="compare-heading compare-heading-drop">
-              Would be deleted
+            <div class="compare-heading compare-heading-keep" data-compare-heading="drop">
+              Would be kept
+            </div>
+            <div class="form-check compare-select">
+              <input class="form-check-input" type="radio" name="compare-select"
+                     id="compare-select-drop" data-compare-select="drop">
+              <label class="form-check-label" for="compare-select-drop">Delete this one</label>
             </div>
             <div data-compare-body="drop">Loading…</div>
           </div>
           <div class="compare-side" data-compare-side="keep">
-            <div class="compare-heading compare-heading-keep">
+            <div class="compare-heading compare-heading-keep" data-compare-heading="keep">
               Would be kept
+            </div>
+            <div class="form-check compare-select">
+              <input class="form-check-input" type="radio" name="compare-select"
+                     id="compare-select-keep" data-compare-select="keep">
+              <label class="form-check-label" for="compare-select-keep">Delete this one</label>
             </div>
             <div data-compare-body="keep">Loading…</div>
           </div>
@@ -253,23 +267,27 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+        {# Disabled until something is selected: the button names what it deletes, and with
+           nothing selected there is no answer to "which one". #}
+        <button type="button" class="btn btn-danger" id="compare-delete" disabled
+                data-compare-delete="true">Delete selected question</button>
       </div>
     </div>
   </div>
 </div>
 
 {# The same dialog the questions screen uses, and the same typed confirmation: deleting
-   a batch must be no easier to trigger by accident than deleting one. #}
+   from a comparison must be no easier to trigger by accident than deleting from the list. #}
 <div class="modal fade" id="delete-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header">
-        <h2 class="modal-title h5">Delete these questions?</h2>
+        <h2 class="modal-title h5">Delete this question?</h2>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
         <p class="small text-body-secondary mb-2">
-          Deleting is final — nothing can re-create these questions.
+          Deleting is final — nothing can re-create this question.
         </p>
         <blockquote class="border-start border-3 ps-3 mb-3" data-delete-stem="true"></blockquote>
         <label for="delete-confirm" class="form-label small">
@@ -534,11 +552,51 @@ async function fillCompareSide(side, questionId) {
   target.replaceChildren(renderQuestion(await response.json()));
 }
 
+// Which question each side of the open comparison is showing. Held here rather than read
+// back out of the dialog: the side is a position, and what is being deleted is an id.
+const compareIds = {drop: null, keep: null};
+const compareSelects = compareModalEl.querySelectorAll("[data-compare-select]");
+const compareDeleteButton = document.getElementById("compare-delete");
+
+// Greyed, not hidden: the selected question stays readable, because the reader is about
+// to delete it and the last thing they should see is the thing itself. The heading over it
+// changes with it — the grey says "this one" and the heading says what happens to it, and
+// the two disagreeing is how the wrong question gets deleted.
+function applyCompareSelection() {
+  const selected = Array.from(compareSelects).find((input) => input.checked);
+  compareSelects.forEach((input) => {
+    const name = input.dataset.compareSelect;
+    const side = compareModalEl.querySelector('[data-compare-side="' + name + '"]');
+    side.classList.toggle("is-selected", input.checked);
+
+    // With nothing selected, nothing is going: both read "would be kept" until the reader
+    // says otherwise.
+    const goes = selected ? input.checked : false;
+    const heading = side.querySelector("[data-compare-heading]");
+    heading.textContent = goes ? "Would be deleted" : "Would be kept";
+    heading.classList.toggle("compare-heading-drop", goes);
+    heading.classList.toggle("compare-heading-keep", !goes);
+  });
+  compareDeleteButton.disabled = !selected;
+}
+
+function resetCompareSelection() {
+  compareSelects.forEach((input) => { input.checked = false; });
+  applyCompareSelection();
+}
+
+compareSelects.forEach((input) => input.addEventListener("change", applyCompareSelection));
+
 document.querySelectorAll("[data-compare]").forEach((button) => {
   button.addEventListener("click", () => {
+    compareIds.drop = button.dataset.compareDrop;
+    compareIds.keep = button.dataset.compareKeep;
+    // A selection belongs to the pair it was made on, so opening another pair starts
+    // from nothing selected.
+    resetCompareSelection();
     compareModal.show();
-    fillCompareSide("drop", button.dataset.compareDrop);
-    fillCompareSide("keep", button.dataset.compareKeep);
+    fillCompareSide("drop", compareIds.drop);
+    fillCompareSide("keep", compareIds.keep);
   });
 });
 
@@ -560,24 +618,26 @@ deleteConfirmInput.addEventListener("input", () => {
   confirmDeleteButton.disabled = deleteConfirmInput.value.trim().toLowerCase() !== "delete";
 });
 
-const deleteDupesButton = document.getElementById("delete-dupes-btn");
-if (deleteDupesButton) {
-  deleteDupesButton.addEventListener("click", () => {
-    const ticked = Array.from(document.querySelectorAll(".js-dupe"))
-      .filter((box) => box.checked)
-      .map((box) => box.dataset.dupeId);
-    if (ticked.length === 0) {
-      showAlert("warning", "Nothing is ticked, so there is nothing to delete.");
-      return;
-    }
-    pendingDeleteIds = ticked;
-    // textContent, never innerHTML: a stem is model-written text.
-    deleteModalEl.querySelector("[data-delete-stem]").textContent =
-      ticked.length + " question(s) will be deleted.";
-    resetDeleteDialog();
-    deleteModal.show();
-  });
-}
+// Deleting the selected question ends at the same typed confirmation as everything else
+// here. The comparison closes first: two stacked dialogs would leave the reader confirming
+// in front of the thing they are confirming about, and Bootstrap's backdrop does not
+// survive it.
+compareDeleteButton.addEventListener("click", () => {
+  const selected = Array.from(compareSelects).find((input) => input.checked);
+  if (!selected) return;
+  const side = selected.dataset.compareSelect;
+  pendingDeleteIds = [compareIds[side]];
+  // The stem of the question actually going, not a count: one question is a thing that can
+  // be named, and naming it is the last check that it is the one that was read.
+  const stem = compareModalEl.querySelector(
+    '[data-compare-body="' + side + '"] .compare-stem');
+  // textContent, never innerHTML: a stem is model-written text.
+  deleteModalEl.querySelector("[data-delete-stem]").textContent =
+    stem ? stem.textContent : "The selected question will be deleted.";
+  resetDeleteDialog();
+  compareModalEl.addEventListener("hidden.bs.modal", () => deleteModal.show(), {once: true});
+  compareModal.hide();
+});
 
 confirmDeleteButton.addEventListener("click", async () => {
   if (!pendingDeleteIds) return;

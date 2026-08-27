@@ -583,3 +583,54 @@ def test_an_identifier_is_told_apart_from_a_search_phrase(fake_questions):
     # Hex-looking but the wrong length: a partial paste must not be treated as an id, or
     # the reader gets "no such question" for something that was never a question id.
     assert questions.looks_like_an_identifier("abc123") is False
+
+
+def test_a_question_can_be_unfiled_from_one_of_its_badges(fake_questions):
+    """
+    Intent: A question may be filed under several badges, and being filed under one it does
+        not really test is a smaller mistake than the question being wrong — correctable in
+        place rather than by deleting and paying to generate a replacement.
+    Success: remove_skill_badge pulls the named badge and leaves the rest of the question,
+        including its other badges, untouched.
+    Feature: Question lifecycle — a skill badge can be removed from a question.
+    """
+    question_id = questions.insert_questions(
+        [make(skill_badges=["atlas-search", "vector-search"])]
+    )["question_ids"][0]
+    assert questions.remove_skill_badge(question_id, "atlas-search") == "removed"
+    stored = questions.list_questions()[0]
+    assert stored["skill_badges"] == ["vector-search"]
+    assert stored["stem"] == make().stem
+
+
+def test_the_only_badge_on_a_question_cannot_be_removed(fake_questions):
+    """
+    Intent: A question filed under nothing is unreachable from every screen that lists by
+        badge and absent from export — still stored, still paid for, never seen again. That is
+        worse than the wrong badge, and worse than deleting the question outright, which at
+        least says what happened.
+    Success: remove_skill_badge refuses when the badge is the only one, reports which refusal
+        it was, and leaves the badge in place.
+    Feature: Question lifecycle — a question keeps at least one skill badge.
+    """
+    question_id = questions.insert_questions([make(skill_badges=["atlas-search"])])[
+        "question_ids"
+    ][0]
+    assert questions.remove_skill_badge(question_id, "atlas-search") == "last"
+    assert questions.list_questions()[0]["skill_badges"] == ["atlas-search"]
+
+
+def test_removing_a_badge_a_question_does_not_have_is_reported(fake_questions):
+    """
+    Intent: A stale page can ask to remove a badge another tab already removed, or name a
+        question that has since been deleted. Reporting that as a success would tell the
+        reader an edit landed that never did.
+    Success: remove_skill_badge distinguishes "no such question or badge" from the refusal to
+        remove the last one.
+    Feature: Question lifecycle — an impossible badge removal is reported, not ignored.
+    """
+    question_id = questions.insert_questions(
+        [make(skill_badges=["atlas-search", "vector-search"])]
+    )["question_ids"][0]
+    assert questions.remove_skill_badge(question_id, "data-modeling") == "missing"
+    assert questions.remove_skill_badge("nope", "atlas-search") == "missing"

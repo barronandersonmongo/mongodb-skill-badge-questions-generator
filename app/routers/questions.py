@@ -660,6 +660,30 @@ def backfill_embedding_text() -> dict:
     return result
 
 
+@router.delete("/{question_id}/skill-badges/{slug}")
+def remove_skill_badge(question_id: str, slug: str) -> dict:
+    """Unfile a question from one skill badge.
+
+    Declared before `DELETE /{question_id}`: both are DELETE, and a two-segment path
+    must be matched before the one that would swallow it.
+
+    409 rather than 400 when it is the only badge — the request is well formed and
+    the state is what refuses it, and the screen hides the control in that case, so
+    reaching this is a stale page or another tab, not a typo.
+    """
+    outcome = questions.remove_skill_badge(question_id, slug)
+    if outcome == "last":
+        raise HTTPException(
+            409,
+            f"{slug!r} is the only skill badge on {question_id!r}. A question filed "
+            "under nothing cannot be found or exported — delete the question instead.",
+        )
+    if outcome == "missing":
+        raise HTTPException(404, f"No question {question_id!r} filed under {slug!r}.")
+    logger.info("Removed skill badge %s from question %s", slug, question_id)
+    return {"question_id": question_id, "skill_badge": slug, "removed": True}
+
+
 @router.delete("/{question_id}")
 def delete_question(question_id: str) -> dict:
     """Permanently delete a question. Nothing can re-derive it, so this is final."""
