@@ -697,9 +697,25 @@ approve step, no reject step. At thousands of questions nobody works a queue of 
 the gate was a bottleneck rather than a safeguard, and a question nobody had blessed was
 indistinguishable from one nobody wanted.
 
-Deleting is the only editorial act, and it is guarded twice: the dialog shows the question
-again and the word *delete* has to be typed. Nothing can re-create a question, and the
-button sits next to no other control, so a misplaced click has nowhere else to land.
+Deleting is the only irreversible editorial act, and it is guarded twice: the dialog shows
+the question again and the word *delete* has to be typed. Nothing can re-create a question,
+and the button sits next to no other control, so a misplaced click has nowhere else to land.
+
+The one reversible edit is **unfiling**: each skill badge tag on a question carries an ×
+that removes that badge, because a mis-filed question is noticed here, reading it, next to
+the badges it is filed under — and the alternative was deleting a good question over a wrong
+label and paying to generate another. It is not guarded like a delete: the question stays,
+its other badges stay, and putting the badge back is a re-file rather than a re-generation.
+The list is not reloaded for it either, since that would throw away the reader's place over
+an edit to one tag.
+
+**A question always keeps at least one badge.** Filed under nothing, it is unreachable from
+every screen that lists by badge and absent from export — still stored, still paid for,
+never seen again, which is worse than the wrong badge and worse than deleting it outright.
+So the × is not rendered on the last remaining tag, and `DELETE /{id}/skill-badges/{slug}`
+refuses with a 409 as well: the guard is in the same update that does the pull, matching on
+`skill_badges.1` existing, so two tabs removing the last two badges at once cannot empty a
+question between them.
 
 Each question shows when it was written, and while a run is going the screen polls a count
 endpoint and reloads as new questions arrive — a walk stores over many minutes, so a list
@@ -853,13 +869,34 @@ form and getting them the wrong way round deletes the one that was meant to surv
 comparison is built through the DOM and never by assigning innerHTML — a stem, an option
 and a rationale are all model-written text drawn from fetched documentation.
 
+**The choice is made there, and only there.** Either side can be **selected** — one at a
+time, since a comparison whose answer is "delete both" is not a comparison. The selected
+question's *text* is struck through and greyed rather than disappearing, so it stays readable
+right up to the confirmation, which is the last chance to notice the wrong one was picked —
+the strike is thin for that reason, and it reaches the options, tags and source link as well
+as the stem, since half a question struck out reads as a correction to one line rather than a
+verdict on the whole. Greying alone did not carry across the width of the dialog: the two
+columns are identical in form, so telling them apart still meant reading. Its heading stays
+at full strength, because that is the verdict, and a verdict written in the same grey as the
+thing it judges is the one part that must stay loud. The headings follow the selection, so
+"would be deleted" always sits over the greyed question rather than staying pinned to the
+column the sweep chose — a label fixed while the greying moved would have the dialog naming
+one question and marking the other. **Both open as "would be kept."** Opening with one side
+already condemned answers the question the dialog exists to ask, and the sweep's suggestion
+is already on the row it was opened from. A **Delete selected
+question** button sits in the footer, disabled until something is selected, and ends at the
+same typed confirmation every other delete here uses — named with the stem of the question
+actually going.
+
 **Finding never deletes.** Pairs at or above the threshold are *flagged*, with the question
 this program would drop and the one it would keep both named — more badges beats fewer, then
 older beats newer — and pairs below it are listed too, so the threshold stays visible as a
-judgement rather than a fact. Deleting is a separate act on that list: each flagged pair has
-its own tickbox, so a pair judged to be two genuinely different questions is left alone
-rather than decided by the threshold again, and the ticked set goes through the same typed
-confirmation a single delete uses.
+judgement rather than a fact. The tickbox on each pair is that suggestion and the flag the
+threshold moves; it is not the act. A **Delete ticked questions** button once sat under the
+list and is gone: it let the threshold decide again, in one action, over pairs whose two
+questions the operator had never read side by side — which is the one judgement the sweep's
+scoring cannot be trusted to make. Deleting now happens a question at a time, from the
+comparison, after reading both.
 
 That demotes 0.85 from deciding which questions die to shortlisting the ones worth reading,
 which is the right weight for a number measured on six questions. It also removed the old
@@ -934,6 +971,7 @@ Questions, under `/api/questions`:
 | `POST` | `/duplicates/delete` | Delete questions chosen from that report |
 | `POST` | `/backfill-embedding-text` | Compose `embedding_text` where missing |
 | `POST` | `/drop-status` | Strip the legacy review field |
+| `DELETE` | `/{id}/skill-badges/{slug}` | Unfile a question from one badge; refuses the last |
 | `DELETE` | `/{id}` | Delete a question |
 
 Documentation and badges, under `/api/admin`:

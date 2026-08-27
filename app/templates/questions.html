@@ -305,7 +305,7 @@ per_page={{ pagination.per_page }}&
     </select>
   {% endcall %}
   {% call ui.field("Per page", "per-page-filter") %}
-    <select class="form-select" id="per-page-filter" data-filter="per_page"
+    <select class="form-select page-size-select" id="per-page-filter" data-filter="per_page"
             data-page-size="true">
       {% for size in pagination.sizes %}
       <option value="{{ size }}" {% if pagination.per_page == size %}selected{% endif %}>
@@ -464,7 +464,13 @@ per_page={{ pagination.per_page }}&
                colour alone is not a label. Badge tags link to the badge's definition — a
                slug is not self-explanatory, and checking what it covers should not mean
                hunting through the admin screen for it. #}
-            {% for slug in question.skill_badges %}{{ ui.badge_tag(slug) }}{% endfor %}
+            {# The × appears only while there is more than one badge to lose. A question
+               filed under nothing is unreachable from every screen that lists by badge and
+               absent from export — so the last one is not a choice the screen offers, and
+               the endpoint refuses it too in case a tab is stale. #}
+            {% for slug in question.skill_badges %}
+            {{ ui.badge_tag(slug, removable=question.skill_badges | length > 1) }}
+            {% endfor %}
             {% for category in question.categories %}{{ ui.category_tag(category) }}{% endfor %}
           </div>
         </div>
@@ -1039,6 +1045,43 @@ confirmDeleteButton.addEventListener("click", async () => {
     return;
   }
   window.location.reload();
+});
+
+// Unfiling a question from a badge is not deleting it, so it is not guarded like one: the
+// question stays, its other badges stay, and re-filing it is a question of adding the badge
+// back rather than of re-generating anything. What it does need is to be undoable by
+// noticing — so the tag goes only when the server says it went, and says so if it did not.
+document.querySelectorAll("[data-remove-badge]").forEach((button) => {
+  button.addEventListener("click", async (event) => {
+    // The × sits inside a pill whose other half is a link to the badge's definition.
+    event.preventDefault();
+    const slug = button.dataset.removeBadge;
+    const row = button.closest("[data-question-id]");
+    const questionId = row.dataset.questionId;
+    button.disabled = true;
+    const response = await fetch(
+      API + "/" + encodeURIComponent(questionId)
+        + "/skill-badges/" + encodeURIComponent(slug),
+      {method: "DELETE"}
+    );
+    if (!response.ok) {
+      button.disabled = false;
+      showAlert("danger", response.status === 409
+        ? "That is the only skill badge on this question, so it cannot be removed."
+        : "Could not remove the badge (HTTP " + response.status + ").");
+      return;
+    }
+    button.closest("[data-badge-tag-group]").remove();
+    // Down to one badge, the last × would be a control that always refuses. The page is
+    // not reloaded for this: a reload would lose the reader's place in a long list over
+    // an edit to one tag.
+    const left = row.querySelectorAll("[data-badge-tag-group]");
+    if (left.length === 1) {
+      left[0].querySelector("[data-remove-badge]").remove();
+      left[0].classList.remove("removable-tag");
+    }
+    showAlert("success", "Removed from " + slug + ".");
+  });
 });
 
 // A run may already be going when the page loads (started elsewhere, or a reload).

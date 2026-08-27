@@ -290,6 +290,46 @@ def delete_questions(question_ids: list[str]) -> int:
     )
 
 
+def remove_skill_badge(question_id: str, slug: str) -> str:
+    """Unfile a question from one skill badge, leaving the question itself alone.
+
+    A question may belong to several badges, and being filed under one it does not
+    really test is a smaller mistake than the question being wrong — so it is
+    correctable in place rather than by deleting and re-generating.
+
+    The last badge cannot be removed. A question filed under nothing would be
+    unreachable from every screen that lists by badge, and invisible to export: it
+    would still be paid for, still counted, and never seen again. That rule is
+    enforced here rather than only in the screen that offers the control, in the
+    same update that does the pull — `skill_badges.1` exists only when there are two
+    or more, so a question cannot be emptied by two tabs removing its last two
+    badges at the same moment.
+
+    Returns "removed", "last" when the badge is the only one, or "missing" when
+    there is no such question or it was not filed under that badge.
+    """
+    matched = (
+        collection()
+        .update_one(
+            {
+                "question_id": question_id,
+                "skill_badges": slug,
+                "skill_badges.1": {"$exists": True},
+            },
+            {"$pull": {"skill_badges": slug}},
+        )
+        .matched_count
+    )
+    if matched:
+        return "removed"
+    # Which of the two refusals it was, said apart: "you cannot remove the only badge"
+    # and "there is no such question" are different things to be told.
+    still_there = collection().find_one(
+        {"question_id": question_id, "skill_badges": slug}, {"_id": 1}
+    )
+    return "last" if still_there else "missing"
+
+
 def find_by_identifier(value: str) -> list[dict[str, Any]]:
     """One question looked up by either identifier, or none.
 

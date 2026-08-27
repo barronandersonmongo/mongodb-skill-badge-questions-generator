@@ -53,10 +53,26 @@
 {# A skill badge a question is filed under. Links to the badge's definition: a
    slug is not self-explanatory, and checking what it covers should not mean
    hunting through the admin screen for it. #}
-{% macro badge_tag(slug) %}
+{# `removable` adds an × that unfiles the question from this badge. It is off by
+   default: most places a badge tag appears are describing something, not editing it.
+   The removable form is a span wrapping the link and a button rather than a button
+   inside the link — one interactive element cannot contain another, and the link and
+   the × do different things to different objects. #}
+{% macro badge_tag(slug, removable=False) %}
+{% if removable %}
+<span class="tag tag-badge removable-tag" data-badge-tag-group="{{ slug }}">
+  <a href="/admin/skill-badges#badge-{{ slug }}"
+     title="Skill badge: {{ slug }} — open its definition"
+     data-badge-tag="{{ slug }}">{{ slug }}</a>
+  <button type="button" class="remove-badge" data-remove-badge="{{ slug }}"
+          title="Remove this question from {{ slug }}"
+          aria-label="Remove this question from {{ slug }}">&times;</button>
+</span>
+{% else %}
 <a class="tag tag-badge" href="/admin/skill-badges#badge-{{ slug }}"
    title="Skill badge: {{ slug }} — open its definition"
    data-badge-tag="{{ slug }}">{{ slug }}</a>
+{% endif %}
 {% endmacro %}
 
 {# A topic area the question exercises. #}

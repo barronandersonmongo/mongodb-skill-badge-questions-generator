@@ -1625,3 +1625,73 @@ def test_the_headline_counts_chunks(client, fake_collection, fake_questions):
     body = client.get(PAGE).text
     assert 'p.pages_total + " chunks"' in body
     assert '" sections"' not in body
+
+
+def test_the_page_size_picker_is_wider_than_its_widest_option(client):
+    """
+    Intent: Shrunk to its content, the picker was exactly as wide as "500" and no wider, so the
+        chosen figure sat against the arrow and the open menu was the same width as the closed
+        control. Half again is the room that makes it read as a control rather than a number
+        with a chevron beside it — the same treatment the line count and skill level pickers
+        were given.
+    Success: The picker carries a class that states a width.
+    Feature: Questions screen — the page size picker is given room.
+    """
+    body = client.get(PAGE).text
+    assert 'class="form-select page-size-select"' in body
+    css = client.get("/static/theme.css").text
+    rule = css[css.index(".page-size-select {"):]
+    assert "width: 7.5rem" in rule[: rule.index("}")]
+
+
+def test_a_badge_can_be_taken_off_a_question_from_its_tag(client, fake_collection, fake_questions):
+    """
+    Intent: A mis-filed question is noticed here, reading it, next to the badges it is filed
+        under — so this is where it has to be correctable. The alternative was deleting the
+        question and paying to generate a replacement, which loses a good question over a
+        wrong label.
+    Success: Each badge tag on a question filed under more than one carries a control that
+        names the badge it would remove.
+    Feature: Question review screen — a skill badge can be removed from its tag.
+    """
+    seed_question(skill_badges=["atlas-search", "vector-search"])
+    body = client.get(PAGE).text
+    assert 'data-remove-badge="atlas-search"' in body
+    assert 'data-remove-badge="vector-search"' in body
+    assert body.count('data-badge-tag-group="') == 2
+
+
+def test_the_only_badge_on_a_question_offers_no_way_to_remove_it(client, fake_collection, fake_questions):
+    """
+    Intent: A question filed under nothing is unreachable from every screen that lists by
+        badge and absent from export. Offering a control that would always refuse teaches the
+        reader to click it and read an error, which is a worse way of saying "not allowed"
+        than not offering it.
+    Success: A question filed under one badge renders its tag without a remove control.
+    Feature: Question review screen — the last badge cannot be removed.
+    """
+    seed_question(skill_badges=["atlas-search"])
+    body = client.get(PAGE).text
+    assert 'data-badge-tag="atlas-search"' in body
+    # The attribute with a value is the control; the bare name also appears in the script
+    # that binds every one of them, which is not one.
+    assert 'data-remove-badge="' not in body
+    assert 'class="tag tag-badge removable-tag"' not in body
+
+
+def test_removing_a_badge_does_not_reload_the_list(client, fake_collection, fake_questions):
+    """
+    Intent: Deleting a question reloads, because the row it was on is gone. Unfiling one is an
+        edit to a single tag — reloading a long list for it would throw away the reader's
+        place, which is exactly where they were working.
+    Success: The removal takes the tag out of the page in the browser, and drops the last
+        remaining question's remove control rather than reloading.
+    Feature: Question review screen — removing a badge is an edit in place.
+    """
+    seed_question(skill_badges=["atlas-search", "vector-search"])
+    body = client.get(PAGE).text
+    script = body[body.index('document.querySelectorAll("[data-remove-badge]")'):]
+    script = script[: script.index("// A run may already be going")]
+    assert '"/skill-badges/" + encodeURIComponent(slug)' in script
+    assert 'button.closest("[data-badge-tag-group]").remove()' in script
+    assert "window.location.reload" not in script

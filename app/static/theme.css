@@ -412,6 +412,23 @@ a:focus-visible,
   margin-bottom: var(--s4);
 }
 
+/* Two selects are given a width rather than left to shrink to their content. A select
+   sized by its widest option is exactly as wide as its longest word and no wider, which
+   leaves the chosen value pressed against the arrow and the menu the same width as the
+   closed control. Both of these are half again as wide as they would otherwise be: the
+   basis is the widest option plus the control's own padding and arrow, and the halves are
+   the room. They are written as widths, not as a percentage, because a percentage on a
+   shrink-to-fit control resolves against a parent whose width that control decides. */
+
+/* "10000" — five figures, about 6rem with the chrome. */
+.lines-select { width: 9rem; }
+
+/* "foundational" and "intermediate" — twelve characters, about 9.5rem with the chrome. */
+.difficulty-select { width: 14.25rem; }
+
+/* "500" — three figures, about 5rem with the chrome. */
+.page-size-select { width: 7.5rem; }
+
 /* ---------- surfaces ---------- */
 
 /* One surface treatment, and it is the same object whether a template calls it a
@@ -729,6 +746,49 @@ a:focus-visible,
 .compare-heading-drop { color: var(--danger); background: var(--danger-wash); }
 .compare-heading-keep { color: var(--forest); background: var(--forest-wash); }
 
+/* Choosing one of the two, in the one place both are readable in full. The control sits
+   above the question it belongs to and stays at full strength when that question is
+   greyed — it is how the choice is undone. */
+.compare-select {
+  margin-bottom: var(--s3);
+  font-size: 0.8125rem;
+}
+
+.compare-select .form-check-input:checked {
+  background-color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* Struck through and greyed, never hidden: the selected question is about to be deleted,
+   so it must stay legible right up to the confirmation, while saying at a glance — from
+   across the dialog, without reading a word of either — which of the two is going. The
+   question's text is what carries it; the heading over it does not, because that is the
+   label saying this is the one going, and a verdict struck through in the same grey as the
+   thing it is a verdict on is the one part that must stay loud.
+
+   The rule is set on the container so it inherits to everything inside: the stem, the
+   options and the tags are separate elements, and a strike that reached only the first of
+   them would read as a correction to that line rather than to the question. */
+.compare-side.is-selected [data-compare-body] {
+  color: var(--ink-3);
+  opacity: 0.6;
+  filter: grayscale(1);
+  text-decoration: line-through;
+  /* Thinner than the default: at full weight it competed with the text for the same
+     pixels, which is where "struck out" turns into "unreadable". */
+  text-decoration-thickness: 1px;
+}
+
+/* The colours inside a question are set on their own elements, so the wash above cannot
+   reach them: the correct option, the tags and the source link all state their own colour
+   and would otherwise stay bright inside a greyed question. The strike is repeated here for
+   the same reason — a link draws its own decoration, and a tag is an inline-block, which
+   the inherited line does not cross. */
+.compare-side.is-selected [data-compare-body] * {
+  color: var(--ink-3) !important;
+  text-decoration-line: line-through;
+}
+
 /* The facts block is the same object as on the questions screen, with a narrower label
    column: at 7rem it took a fifth of a column that is itself half a dialog. */
 .compare-side .question-head {
@@ -765,6 +825,30 @@ a:focus-visible,
 .tag-badge { color: var(--warn); background: var(--warn-wash); border-color: #f0e3bf; }
 .tag-badge:hover { background: #f8eecf; color: #7a5b00; text-decoration: none; }
 .tag-category { color: var(--forest); background: var(--forest-wash); border-color: #cfe6dc; }
+
+/* A badge tag that can be taken off the question. The pill keeps its own colour and the
+   link inside it keeps none of its own — a tag that turned blue and underlined because it
+   is now two elements would read as a different kind of thing. */
+.removable-tag { gap: 0.375rem; }
+.removable-tag a { color: inherit; text-decoration: none; }
+
+/* The ×. Quiet until the pointer is on the pill, because it is an edit sitting in a row of
+   labels: legible when reached for, not competing with the slug it would remove. It is a
+   real button — the same act must be reachable from the keyboard. */
+.remove-badge {
+  border: none;
+  background: none;
+  padding: 0;
+  line-height: 1;
+  font-size: 0.875rem;
+  color: inherit;
+  opacity: 0.5;
+}
+
+.removable-tag:hover .remove-badge,
+.remove-badge:focus-visible { opacity: 1; }
+
+.remove-badge:disabled { opacity: 0.25; }
 
 /* Bootstrap's own badges, wherever a template still uses one, are given the same
    pill shape so they cannot look like a different species of chip. */

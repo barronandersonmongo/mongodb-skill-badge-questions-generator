@@ -278,7 +278,10 @@ class FakeCollection:
                 if actual == expected["$ne"]:
                     return False
             elif isinstance(expected, dict) and "$exists" in expected:
-                if (key in doc) != expected["$exists"]:
+                # Through a path, not just a top-level key: "skill_badges.1" asks whether
+                # an array has a second element, which is how a question is stopped from
+                # losing its last badge.
+                if _path_exists(doc, key) != expected["$exists"]:
                     return False
             elif isinstance(actual, list) and not isinstance(expected, list):
                 # MongoDB matches a scalar against any element of an array field,
@@ -357,6 +360,9 @@ class FakeCollection:
             for item in incoming:
                 if item not in values:
                     values.append(item)
+        for field, value in update.get("$pull", {}).items():
+            # Scalar equality only, which is what unfiling a question from one badge needs.
+            doc[field] = [item for item in doc.get(field, []) if item != value]
         for field in update.get("$unset", {}):
             doc.pop(field, None)
         return doc != before
@@ -518,6 +524,30 @@ def _dotted(doc: dict, path: str) -> Any:
         if current is None:
             return None
     return current
+
+
+def _path_exists(doc: dict, path: str) -> bool:
+    """Whether a field path resolves, with numeric parts indexing into arrays.
+
+    MongoDB's `$exists` reaches inside documents and arrays alike, so "skill_badges.1"
+    is true of a question filed under two badges and false of one filed under a single
+    badge. A fake that only looked at top-level keys would answer false to both, and
+    the guard that keeps a question from being emptied would look like it worked while
+    never letting anything through.
+    """
+    current: Any = doc
+    for part in path.split("."):
+        if isinstance(current, dict):
+            if part not in current:
+                return False
+            current = current[part]
+        elif isinstance(current, list) and part.isdigit():
+            if int(part) >= len(current):
+                return False
+            current = current[int(part)]
+        else:
+            return False
+    return True
 
 
 def _tokens(text: str) -> set[str]:
