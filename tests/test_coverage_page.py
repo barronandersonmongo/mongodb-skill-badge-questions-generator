@@ -12,7 +12,6 @@ recorded requirement and are never edited: if behavior must change, the
 program changes, or a new test is added alongside with its own block.
 """
 
-import re
 from pathlib import Path
 
 import pytest
@@ -89,92 +88,145 @@ def test_a_badge_row_leads_to_its_questions(client):
     assert '"/?skill_badge=" + encodeURIComponent(row.skill_badge)' in body
 
 
-def test_the_screen_offers_a_heatmap_above_the_table(client):
+def test_the_screen_offers_a_chart_above_the_table(client):
     """
     Intent: The table answers "which badge is thinnest" one row at a time, which is the
         question asked while reading down it. The shape of the whole bank — a few badges
         holding most of it, a tail holding almost none — is not in any single row, and
         reading it off a column of numbers is work the screen can do instead.
-    Success: The screen renders a heat map container, and it precedes the table's.
+    Success: The screen renders a chart container and its canvas, and they precede the
+        table's container.
     Feature: Coverage screen — the bank's shape above its numbers.
     """
     body = client.get(PAGE).text
     assert 'data-coverage-heatmap="true"' in body
+    assert 'data-coverage-chart="true"' in body
     assert body.index('data-coverage-heatmap="true"') < body.index('data-coverage-body="true"')
 
 
-def test_a_circle_is_sized_by_the_questions_it_holds(client):
+def test_the_chart_places_a_badge_by_material_and_by_questions(client):
     """
-    Intent: The map only says anything if size means one thing, and the thing to compare is
-        how much of the bank each badge holds. Sizing the diameter by the count would show a
-        badge with four times the questions as sixteen times the badge, which overstates the
-        very imbalance the map exists to report.
-    Success: The diameter is the square root of the badge's share of the fullest badge,
-        between a floor and a ceiling, and is set on the circle as a custom property.
-    Feature: Coverage heat map — area carries the count.
+    Intent: A bubble at a position says two things at once, and the two worth saying about
+        a badge are the ones the table already lists: how much documentation it has left to
+        walk, and how many questions have come out of it. Placed that way the corners are
+        the answer to "what next" — far right and low is a badge with material and nothing
+        written from it; far left and low is one whose material is spent and needs the
+        corpus widening instead.
+    Success: The chart is a bubble chart with chunks left on x and questions created on y,
+        both axes titled and starting at zero so distances are comparable.
+    Feature: Coverage chart — position carries material and output.
+    """
+    body = client.get(PAGE).text
+    assert 'type: "bubble"' in body
+    assert "x: row.pages_available" in body
+    assert "y: row.total" in body
+    assert 'text: "Chunks left to walk"' in body
+    assert 'text: "Questions created"' in body
+    assert body.count("beginAtZero: true") == 2
+
+
+def test_a_bubble_is_sized_by_the_questions_it_holds(client):
+    """
+    Intent: The chart only says anything if size means one thing, and the thing to compare
+        is how much of the bank each badge holds. Chart.js takes a radius, so sizing it by
+        the count directly would show a badge with four times the questions as sixteen
+        times the badge — overstating the very imbalance the chart exists to report.
+    Success: The radius is the square root of the badge's share of the fullest badge,
+        between a floor and a ceiling.
+    Feature: Coverage chart — area carries the count.
     """
     body = client.get(PAGE).text
     assert "Math.sqrt(total / largest)" in body
-    assert "CIRCLE_MIN + (CIRCLE_MAX - CIRCLE_MIN)" in body
-    assert 'circle.style.setProperty("--size"' in body
-    assert ".heat-circle" in _theme()
+    assert "BUBBLE_MIN + (BUBBLE_MAX - BUBBLE_MIN)" in body
+    assert "r: bubbleRadius(row.total, largest)" in body
 
 
-def test_a_circle_leads_to_that_badges_questions(client):
+def test_a_bubble_leads_to_that_badges_questions(client):
     """
-    Intent: A circle that reports an imbalance and cannot be acted on leaves the author back
+    Intent: A chart that reports an imbalance and cannot be acted on leaves the author back
         at the table to find the same badge again. The next thing anyone does with a badge
-        the map singles out is read what it already holds.
-    Success: Each circle is an anchor to the questions list filtered to that badge, so it can
-        be opened in a new tab and reached from the keyboard rather than being a shape with a
-        click handler.
-    Feature: Coverage heat map — circles lead into the list.
+        the chart singles out is read what it already holds.
+    Success: Clicking a bubble goes to the questions list filtered to that badge — the same
+        address the table's rows use — and the pointer says the bubbles can be clicked.
+    Feature: Coverage chart — bubbles lead into the list.
     """
     body = client.get(PAGE).text
-    assert 'document.createElement("a")' in body
-    assert 'circle.href = "/?skill_badge=" + encodeURIComponent(row.skill_badge)' in body
+    assert 'window.location.href = "/?skill_badge=" + encodeURIComponent(point.slug)' in body
+    assert 'elements.length ? "pointer" : "default"' in body
 
 
 def test_a_badge_with_no_questions_is_still_visible(client):
     """
-    Intent: An empty badge is the most useful thing the map can report — it is the one that
-        should be run next. Sized honestly it would be a dot, and filled honestly it would be
-        the palest circle on the screen, so the reading the map is most worth having is the
-        one it would lose.
-    Success: Circles have a floor size, and a badge holding nothing is marked so the
-        stylesheet can draw it as an outline rather than as a very small full circle.
-    Feature: Coverage heat map — an empty badge is not a dot.
+    Intent: An empty badge is the most useful thing the chart can report — it is the one
+        that should be run next. Sized honestly it would be a dot too small to see or aim
+        at, so the reading the chart is most worth having is the one it would lose.
+    Success: Bubbles have a floor radius, and a badge holding nothing is drawn hollow and
+        in grey rather than as a very small filled bubble.
+    Feature: Coverage chart — an empty badge is not a dot.
     """
     body = client.get(PAGE).text
-    assert "const CIRCLE_MIN" in body
-    assert 'circle.dataset.empty = "true"' in body
-    assert '.heat-circle[data-empty="true"]' in _theme()
+    assert "const BUBBLE_MIN" in body
+    assert 'p.y === 0 ? "transparent" : forest' in body
+    assert "p.y === 0 ? ink3 : forest" in body
 
 
-def test_the_heatmap_is_not_shown_when_there_is_nothing_to_draw(client):
+def test_a_badge_whose_material_is_unknown_is_left_off(client):
     """
-    Intent: An empty panel above an explanation reads as a panel that failed to load. With no
-        badges at all, and when the fetch fails, the table's own message is the whole story
-        and a blank circle field above it contradicts it.
-    Success: The heat map's panel is hidden when the fetch fails and when no badges come back.
-    Feature: Coverage heat map — nothing to draw is not an empty box.
-    """
-    body = client.get(PAGE).text
-    assert body.count('heatmap.closest(".panel").hidden = true') == 2
-
-
-def test_the_heatmap_is_styled_only_from_the_stylesheet(client):
-    """
-    Intent: Every screen here is built from the shared macros and styled from theme.css alone.
-        A chart drawn by a script is the easiest place for a one-off palette and a hand-picked
-        gap to get in, and one screen with its own look is how the screens drifted apart
-        before the theme existed.
-    Success: The circles carry classes the stylesheet owns, and the only properties the script
-        sets on them are the two that are data — the diameter and the fill's strength.
-    Feature: Coverage heat map — the shared look, not a chart's own.
+    Intent: Coverage returns no chunk count for a badge whose material could not be
+        resolved, and the table prints an em dash for it. Charting that as zero would place
+        it in the corner that means "material spent", which is the opposite of not knowing
+        — a chart that states something false is worse than one that omits a badge the
+        table still lists.
+    Success: Only badges with a chunk count are plotted, and the panel is hidden when that
+        leaves nothing.
+    Feature: Coverage chart — an unknown is not a zero.
     """
     body = client.get(PAGE).text
-    theme = _theme()
-    for rule in (".badge-heatmap", ".heat-circle", ".heat-count", ".heat-name"):
-        assert rule in theme
-    assert sorted(re.findall(r'setProperty\("(--[a-z]+)"', body)) == ["--heat", "--size"]
+    assert "rows.filter((row) => row.pages_available !== null)" in body
+    assert "rows.some((row) => row.pages_available !== null)" in body
+
+
+def test_the_chart_is_not_shown_when_there_is_nothing_to_draw(client):
+    """
+    Intent: An empty panel above an explanation reads as a panel that failed to load. With
+        no badges at all, when the fetch fails, and when no badge has a chunk count, the
+        table's own message is the whole story and a blank grid above it contradicts it.
+    Success: The chart's panel is hidden in each of those three cases.
+    Feature: Coverage chart — nothing to draw is not an empty box.
+    """
+    body = client.get(PAGE).text
+    assert body.count('heatmap.closest(".panel").hidden = true') == 3
+
+
+def test_the_chart_takes_its_look_from_the_theme(client):
+    """
+    Intent: Every screen here is built from the shared macros and styled from theme.css
+        alone. A chart drawn by a library is the easiest place for a one-off palette and a
+        hand-picked size to get in, and one screen with its own look is how the screens
+        drifted apart before the theme existed.
+    Success: The chart's colours are read from the stylesheet's custom properties rather
+        than written into the script, and its height comes from a themed frame rather than
+        from canvas attributes.
+    Feature: Coverage chart — the shared look, not a library's own.
+    """
+    body = client.get(PAGE).text
+    assert "getPropertyValue(name)" in body
+    for name in ('themeColor("--forest")', 'themeColor("--ink-3")', 'themeColor("--line")'):
+        assert name in body
+    assert 'class="chart-frame"' in body
+    assert "width=" not in body[body.index("<canvas") : body.index("</canvas>")]
+    assert ".chart-frame" in _theme()
+
+
+def test_the_charting_library_is_loaded_only_where_it_is_used(client):
+    """
+    Intent: This is the only screen with a chart. Loaded in the shell, every other screen
+        would fetch 200 kB it never draws with, and the shell is shared by all of them.
+    Success: Chart.js is requested from the coverage screen and not from the shell, and it
+        is pinned with an integrity hash like every other thing loaded from a CDN here.
+    Feature: Coverage chart — the library is this screen's cost, not the shell's.
+    """
+    body = client.get(PAGE).text
+    assert "chart.js@4.4.3" in body
+    assert 'integrity="sha384-' in body[body.index("chart.js@4.4.3") - 200 : body.index("chart.js@4.4.3") + 400]
+    assert "chart.js" not in client.get("/").text

@@ -14,12 +14,25 @@
     "run is worth doing; none left means the badge has exhausted its material and the "
     "corpus needs widening instead.") %}{% endcall %}
 
-{# The shape of the bank before its numbers: one circle per badge, area proportional to
-   the questions it holds, so a lopsided bank is seen rather than read down a column.
-   It is filled from the same fetch as the table below and holds the same order, so the
-   two panels never disagree about which badge is thinnest. #}
+{# The shape of the bank before its numbers: one bubble per badge, placed by the two
+   figures the table below lists and sized by the questions it holds, so a lopsided bank
+   is seen rather than read down a column. It is filled from the same fetch as the table,
+   so the two panels never disagree. #}
 <div class="panel">
-  <div class="panel-body" id="coverage-heatmap" data-coverage-heatmap="true"></div>
+  <div class="panel-header">
+    <span>Every badge at once</span>
+    <span class="text-body-secondary heat-legend">
+      Right is material still to run, up is questions already written, and the bubble is
+      how many. Bottom right is the badge to run next.
+    </span>
+  </div>
+  <div class="panel-body" id="coverage-heatmap" data-coverage-heatmap="true">
+    {# Sized in CSS rather than by Chart.js' own resizing, which reads the canvas'
+       attributes and grows the panel a little on every redraw if they are left to it. #}
+    <div class="chart-frame">
+      <canvas id="coverage-bubbles" data-coverage-chart="true"></canvas>
+    </div>
+  </div>
 </div>
 
 <div class="panel">
@@ -36,57 +49,107 @@
 {% endblock %}
 
 {% block scripts %}
+{# Loaded here rather than in the shell: this is the only screen with a chart, and every
+   other screen would otherwise pay 200 kB for it. #}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"
+        integrity="sha384-JUh163oCRItcbPme8pYnROHQMC6fNKTBWtRG3I3I0erJkzNgL7uxKlNwcrcFKeqF"
+        crossorigin="anonymous"></script>
 <script>
 const API = "{{ api }}";
 
-// The circle diameter for a badge holding `total` questions, against the fullest badge
-// on the screen. Area carries the count, not diameter — a badge with four times the
-// questions of another should look four times the badge, and sizing by diameter would
-// make it sixteen. The floor is a circle its own number still fits inside; a badge with
-// nothing gets it too, because "this badge has no questions" is the thing the map is
-// most worth seeing and a dot too small to read hides it.
-const CIRCLE_MIN = 48;
-const CIRCLE_MAX = 132;
+// The bubble radius for a badge holding `total` questions, against the fullest badge on
+// the screen. Area carries the count, not radius — a badge with four times the questions
+// of another should look four times the badge, and Chart.js takes a radius, so the radius
+// is the square root or the difference is squared. The floor is a bubble that can still
+// be aimed at with a mouse; a badge with nothing gets it too, because "this badge has no
+// questions" is the reading the map is most worth having and a dot too small to see hides
+// it.
+const BUBBLE_MIN = 5;
+const BUBBLE_MAX = 34;
 
-function circleSize(total, largest) {
-  if (largest <= 0) return CIRCLE_MIN;
-  return CIRCLE_MIN + (CIRCLE_MAX - CIRCLE_MIN) * Math.sqrt(total / largest);
+function bubbleRadius(total, largest) {
+  if (largest <= 0) return BUBBLE_MIN;
+  return BUBBLE_MIN + (BUBBLE_MAX - BUBBLE_MIN) * Math.sqrt(total / largest);
 }
 
-function drawHeatmap(target, rows) {
+// The theme's own values, read from the stylesheet rather than repeated here: a chart
+// drawn by a library is the easiest place for a one-off palette to get in.
+function themeColor(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function drawHeatmap(canvas, rows) {
   const largest = Math.max(...rows.map((row) => row.total));
-  const map = document.createElement("div");
-  map.className = "badge-heatmap";
-  rows.forEach((row) => {
-    // An anchor rather than a click handler on a shape: the whole point of a circle
-    // here is to be gone through, and a real link can be opened in a new tab, has its
-    // destination shown on hover, and reaches the keyboard for free.
-    const circle = document.createElement("a");
-    circle.className = "heat-circle";
-    circle.href = "/?skill_badge=" + encodeURIComponent(row.skill_badge);
-    circle.style.setProperty("--size", circleSize(row.total, largest).toFixed(1) + "px");
-    // The fill deepens with the same proportion the area does, so colour and size say
-    // the one thing rather than two.
-    const heat = largest > 0 ? row.total / largest : 0;
-    circle.style.setProperty("--heat", heat.toFixed(3));
-    // Past about half the scale the fill is too dark for ink, so the circle says which
-    // side of that it is on and the stylesheet turns the text over. Deciding it here
-    // keeps the threshold next to the ratio it is a threshold on.
-    if (heat >= 0.5) circle.dataset.dark = "true";
-    circle.dataset.total = row.total;
-    if (row.total === 0) circle.dataset.empty = "true";
-    const name = row.name || row.skill_badge;
-    circle.title = name + " — " + row.total + (row.total === 1 ? " question" : " questions");
-    const count = document.createElement("span");
-    count.className = "heat-count";
-    count.textContent = row.total;
-    const label = document.createElement("span");
-    label.className = "heat-name";
-    label.textContent = name;
-    circle.append(count, label);
-    map.append(circle);
+  const forest = themeColor("--forest");
+  const ink3 = themeColor("--ink-3");
+  const line = themeColor("--line");
+  // A badge whose material could not be resolved has no x to be placed at. Charting it
+  // at zero would put it in the corner that means "spent", which is the opposite of not
+  // knowing, so it is left out and the table still lists it with an em dash.
+  const plotted = rows.filter((row) => row.pages_available !== null);
+  const points = plotted.map((row) => ({
+    x: row.pages_available,
+    y: row.total,
+    r: bubbleRadius(row.total, largest),
+    slug: row.skill_badge,
+    name: row.name || row.skill_badge,
+  }));
+  new Chart(canvas, {
+    type: "bubble",
+    data: {
+      datasets: [{
+        data: points,
+        // Translucent, because bubbles overlap wherever badges are alike and a solid
+        // fill would hide the smaller one entirely.
+        // An empty badge is drawn hollow and in grey: it is the one to run next, and a
+        // bubble at the floor size in the same fill as the rest reads as merely small.
+        backgroundColor: points.map((p) => (p.y === 0 ? "transparent" : forest + "33")),
+        borderColor: points.map((p) => (p.y === 0 ? ink3 : forest)),
+        borderWidth: 1,
+      }],
+    },
+    options: {
+      maintainAspectRatio: false,
+      // Chart.js' default is a legend for the one dataset, which names nothing.
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (item) => {
+              const point = item.raw;
+              const questions = point.y === 1 ? " question" : " questions";
+              return point.name + " — " + point.y + questions + ", " + point.x + " chunks left";
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          title: { display: true, text: "Chunks left to walk", color: ink3 },
+          beginAtZero: true,
+          ticks: { color: ink3 },
+          grid: { color: line },
+        },
+        y: {
+          title: { display: true, text: "Questions created", color: ink3 },
+          beginAtZero: true,
+          ticks: { color: ink3, precision: 0 },
+          grid: { color: line },
+        },
+      },
+      onClick: (event, elements) => {
+        // A bubble is a shape on a canvas and cannot be a link, so this is the one place
+        // here where going somewhere is a handler rather than an anchor. The address is
+        // the same one the table's rows use.
+        if (elements.length === 0) return;
+        const point = points[elements[0].index];
+        window.location.href = "/?skill_badge=" + encodeURIComponent(point.slug);
+      },
+      onHover: (event, elements) => {
+        event.native.target.style.cursor = elements.length ? "pointer" : "default";
+      },
+    },
   });
-  target.append(map);
 }
 
 (async () => {
@@ -109,7 +172,13 @@ function drawHeatmap(target, rows) {
     target.textContent = "No skill badges yet, so there is nothing to cover.";
     return;
   }
-  drawHeatmap(heatmap, rows);
+  // Every badge's material unresolved leaves the chart with no point to draw, and an
+  // empty grid is a worse answer than no grid.
+  if (rows.some((row) => row.pages_available !== null)) {
+    drawHeatmap(document.getElementById("coverage-bubbles"), rows);
+  } else {
+    heatmap.closest(".panel").hidden = true;
+  }
   target.className = "table-responsive";
   const table = document.createElement("table");
   table.className = "table align-middle mb-0";

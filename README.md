@@ -67,7 +67,7 @@ Everything below follows from those three.
 ## Stack
 
 Python 3.14 (stdlib `venv` + `pip`), FastAPI + Jinja2 server-rendered HTML, MongoDB Atlas,
-Claude via the `anthropic` SDK, Bootstrap 5 / vanilla JS from CDN. No Node, no bundler, no
+Claude via the `anthropic` SDK, Bootstrap 5 / Chart.js / vanilla JS from CDN. No Node, no bundler, no
 Docker, no task queue.
 
 ## Getting started
@@ -791,28 +791,38 @@ defect. Few questions and many sections left means run it again; few questions a
 means the material is spent. Resolving every badge's section set is dozens of vector
 searches, so the panel is fetched on demand rather than rendered with the screen.
 
-Above the table is a **map of the bank**: one circle per badge, filled from the same fetch
-and held in the same order, so the two panels cannot disagree about which badge is thinnest.
-The table is the precise answer to "what should I run next", asked one row at a time. The map
-answers a different question — how lopsided is the bank overall — in a glance, and it is the
-one view of this data that reads at presentation distance.
+Above the table is a **bubble chart of the whole bank**, filled from the same fetch so the
+two panels cannot disagree. The table is the precise answer to "what should I run next",
+asked one row at a time. The chart answers a different question — how lopsided is the bank —
+in a glance, and it is the one view of this data that reads at presentation distance.
 
-The circles are sized by **area**, which is the usual way a bubble chart lies: the diameter
-is the square root of the badge's share of the fullest badge, or a badge with four times the
-questions would look sixteen times the badge and overstate the very imbalance the map exists
-to report. The fill deepens by the same proportion, so colour and size say one thing rather
-than two. A badge with no questions is the map's most useful reading and the one honest
-sizing would lose, so circles have a floor and an empty badge is drawn as a dashed outline
-rather than as a very small full circle. Names sit inside the circles at one size and are
-clipped rather than shrunk — a name set small enough to fit is not a name anyone reads, and
-the hover title carries the whole of it.
+A badge is placed by the two figures the table lists: **chunks left to walk** across, and
+**questions created** up. That makes the corners the answer. Far right and low is a badge
+with material and almost nothing written from it, which is the one to run next. Far left and
+low is a badge whose material is spent, which needs the corpus widening instead of another
+run. Both axes begin at zero, or distances between badges would not be comparable.
 
-Each circle is a real link to `/?skill_badge=…` rather than a shape with a click handler, so
-it opens in a new tab, shows where it goes on hover, and reaches the keyboard. It is drawn
-from `.heat-circle` in `theme.css` like everything else here, not from a charting library:
-the only things the screen sets per circle are the diameter and the fill's strength, which
-are data. Nothing is drawn when there are no badges or the fetch fails — an empty panel above
-an explanation reads as a panel that failed to load.
+The bubble is sized by **area**, which is the usual way a bubble chart lies: Chart.js takes a
+radius, so the radius is the square root of the badge's share of the fullest badge, or a badge
+with four times the questions would look sixteen times the badge and overstate the very
+imbalance the chart exists to report. Bubbles have a floor radius and are translucent, since
+badges that are alike overlap and a solid fill would hide the smaller one. A badge with no
+questions is drawn hollow and in grey — it is the reading most worth having, and at the floor
+size in the same fill as everything else it reads as merely small.
+
+A badge whose material could not be resolved has no chunk count, and the table prints an em
+dash for it. It is left off the chart rather than plotted at zero, which would place it in the
+corner that means "spent" — the opposite of not knowing. Nothing is drawn at all when no badge
+has a count, when there are no badges, or when the fetch fails: an empty grid above an
+explanation reads as a panel that failed to load.
+
+Clicking a bubble goes to `/?skill_badge=…`, the same address the table's rows use. That is
+the one place in this program where going somewhere is a click handler rather than an anchor,
+because a bubble is a shape on a canvas and cannot be a link. Chart.js is loaded from the
+coverage screen rather than from the shell — it is the only screen with a chart, and every
+other screen would otherwise fetch 200 kB it never draws with — and the chart's colours are
+read from `theme.css`'s custom properties rather than written into the script, so it is not
+one screen with a charting library's own palette.
 
 ### Duplicate detection
 
