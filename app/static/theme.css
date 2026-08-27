@@ -463,6 +463,79 @@ a:focus-visible,
   border-bottom: 1px solid var(--line-strong);
 }
 
+/* ---------- the bank's shape ---------- */
+
+/* One circle per skill badge on the coverage screen, sized and filled from the
+   questions it holds. The circles are laid out as a wrapping row, largest to
+   smallest by nothing but their own size — a grid would give every badge the same
+   cell and undo the comparison the sizes are there to make. Aligned to the bottom
+   so a row of unequal circles sits on one line rather than floating at unequal
+   heights. */
+.badge-heatmap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s5) var(--s4);
+}
+
+/* --size is the diameter and --heat the badge's share of the fullest one; both are
+   set per circle by the screen, because they are data and not decisions this file
+   can make. */
+.heat-circle {
+  --size: 48px;
+  --heat: 0;
+  flex: 0 0 auto;
+  width: var(--size);
+  height: var(--size);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  /* The one accent, at the circle's own share of the bank. Forest at full strength
+     is the primary-action colour, so the fullest badge stops short of it. */
+  background: color-mix(in srgb, var(--forest) calc(var(--heat) * 78%), var(--forest-wash));
+  color: var(--ink);
+  text-decoration: none;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+/* Past about half the scale the fill is dark enough that ink on it is unreadable,
+   so the text turns over with it rather than fading out on the biggest badges —
+   which are the ones most likely to be read. */
+.heat-circle[data-dark="true"] { color: #ffffff; }
+
+/* A badge with no questions is the map's most useful reading, and a pale circle at
+   the floor size is easy to take for a small one. Dashed and empty, it reads as an
+   outline waiting to be filled. */
+.heat-circle[data-empty="true"] {
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  color: var(--ink-3);
+}
+
+.heat-circle:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-2);
+  color: inherit;
+  text-decoration: none;
+}
+
+.heat-count { font-weight: 600; font-size: 0.9375rem; line-height: 1.1; }
+
+/* The name is inside the circle at the same size whatever the circle is, and
+   clipped rather than shrunk: a name set in 8px to fit is not a name anyone reads,
+   and the title attribute has the whole of it. */
+.heat-name {
+  max-width: 88%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  opacity: 0.85;
+}
+
 /* A question's own facts — which one it is, when it was written, what from — set
    above the stem as labelled rows. The labels are in the quietest weight the
    theme has: they exist so the values are not three unlabelled strings, and they

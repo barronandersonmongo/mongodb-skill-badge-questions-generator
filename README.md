@@ -791,6 +791,29 @@ defect. Few questions and many sections left means run it again; few questions a
 means the material is spent. Resolving every badge's section set is dozens of vector
 searches, so the panel is fetched on demand rather than rendered with the screen.
 
+Above the table is a **map of the bank**: one circle per badge, filled from the same fetch
+and held in the same order, so the two panels cannot disagree about which badge is thinnest.
+The table is the precise answer to "what should I run next", asked one row at a time. The map
+answers a different question — how lopsided is the bank overall — in a glance, and it is the
+one view of this data that reads at presentation distance.
+
+The circles are sized by **area**, which is the usual way a bubble chart lies: the diameter
+is the square root of the badge's share of the fullest badge, or a badge with four times the
+questions would look sixteen times the badge and overstate the very imbalance the map exists
+to report. The fill deepens by the same proportion, so colour and size say one thing rather
+than two. A badge with no questions is the map's most useful reading and the one honest
+sizing would lose, so circles have a floor and an empty badge is drawn as a dashed outline
+rather than as a very small full circle. Names sit inside the circles at one size and are
+clipped rather than shrunk — a name set small enough to fit is not a name anyone reads, and
+the hover title carries the whole of it.
+
+Each circle is a real link to `/?skill_badge=…` rather than a shape with a click handler, so
+it opens in a new tab, shows where it goes on hover, and reaches the keyboard. It is drawn
+from `.heat-circle` in `theme.css` like everything else here, not from a charting library:
+the only things the screen sets per circle are the diameter and the fill's strength, which
+are data. Nothing is drawn when there are no badges or the fetch fails — an empty panel above
+an explanation reads as a panel that failed to load.
+
 ### Duplicate detection
 
 One aggregation per question does both stages on the cluster: `$vectorSearch` over
@@ -1150,20 +1173,6 @@ item up.
   which is the difference between a convenience and something that needs confirming at every
   step; and how an answer cites itself, since a figure quoted in prose with no link back to
   the screen it came from is exactly the ungrounded claim this tool exists to avoid.
-
-- **A balloon map of the bank on the coverage screen.** One circle per badge, sized by how
-  many questions it holds and clicking through to `/?skill_badge=…`. Coverage already answers
-  "what should I run next" as a table sorted thinnest-first, which is the precise answer; a
-  map answers a different question — how lopsided is the bank overall — in one glance, and it
-  is the one view of this data that reads at presentation distance. Cheap, too: Chart.js is
-  already loaded and coverage already fetches the per-badge counts, so this is a second
-  rendering of data the screen has.
-
-  One thing to get right, and it is the usual way a bubble chart lies: size the circles by
-  **area**, not radius. Chart.js takes a radius, so the radius has to be the square root of
-  the count, or a badge with four times the questions looks sixteen times the size. With 34
-  badges and counts spanning an order of magnitude, labels will not all fit either — the
-  large circles can carry a name, the rest need hover.
 
 ## Open questions
 

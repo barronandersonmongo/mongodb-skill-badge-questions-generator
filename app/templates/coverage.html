@@ -14,6 +14,14 @@
     "run is worth doing; none left means the badge has exhausted its material and the "
     "corpus needs widening instead.") %}{% endcall %}
 
+{# The shape of the bank before its numbers: one circle per badge, area proportional to
+   the questions it holds, so a lopsided bank is seen rather than read down a column.
+   It is filled from the same fetch as the table below and holds the same order, so the
+   two panels never disagree about which badge is thinnest. #}
+<div class="panel">
+  <div class="panel-body" id="coverage-heatmap" data-coverage-heatmap="true"></div>
+</div>
+
 <div class="panel">
   {# Fetched after the page paints rather than rendered with it. Resolving every badge's
      page set is dozens of vector searches — seconds to tens of seconds — and a screen
@@ -31,21 +39,77 @@
 <script>
 const API = "{{ api }}";
 
+// The circle diameter for a badge holding `total` questions, against the fullest badge
+// on the screen. Area carries the count, not diameter — a badge with four times the
+// questions of another should look four times the badge, and sizing by diameter would
+// make it sixteen. The floor is a circle its own number still fits inside; a badge with
+// nothing gets it too, because "this badge has no questions" is the thing the map is
+// most worth seeing and a dot too small to read hides it.
+const CIRCLE_MIN = 48;
+const CIRCLE_MAX = 132;
+
+function circleSize(total, largest) {
+  if (largest <= 0) return CIRCLE_MIN;
+  return CIRCLE_MIN + (CIRCLE_MAX - CIRCLE_MIN) * Math.sqrt(total / largest);
+}
+
+function drawHeatmap(target, rows) {
+  const largest = Math.max(...rows.map((row) => row.total));
+  const map = document.createElement("div");
+  map.className = "badge-heatmap";
+  rows.forEach((row) => {
+    // An anchor rather than a click handler on a shape: the whole point of a circle
+    // here is to be gone through, and a real link can be opened in a new tab, has its
+    // destination shown on hover, and reaches the keyboard for free.
+    const circle = document.createElement("a");
+    circle.className = "heat-circle";
+    circle.href = "/?skill_badge=" + encodeURIComponent(row.skill_badge);
+    circle.style.setProperty("--size", circleSize(row.total, largest).toFixed(1) + "px");
+    // The fill deepens with the same proportion the area does, so colour and size say
+    // the one thing rather than two.
+    const heat = largest > 0 ? row.total / largest : 0;
+    circle.style.setProperty("--heat", heat.toFixed(3));
+    // Past about half the scale the fill is too dark for ink, so the circle says which
+    // side of that it is on and the stylesheet turns the text over. Deciding it here
+    // keeps the threshold next to the ratio it is a threshold on.
+    if (heat >= 0.5) circle.dataset.dark = "true";
+    circle.dataset.total = row.total;
+    if (row.total === 0) circle.dataset.empty = "true";
+    const name = row.name || row.skill_badge;
+    circle.title = name + " — " + row.total + (row.total === 1 ? " question" : " questions");
+    const count = document.createElement("span");
+    count.className = "heat-count";
+    count.textContent = row.total;
+    const label = document.createElement("span");
+    label.className = "heat-name";
+    label.textContent = name;
+    circle.append(count, label);
+    map.append(circle);
+  });
+  target.append(map);
+}
+
 (async () => {
   const target = document.getElementById("coverage-body");
+  const heatmap = document.getElementById("coverage-heatmap");
   const response = await fetch(API + "/coverage");
   if (!response.ok) {
     target.textContent = "Could not load coverage (HTTP " + response.status + ").";
+    heatmap.closest(".panel").hidden = true;
     return;
   }
   const rows = await response.json();
   target.textContent = "";
   if (rows.length === 0) {
+    // Nothing to draw, and an empty panel above an explanation reads as a failure to
+    // load rather than as nothing to show. The table's empty state says it once.
+    heatmap.closest(".panel").hidden = true;
     target.className = "empty-state";
     target.dataset.empty = "true";
     target.textContent = "No skill badges yet, so there is nothing to cover.";
     return;
   }
+  drawHeatmap(heatmap, rows);
   target.className = "table-responsive";
   const table = document.createElement("table");
   table.className = "table align-middle mb-0";
