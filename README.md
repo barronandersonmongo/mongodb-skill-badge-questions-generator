@@ -1235,6 +1235,25 @@ item up.
   authoring is a different social contract; and needs a threshold that a handful of ratings
   cannot trip, which is the same calibration problem as the duplicate threshold.
 
+- **A stored coverage report, with a dated refresh.** `/coverage` computes itself from
+  scratch on every visit and takes one to two minutes to arrive, because the expensive half
+  is resolving each badge's unused chunk set against the Atlas index — one pass per badge,
+  every time, to answer a question whose answer rarely changed since yesterday. Storing the
+  finished rows would let the screen paint at once from the last report, label it with when
+  it was taken, and offer a refresh that recomputes it behind the same status bar and
+  chunk-by-chunk detail a generation run already shows. The figures themselves are unchanged;
+  what changes is that reading them costs nothing and only recomputing them costs anything.
+
+  Three things to settle. A stored report goes stale the moment a run stores questions or
+  the corpus is refreshed, and both of those are known events — so the screen can either
+  simply show the report's age and leave the judgement to the reader, or mark itself stale
+  when it can prove it is, which is more honest and more code. Whether a refresh is
+  all-badges or one badge at a time, since a single thin badge is the usual reason to look
+  and recomputing the other forty to see it is the whole cost being avoided. And whether a
+  failed badge — the `PyMongoError` path that currently reports "unknown" — is stored as
+  unknown or leaves the previous good figures standing, which is the difference between a
+  report that degrades and one that lies by omission.
+
 - **A run detail screen.** `/runs` lists finished runs and `GET /api/questions/runs/{id}`
   already returns one in full, including the chunk-by-chunk detail — so this is a
   template, not a pipeline change. Clicking a run should show what the live status window
