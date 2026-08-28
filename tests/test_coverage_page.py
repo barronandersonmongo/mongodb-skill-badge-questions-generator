@@ -166,7 +166,9 @@ def test_a_badge_with_no_questions_is_still_visible(client):
     """
     body = client.get(PAGE).text
     assert "const BUBBLE_MIN" in body
-    assert 'p.y === 0 ? "transparent" : forest' in body
+    # The fill is now scaled per bubble, so the hollow case is asserted on its own branch
+    # rather than on a whole expression. The requirement recorded above is unchanged.
+    assert 'p.y === 0 ? "transparent" : withAlpha(forest' in body
     assert "p.y === 0 ? ink3 : forest" in body
 
 
@@ -296,3 +298,20 @@ def test_the_labels_do_not_add_a_dependency(client):
     assert "afterDatasetsDraw(chart, args, opts)" in body
     assert "datalabels" not in body
     assert body.count("cdn.jsdelivr.net/npm/chart.js") == 1
+
+
+def test_a_fuller_badge_is_drawn_darker(client):
+    """
+    Intent: Area alone is a weak signal at the small end of a scale spanning an order of
+        magnitude — the difference between a badge with four questions and one with nine is
+        a few pixels of radius, and the eye reads a pale disc as an absence. Depth of colour
+        is the reading that survives at a glance and at presentation distance.
+    Success: The fill's opacity rises with the questions the badge holds, following the same
+        square root the radius does so colour and size say one thing rather than two, and it
+        stops short of solid because bubbles overlap.
+    Feature: Coverage chart — the fill deepens with the bubble.
+    """
+    body = client.get(PAGE).text
+    assert "FILL_MIN + (FILL_MAX - FILL_MIN) * Math.sqrt(total / largest)" in body
+    assert "withAlpha(forest, bubbleFill(p.y, largest))" in body
+    assert "const FILL_MAX = 0.8;" in body

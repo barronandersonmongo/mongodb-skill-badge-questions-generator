@@ -805,8 +805,12 @@ run. Both axes begin at zero, or distances between badges would not be comparabl
 The bubble is sized by **area**, which is the usual way a bubble chart lies: Chart.js takes a
 radius, so the radius is the square root of the badge's share of the fullest badge, or a badge
 with four times the questions would look sixteen times the badge and overstate the very
-imbalance the chart exists to report. Bubbles have a floor radius and are translucent, since
-badges that are alike overlap and a solid fill would hide the smaller one. A badge with no
+imbalance the chart exists to report. Bubbles have a floor radius, and the fill deepens with the bubble — the same square
+root the radius does, so colour and size say one thing rather than two. Area alone is a
+weak signal at the small end of a scale spanning an order of magnitude, where a few
+questions' difference is a few pixels of radius; depth of colour is the reading that
+survives at a glance. It stops short of solid because badges that are alike overlap and
+an opaque bubble would hide the smaller one behind it. A badge with no
 questions is drawn hollow and in grey — it is the reading most worth having, and at the floor
 size in the same fill as everything else it reads as merely small.
 

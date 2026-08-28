@@ -72,6 +72,26 @@ function bubbleRadius(total, largest) {
   return BUBBLE_MIN + (BUBBLE_MAX - BUBBLE_MIN) * Math.sqrt(total / largest);
 }
 
+// The fill deepens with the bubble, so colour and size say the one thing rather than two
+// and the badges holding most of the bank carry weight as well as area. It follows the
+// same square root the radius does, so the colour tracks the size as drawn rather than
+// running ahead of it. The floor is faint but not invisible; the ceiling stops short of
+// solid, because bubbles overlap wherever badges are alike and an opaque one would hide
+// the smaller one behind it entirely.
+const FILL_MIN = 0.12;
+const FILL_MAX = 0.8;
+
+function bubbleFill(total, largest) {
+  if (largest <= 0) return FILL_MIN;
+  return FILL_MIN + (FILL_MAX - FILL_MIN) * Math.sqrt(total / largest);
+}
+
+// Chart.js takes a colour string, and the theme's values are hex, so the alpha is appended
+// as hex rather than the colour being unpacked into an rgba().
+function withAlpha(color, alpha) {
+  return color + Math.round(alpha * 255).toString(16).padStart(2, "0");
+}
+
 // The theme's own values, read from the stylesheet rather than repeated here: a chart
 // drawn by a library is the easiest place for a one-off palette to get in.
 function themeColor(name) {
@@ -159,11 +179,10 @@ function drawHeatmap(canvas, rows) {
     data: {
       datasets: [{
         data: points,
-        // Translucent, because bubbles overlap wherever badges are alike and a solid
-        // fill would hide the smaller one entirely.
         // An empty badge is drawn hollow and in grey: it is the one to run next, and a
         // bubble at the floor size in the same fill as the rest reads as merely small.
-        backgroundColor: points.map((p) => (p.y === 0 ? "transparent" : forest + "33")),
+        backgroundColor: points.map((p) =>
+          p.y === 0 ? "transparent" : withAlpha(forest, bubbleFill(p.y, largest))),
         borderColor: points.map((p) => (p.y === 0 ? ink3 : forest)),
         borderWidth: 1,
       }],
