@@ -480,6 +480,64 @@ a:focus-visible,
   border-bottom: 1px solid var(--line-strong);
 }
 
+/* ---------- the bank's shape ---------- */
+
+/* The coverage screen's bubble chart. Chart.js sizes a canvas from its parent, so the
+   parent is given the height rather than the canvas being given attributes — left to
+   size itself against its own last drawing, a canvas grows the panel a little on every
+   redraw. Tall enough that badges with similar counts separate, short enough that the
+   table below it is still on the screen. */
+.chart-frame {
+  position: relative;
+  height: 22rem;
+}
+
+/* The chart says what its axes mean in the panel header, because a scatter of bubbles
+   is only readable once, and reading it is the whole point. It is last in the header and
+   takes the space the title and the axis toggle leave, so switching the axis rewrites the
+   sentence without moving the control that switched it. */
+.heat-legend {
+  margin-left: auto;
+  max-width: 46ch;
+  font-size: 0.75rem;
+  font-weight: 400;
+  text-align: right;
+  line-height: 1.4;
+}
+
+/* A sortable column header. It is a button, so it reaches the keyboard, but it is the
+   header's own type rather than a button's: a row of three buttons across the top of a
+   table reads as a toolbar, and these are labels that happen to be clickable. */
+.sort-header {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.sort-header:hover { color: var(--ink); }
+
+/* The arrow is drawn after the label and takes its space whichever column is sorted, so
+   turning a column round does not shift the headings sideways. Faint on the columns that
+   are not sorted: they are an offer, not a state. */
+.sort-header::after {
+  content: "\2195";
+  margin-left: var(--s1);
+  opacity: 0.35;
+}
+
+.sort-header[data-sorted="ascending"]::after { content: "\2191"; opacity: 1; }
+.sort-header[data-sorted="descending"]::after { content: "\2193"; opacity: 1; }
+.sort-header[data-sorted="ascending"], .sort-header[data-sorted="descending"] { color: var(--ink); }
+
+/* A right-aligned column's header is a button, and a button is inline-block, so the cell's
+   text-align has nothing to push unless the button fills it. */
+.table th.text-end .sort-header { display: block; width: 100%; text-align: right; }
+
 /* A question's own facts — which one it is, when it was written, what from — set
    above the stem as labelled rows. The labels are in the quietest weight the
    theme has: they exist so the values are not three unlabelled strings, and they

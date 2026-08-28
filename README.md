@@ -67,7 +67,7 @@ Everything below follows from those three.
 ## Stack
 
 Python 3.14 (stdlib `venv` + `pip`), FastAPI + Jinja2 server-rendered HTML, MongoDB Atlas,
-Claude via the `anthropic` SDK, Bootstrap 5 / vanilla JS from CDN. No Node, no bundler, no
+Claude via the `anthropic` SDK, Bootstrap 5 / Chart.js / vanilla JS from CDN. No Node, no bundler, no
 Docker, no task queue.
 
 ## Getting started
@@ -801,11 +801,88 @@ question is an artefact: deleting a bad batch must not erase the record that it 
 generated, which is the evidence for changing the prompt.
 
 **Coverage** lists every badge thinnest-first with its question count and how many sections
-it has left to walk. Because a badge's questions come from its documentation, a badge with
+it has left to walk. Every column sorts, in the browser, from rows already fetched: the
+same list also answers "which badge has the most questions" and "where is the most
+material sitting unused". A name column starts from A and a count column starts from the
+largest, because that is what each is usually asked for, and clicking the sorted column
+turns it round. A badge whose material could not be resolved prints an em dash and sorts
+to the end either way — it is neither a small number nor a large one, and led into an
+ascending sort it would put the rows nothing is known about above the rows the screen is
+for. Because a badge's questions come from its documentation, a badge with
 little documentation gets few questions — this is what makes that a workflow rather than a
 defect. Few questions and many sections left means run it again; few questions and none left
 means the material is spent. Resolving every badge's section set is dozens of vector
 searches, so the panel is fetched on demand rather than rendered with the screen.
+
+Above the table is a **bubble chart of the whole bank**, filled from the same fetch so the
+two panels cannot disagree. The table is the precise answer to "what should I run next",
+asked one row at a time. The chart answers a different question — how lopsided is the bank —
+in a glance, and it is the one view of this data that reads at presentation distance.
+
+A badge is placed by the two figures the table lists: **chunks left to walk** across, and
+**questions created** up. That makes the corners the answer. Far right and low is a badge
+with material and almost nothing written from it, which is the one to run next. Far left and
+low is a badge whose material is spent, which needs the corpus widening instead of another
+run. Both axes begin at zero, or distances between badges would not be comparable.
+
+The x axis has two readings, switched by a segmented control in the panel header, which is
+titled with what the axis measures. **Number** is chunks left, which is what a run is booked
+against: 300 chunks left is worth a
+walk whatever fraction of the badge that is. **Percent** is chunks left over that badge's
+whole chunk set — walked plus left — which is how far through a badge the work has got, and
+the count cannot say it: 40 left is nearly done on a large badge and barely started on a
+small one, and a count puts those two in the same place. Neither is the truer axis, so the
+screen offers both rather than picking one. The share axis is pinned to 100%, or a screen
+where no badge is above 60% left would stretch that to the right-hand edge and read as
+nothing having been walked at all.
+
+A badge that resolves to no chunks at all — nothing walked and nothing left — has no share
+to state, which is a different thing from nought per cent left, so it leaves the chart for
+that reading rather than sitting at the left-hand edge among the badges whose material is
+spent. Switching moves the existing bubbles rather than building a new chart, so the badge
+being looked at is not lost in a redraw, and the tooltip gives the count and the share
+together whichever axis is showing: a percentage with no count behind it is the number
+people mistrust, since 50% left is four chunks on one badge and 120 on another.
+
+The bubble is sized by **area**, which is the usual way a bubble chart lies: Chart.js takes a
+radius, so the radius is the square root of the badge's share of the fullest badge, or a badge
+with four times the questions would look sixteen times the badge and overstate the very
+imbalance the chart exists to report. Bubbles have a floor radius, and the fill deepens with the bubble — the same square
+root the radius does, so colour and size say one thing rather than two. Area alone is a
+weak signal at the small end of a scale spanning an order of magnitude, where a few
+questions' difference is a few pixels of radius; depth of colour is the reading that
+survives at a glance. It stops short of solid because badges that are alike overlap and
+an opaque bubble would hide the smaller one behind it. A badge with no
+questions is drawn hollow and in grey — it is the reading most worth having, and at the floor
+size in the same fill as everything else it reads as merely small.
+
+Each bubble carries its badge's name, drawn under it rather than inside: the largest bubble
+here is about 68px across and most badge names are three words, so a name set inside would
+have to shrink to fit, and a name small enough to fit a small bubble is not a name anyone
+reads. Set below, every bubble can carry its own at one size. A name too long for the space
+is trimmed with an ellipsis, and the tooltip has the whole of it.
+
+Names are drawn largest bubble first, and one that would land on a name already drawn — or
+outside the plotting area — is dropped. With 34 badges and a tail of thin ones clustered
+together, labelling every bubble overprints that cluster into a smear which names none of
+them and hides the bubbles as well; the biggest badges are what a glance is about, and the
+tooltip still names whatever is under the pointer. The labels are drawn by a dozen lines of
+canvas in the screen itself rather than by the usual second CDN plugin, which would be a
+dependency for something the canvas already does.
+
+A badge whose material could not be resolved has no chunk count, and the table prints an em
+dash for it. It is left off the chart rather than plotted at zero, which would place it in the
+corner that means "spent" — the opposite of not knowing. Nothing is drawn at all when no badge
+has a count, when there are no badges, or when the fetch fails: an empty grid above an
+explanation reads as a panel that failed to load.
+
+Clicking a bubble goes to `/?skill_badge=…`, the same address the table's rows use. That is
+the one place in this program where going somewhere is a click handler rather than an anchor,
+because a bubble is a shape on a canvas and cannot be a link. Chart.js is loaded from the
+coverage screen rather than from the shell — it is the only screen with a chart, and every
+other screen would otherwise fetch 200 kB it never draws with — and the chart's colours are
+read from `theme.css`'s custom properties rather than written into the script, so it is not
+one screen with a charting library's own palette.
 
 ### Duplicate detection
 
@@ -1188,20 +1265,6 @@ item up.
   which is the difference between a convenience and something that needs confirming at every
   step; and how an answer cites itself, since a figure quoted in prose with no link back to
   the screen it came from is exactly the ungrounded claim this tool exists to avoid.
-
-- **A balloon map of the bank on the coverage screen.** One circle per badge, sized by how
-  many questions it holds and clicking through to `/?skill_badge=…`. Coverage already answers
-  "what should I run next" as a table sorted thinnest-first, which is the precise answer; a
-  map answers a different question — how lopsided is the bank overall — in one glance, and it
-  is the one view of this data that reads at presentation distance. Cheap, too: Chart.js is
-  already loaded and coverage already fetches the per-badge counts, so this is a second
-  rendering of data the screen has.
-
-  One thing to get right, and it is the usual way a bubble chart lies: size the circles by
-  **area**, not radius. Chart.js takes a radius, so the radius has to be the square root of
-  the count, or a badge with four times the questions looks sixteen times the size. With 34
-  badges and counts spanning an order of magnitude, labels will not all fit either — the
-  large circles can carry a name, the rest need hover.
 
 ## Open questions
 

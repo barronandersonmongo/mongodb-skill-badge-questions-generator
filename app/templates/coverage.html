@@ -14,6 +14,35 @@
     "run is worth doing; none left means the badge has exhausted its material and the "
     "corpus needs widening instead.") %}{% endcall %}
 
+{# The shape of the bank before its numbers: one bubble per badge, placed by the two
+   figures the table below lists and sized by the questions it holds, so a lopsided bank
+   is seen rather than read down a column. It is filled from the same fetch as the table,
+   so the two panels never disagree. #}
+<div class="panel">
+  <div class="panel-header">
+    <span>Chunks left to walk</span>
+    {# Two readings of one axis rather than two actions, so a segmented group — the same
+       control the documentation screen uses to switch between views of one page. #}
+    <div class="btn-group btn-group-sm" role="group" aria-label="Chunks left as">
+      <button class="btn btn-outline-secondary active" id="x-count" type="button"
+              data-x-mode="count">Number</button>
+      <button class="btn btn-outline-secondary" id="x-share" type="button"
+              data-x-mode="share">Percent</button>
+    </div>
+    <span class="text-body-secondary heat-legend" id="chart-legend" data-chart-legend="true">
+      Right is material still to run, up is questions already written, and the bubble is
+      how many. Bottom right is the badge to run next.
+    </span>
+  </div>
+  <div class="panel-body" id="coverage-heatmap" data-coverage-heatmap="true">
+    {# Sized in CSS rather than by Chart.js' own resizing, which reads the canvas'
+       attributes and grows the panel a little on every redraw if they are left to it. #}
+    <div class="chart-frame">
+      <canvas id="coverage-bubbles" data-coverage-chart="true"></canvas>
+    </div>
+  </div>
+</div>
+
 <div class="panel">
   {# Fetched after the page paints rather than rendered with it. Resolving every badge's
      page set is dozens of vector searches — seconds to tens of seconds — and a screen
@@ -28,39 +57,330 @@
 {% endblock %}
 
 {% block scripts %}
+{# Loaded here rather than in the shell: this is the only screen with a chart, and every
+   other screen would otherwise pay 200 kB for it. #}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"
+        integrity="sha384-JUh163oCRItcbPme8pYnROHQMC6fNKTBWtRG3I3I0erJkzNgL7uxKlNwcrcFKeqF"
+        crossorigin="anonymous"></script>
 <script>
 const API = "{{ api }}";
 
-(async () => {
-  const target = document.getElementById("coverage-body");
-  const response = await fetch(API + "/coverage");
-  if (!response.ok) {
-    target.textContent = "Could not load coverage (HTTP " + response.status + ").";
-    return;
+// The bubble radius for a badge holding `total` questions, against the fullest badge on
+// the screen. Area carries the count, not radius — a badge with four times the questions
+// of another should look four times the badge, and Chart.js takes a radius, so the radius
+// is the square root or the difference is squared. The floor is a bubble that can still
+// be aimed at with a mouse; a badge with nothing gets it too, because "this badge has no
+// questions" is the reading the map is most worth having and a dot too small to see hides
+// it.
+const BUBBLE_MIN = 5;
+const BUBBLE_MAX = 34;
+
+function bubbleRadius(total, largest) {
+  if (largest <= 0) return BUBBLE_MIN;
+  return BUBBLE_MIN + (BUBBLE_MAX - BUBBLE_MIN) * Math.sqrt(total / largest);
+}
+
+// The fill deepens with the bubble, so colour and size say the one thing rather than two
+// and the badges holding most of the bank carry weight as well as area. It follows the
+// same square root the radius does, so the colour tracks the size as drawn rather than
+// running ahead of it. The floor is faint but not invisible; the ceiling stops short of
+// solid, because bubbles overlap wherever badges are alike and an opaque one would hide
+// the smaller one behind it entirely.
+const FILL_MIN = 0.12;
+const FILL_MAX = 0.8;
+
+function bubbleFill(total, largest) {
+  if (largest <= 0) return FILL_MIN;
+  return FILL_MIN + (FILL_MAX - FILL_MIN) * Math.sqrt(total / largest);
+}
+
+// Chart.js takes a colour string, and the theme's values are hex, so the alpha is appended
+// as hex rather than the colour being unpacked into an rgba().
+function withAlpha(color, alpha) {
+  return color + Math.round(alpha * 255).toString(16).padStart(2, "0");
+}
+
+// The theme's own values, read from the stylesheet rather than repeated here: a chart
+// drawn by a library is the easiest place for a one-off palette to get in.
+function themeColor(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// Names go under the bubbles rather than inside them: the largest bubble here is 68px
+// across, which holds about eight characters at a size anyone reads, and most badge names
+// are three words. Set below, every bubble can carry its own name at one size — no name
+// shrunk to fit its circle, which is a name nobody reads.
+const LABEL_MAX_WIDTH = 104;
+const LABEL_GAP = 3;
+
+// Chart.js has no labels of its own for a scatter, and the plugin that adds them is
+// another dependency for what is a dozen lines of canvas. This is those lines.
+const badgeLabels = {
+  id: "badgeLabels",
+  afterDatasetsDraw(chart, args, opts) {
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.font = opts.font;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    // Drawn largest first, and a name that would land on one already drawn is dropped
+    // rather than overprinted: with 34 badges and clusters of thin ones, labelling every
+    // bubble makes a smear that names none of them. The biggest badges are the ones a
+    // glance is about, and the tooltip still names whichever bubble is under the pointer.
+    const taken = [];
+    const elements = chart.getDatasetMeta(0).data
+      .map((element, index) => ({ element, index }))
+      .sort((a, b) => b.element.options.radius - a.element.options.radius);
+    elements.forEach(({ element, index }) => {
+      const point = chart.data.datasets[0].data[index];
+      const text = fitLabel(ctx, point.name);
+      const width = ctx.measureText(text).width;
+      const left = element.x - width / 2;
+      const top = element.y + element.options.radius + LABEL_GAP;
+      const box = { left, top, right: left + width, bottom: top + opts.lineHeight };
+      const clash = taken.some((other) =>
+        box.left < other.right && box.right > other.left &&
+        box.top < other.bottom && box.bottom > other.top);
+      if (clash) return;
+      // A label that would be drawn off the plotting area is dropped for the same reason
+      // a clashing one is: half a name is worse than the tooltip.
+      if (box.right > chart.chartArea.right || box.left < chart.chartArea.left) return;
+      if (box.bottom > chart.chartArea.bottom) return;
+      taken.push(box);
+      ctx.fillStyle = opts.color;
+      ctx.fillText(text, element.x, top);
+    });
+    ctx.restore();
+  },
+};
+
+// The name as it will fit, trimmed with an ellipsis rather than set smaller. The whole of
+// it is in the tooltip.
+function fitLabel(ctx, name) {
+  if (ctx.measureText(name).width <= LABEL_MAX_WIDTH) return name;
+  let text = name;
+  while (text.length > 1 && ctx.measureText(text + "…").width > LABEL_MAX_WIDTH) {
+    text = text.slice(0, -1);
   }
-  const rows = await response.json();
-  target.textContent = "";
-  if (rows.length === 0) {
-    target.className = "empty-state";
-    target.dataset.empty = "true";
-    target.textContent = "No skill badges yet, so there is nothing to cover.";
-    return;
-  }
-  target.className = "table-responsive";
-  const table = document.createElement("table");
-  table.className = "table align-middle mb-0";
-  table.dataset.coverageTable = "true";
-  const head = document.createElement("thead");
-  const headRow = document.createElement("tr");
-  ["Skill badge", "Questions created", "Chunks left"].forEach((label, i) => {
-    const th = document.createElement("th");
-    th.textContent = label;
-    if (i > 0) th.className = "text-end";
-    headRow.append(th);
+  return text.trimEnd() + "…";
+}
+
+// The two readings of the x axis. A count answers "how much is there to run", which is
+// what a run is booked against — a badge with 300 chunks left is worth a walk whatever
+// fraction of it that is. A share answers "how far through this badge are we", which a
+// count cannot: 40 chunks left is nearly done on a large badge and barely started on a
+// small one, and the count puts those two in the same place. Neither is the truer axis,
+// so the screen offers both rather than picking.
+const X_MODES = {
+  count: {
+    axis: "Chunks left to walk",
+    value: (row) => row.pages_available,
+    legend: "Right is material still to run, up is questions already written, and the " +
+      "bubble is how many. Bottom right is the badge to run next.",
+    tick: (value) => value,
+    // Left to the data, so the fullest badge sets the right-hand edge.
+    max: undefined,
+  },
+  share: {
+    axis: "Share of the badge's chunks left to walk",
+    value: (row) => chunkShare(row),
+    legend: "Right is how much of the badge's own documentation is still unwalked, up is " +
+      "questions already written, and the bubble is how many. Bottom right is the badge " +
+      "least started.",
+    tick: (value) => value + "%",
+    // Pinned to the whole, or a screen where no badge is above 60% left would stretch
+    // that 60 to the right-hand edge and read as "nothing walked yet".
+    max: 100,
+  },
+};
+
+// What is left as a percentage of everything that badge resolves to — walked and not.
+// A badge resolving to no chunks at all has no share to state, which is not the same as
+// nought per cent left, so it gets none and is dropped from that reading.
+function chunkShare(row) {
+  const whole = (row.pages_used || 0) + row.pages_available;
+  if (!whole) return null;
+  return (row.pages_available / whole) * 100;
+}
+
+// Which reading the x axis is showing. The chart is redrawn against it rather than
+// rebuilt, so a toggle keeps the same bubbles rather than animating them in from
+// nothing as though the data had changed.
+let xMode = X_MODES.count;
+
+function drawHeatmap(canvas, rows) {
+  const largest = Math.max(...rows.map((row) => row.total));
+  const forest = themeColor("--forest");
+  const ink3 = themeColor("--ink-3");
+  const line = themeColor("--line");
+  // A badge whose material could not be resolved has no x to be placed at. Charting it
+  // at zero would put it in the corner that means "spent", which is the opposite of not
+  // knowing, so it is left out and the table still lists it with an em dash.
+  const plotted = rows.filter((row) => row.pages_available !== null);
+  const points = plotted.map((row) => ({
+    x: X_MODES.count.value(row),
+    count: row.pages_available,
+    // A share needs a denominator, and the badge's whole chunk set is what it has walked
+    // plus what is left. A badge that resolves to no chunks at all has no share to state,
+    // which is a different thing from nought per cent left, so it has none.
+    share: chunkShare(row),
+    y: row.total,
+    r: bubbleRadius(row.total, largest),
+    slug: row.skill_badge,
+    name: row.name || row.skill_badge,
+  }));
+  return new Chart(canvas, {
+    type: "bubble",
+    plugins: [badgeLabels],
+    data: {
+      datasets: [{
+        data: points,
+        // An empty badge is drawn hollow and in grey: it is the one to run next, and a
+        // bubble at the floor size in the same fill as the rest reads as merely small.
+        backgroundColor: points.map((p) =>
+          p.y === 0 ? "transparent" : withAlpha(forest, bubbleFill(p.y, largest))),
+        borderColor: points.map((p) => (p.y === 0 ? ink3 : forest)),
+        borderWidth: 1,
+      }],
+    },
+    options: {
+      maintainAspectRatio: false,
+      // Chart.js' default is a legend for the one dataset, which names nothing.
+      plugins: {
+        legend: { display: false },
+        // The theme's own type and its quietest ink: the names are how the chart is read,
+        // but the bubbles are what it says.
+        badgeLabels: {
+          font: '500 11px ' + themeColor("--font"),
+          lineHeight: 13,
+          color: themeColor("--ink-2"),
+        },
+        tooltip: {
+          callbacks: {
+            label: (item) => {
+              // Both readings, whichever axis is showing: the tooltip is where the
+              // figure behind a bubble is checked, and a share with no count behind it is
+              // the number people mistrust.
+              const point = item.raw;
+              const questions = point.y === 1 ? " question" : " questions";
+              const share = point.share === null ? "" : " (" + Math.round(point.share) + "%)";
+              return point.name + " — " + point.y + questions + ", " +
+                point.count + " chunks left" + share;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          title: { display: true, text: X_MODES.count.axis, color: ink3 },
+          beginAtZero: true,
+          max: X_MODES.count.max,
+          ticks: { color: ink3, callback: (value) => xMode.tick(value) },
+          grid: { color: line },
+        },
+        y: {
+          title: { display: true, text: "Questions created", color: ink3 },
+          beginAtZero: true,
+          ticks: { color: ink3, precision: 0 },
+          grid: { color: line },
+        },
+      },
+      onClick: (event, elements) => {
+        // A bubble is a shape on a canvas and cannot be a link, so this is the one place
+        // here where going somewhere is a handler rather than an anchor. The address is
+        // the same one the table's rows use.
+        if (elements.length === 0) return;
+        const point = points[elements[0].index];
+        window.location.href = "/?skill_badge=" + encodeURIComponent(point.slug);
+      },
+      onHover: (event, elements) => {
+        event.native.target.style.cursor = elements.length ? "pointer" : "default";
+      },
+    },
   });
-  head.append(headRow);
-  const tbody = document.createElement("tbody");
-  rows.forEach((row) => {
+}
+
+function showXMode(chart, mode) {
+  xMode = mode;
+  chart.data.datasets[0].data.forEach((point) => {
+    point.x = mode === X_MODES.share ? point.share : point.count;
+  });
+  // A badge with no chunk set at all has no share, so it leaves the chart for that
+  // reading and comes back for the other, rather than being drawn at an x it does not
+  // have. Chart.js skips a point whose x is null, so nothing else has to.
+  chart.options.scales.x.title.text = mode.axis;
+  chart.options.scales.x.max = mode.max;
+  chart.update();
+  document.getElementById("chart-legend").textContent = mode.legend;
+  document.querySelectorAll("[data-x-mode]").forEach((button) => {
+    const on = X_MODES[button.dataset.xMode] === mode;
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
+// The table's columns, each with what it reads from a row and which way round it starts.
+// A name is wanted from A; a count is wanted largest first, because the question asked of
+// a number in this table is "which has the most", or in the case of the thinnest badges,
+// "which has the least" — one click either way.
+const COLUMNS = [
+  {
+    key: "name",
+    label: "Skill badge",
+    value: (row) => (row.name || row.skill_badge).toLowerCase(),
+    ascendingFirst: true,
+  },
+  {
+    key: "total",
+    label: "Questions created",
+    value: (row) => row.total,
+    numeric: true,
+    ascendingFirst: false,
+  },
+  {
+    key: "pages_available",
+    label: "Chunks left",
+    value: (row) => row.pages_available,
+    numeric: true,
+    ascendingFirst: false,
+  },
+];
+
+let sort = { key: null, ascending: true };
+
+// Sorted in place and the body refilled. A badge whose material could not be resolved has
+// no chunk count and prints an em dash: it sorts to the end whichever way the column is
+// turned, because it is not a small number or a large one, and burying it at the top of an
+// ascending sort would put the rows nothing is known about above the rows the screen is
+// for.
+function sortRows(tbody, rows, column, ascending) {
+  sort = { key: column.key, ascending };
+  const direction = ascending ? 1 : -1;
+  const ordered = rows.slice().sort((a, b) => {
+    const left = column.value(a);
+    const right = column.value(b);
+    if (left === null && right === null) return 0;
+    if (left === null) return 1;
+    if (right === null) return -1;
+    if (left < right) return -direction;
+    if (left > right) return direction;
+    // Ties fall back to the badge's name, so a column of equal counts is still in an
+    // order a reader can find a badge in rather than the order storage happened to give.
+    return COLUMNS[0].value(a) < COLUMNS[0].value(b) ? -1 : 1;
+  });
+  fillRows(tbody, ordered);
+  document.querySelectorAll("[data-sort]").forEach((button) => {
+    const on = button.dataset.sort === column.key;
+    button.dataset.sorted = on ? (ascending ? "ascending" : "descending") : "none";
+    // The table's own way of saying which column it is in and which way round, rather
+    // than an arrow a screen reader has to guess at.
+    button.closest("th").setAttribute("aria-sort", on ? (ascending ? "ascending" : "descending") : "none");
+  });
+}
+
+function fillRows(tbody, ordered) {
+  tbody.textContent = "";
+  ordered.forEach((row) => {
     const tr = document.createElement("tr");
     const name = document.createElement("td");
     const link = document.createElement("a");
@@ -80,7 +400,71 @@ const API = "{{ api }}";
     tr.append(left);
     tbody.append(tr);
   });
+}
+
+(async () => {
+  const target = document.getElementById("coverage-body");
+  const heatmap = document.getElementById("coverage-heatmap");
+  const response = await fetch(API + "/coverage");
+  if (!response.ok) {
+    target.textContent = "Could not load coverage (HTTP " + response.status + ").";
+    heatmap.closest(".panel").hidden = true;
+    return;
+  }
+  const rows = await response.json();
+  target.textContent = "";
+  if (rows.length === 0) {
+    // Nothing to draw, and an empty panel above an explanation reads as a failure to
+    // load rather than as nothing to show. The table's empty state says it once.
+    heatmap.closest(".panel").hidden = true;
+    target.className = "empty-state";
+    target.dataset.empty = "true";
+    target.textContent = "No skill badges yet, so there is nothing to cover.";
+    return;
+  }
+  // Every badge's material unresolved leaves the chart with no point to draw, and an
+  // empty grid is a worse answer than no grid.
+  if (rows.some((row) => row.pages_available !== null)) {
+    const chart = drawHeatmap(document.getElementById("coverage-bubbles"), rows);
+    document.querySelectorAll("[data-x-mode]").forEach((button) => {
+      button.addEventListener("click", () => showXMode(chart, X_MODES[button.dataset.xMode]));
+    });
+  } else {
+    heatmap.closest(".panel").hidden = true;
+  }
+  target.className = "table-responsive";
+  const table = document.createElement("table");
+  table.className = "table align-middle mb-0";
+  table.dataset.coverageTable = "true";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  const tbody = document.createElement("tbody");
+  COLUMNS.forEach((column) => {
+    const th = document.createElement("th");
+    // A button rather than a click handler on the cell: sorting is an action, and a
+    // header that only responds to a mouse leaves the list unsortable from the keyboard.
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "sort-header";
+    button.textContent = column.label;
+    button.dataset.sort = column.key;
+    button.addEventListener("click", () => {
+      // Clicking the column already sorted turns it around; clicking another starts it at
+      // the direction that column is usually wanted in — names from A, numbers from the
+      // largest, because "who has the most" is the question asked of a count.
+      const turn = sort.key === column.key;
+      sortRows(tbody, rows, column, turn ? !sort.ascending : column.ascendingFirst);
+    });
+    th.append(button);
+    if (column.numeric) th.className = "text-end";
+    headRow.append(th);
+  });
+  head.append(headRow);
   table.append(head, tbody);
+  // Thinnest first, which is what the screen is for: it is the order the rows arrive in,
+  // and it is stated here rather than left implicit so the header shows it as a sort like
+  // any other.
+  sortRows(tbody, rows, COLUMNS[1], true);
   target.append(table);
 })();
 </script>
