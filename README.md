@@ -1254,6 +1254,31 @@ item up.
   unknown or leaves the previous good figures standing, which is the difference between a
   report that degrades and one that lies by omission.
 
+- **Report chunks done, not only chunks left — and never a chunk figure without its total.**
+  Coverage states questions written and chunks left to walk, which frames the badge as work
+  still available. That is the right frame for booking a run, but it is not the question most
+  people arrive with: they want to know how much of a badge is already done, in chunks and as
+  a share, and today they have to work it out by subtraction. The figures needed already
+  exist — `pages_used` and `pages_available` are both returned, and `coverage.html` already
+  adds them together to compute the share left — so this is what is shown and how it is
+  labelled, not new computation.
+
+  The wider half is the rule: **wherever the application shows chunks consumed or chunks
+  remaining, it should show the total for that subject alongside.** "40 chunks left" means
+  nearly finished on a large badge and barely started on a small one, and the same is true of
+  the live run status, the generate form's ceiling and the per-badge line on `/`. The
+  denominator is what makes any of those numbers legible, and it is currently implicit
+  everywhere.
+
+  Two things to settle. What the total honestly denominates: used plus available is the
+  badge's *resolved* chunk set, not everything MongoDB has written on the subject, so calling
+  it "the badge's chunks" is true only in the sense Material means it — and a badge whose
+  chunk lookup failed has `pages_available` of `null`, so it has no total to state and must
+  say so rather than imply zero. And whether done-first replaces left-to-walk or joins it:
+  the heatmap, its axis label and the table's sortable column are all currently phrased as
+  what is left, and showing both readings of the same pair of numbers everywhere would be
+  clutter, so one of them has to lead.
+
 - **A run detail screen.** `/runs` lists finished runs and `GET /api/questions/runs/{id}`
   already returns one in full, including the chunk-by-chunk detail — so this is a
   template, not a pipeline change. Clicking a run should show what the live status window
