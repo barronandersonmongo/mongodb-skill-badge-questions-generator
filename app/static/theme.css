@@ -488,6 +488,39 @@ a:focus-visible,
   line-height: 1.4;
 }
 
+/* A sortable column header. It is a button, so it reaches the keyboard, but it is the
+   header's own type rather than a button's: a row of three buttons across the top of a
+   table reads as a toolbar, and these are labels that happen to be clickable. */
+.sort-header {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.sort-header:hover { color: var(--ink); }
+
+/* The arrow is drawn after the label and takes its space whichever column is sorted, so
+   turning a column round does not shift the headings sideways. Faint on the columns that
+   are not sorted: they are an offer, not a state. */
+.sort-header::after {
+  content: "\2195";
+  margin-left: var(--s1);
+  opacity: 0.35;
+}
+
+.sort-header[data-sorted="ascending"]::after { content: "\2191"; opacity: 1; }
+.sort-header[data-sorted="descending"]::after { content: "\2193"; opacity: 1; }
+.sort-header[data-sorted="ascending"], .sort-header[data-sorted="descending"] { color: var(--ink); }
+
+/* A right-aligned column's header is a button, and a button is inline-block, so the cell's
+   text-align has nothing to push unless the button fills it. */
+.table th.text-end .sort-header { display: block; width: 100%; text-align: right; }
+
 /* A question's own facts — which one it is, when it was written, what from — set
    above the stem as labelled rows. The labels are in the quietest weight the
    theme has: they exist so the values are not three unlabelled strings, and they

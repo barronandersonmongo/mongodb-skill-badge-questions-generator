@@ -401,3 +401,82 @@ def test_the_tooltip_gives_both_readings(client):
     body = client.get(PAGE).text
     assert 'point.count + " chunks left" + share' in body
     assert 'Math.round(point.share) + "%)"' in body
+
+
+def test_every_column_of_the_table_can_be_sorted(client):
+    """
+    Intent: The rows arrive thinnest-first, which answers "what should I run next" and
+        nothing else. The same list also answers "which badge has the most questions" and
+        "where is the most material sitting unused", and both are a re-sort of what is
+        already on the screen rather than another request.
+    Success: Each of the three headers sorts the table by its own column, from the browser,
+        without fetching again.
+    Feature: Coverage table — every column sorts.
+    """
+    body = client.get(PAGE).text
+    for key in ('key: "name"', 'key: "total"', 'key: "pages_available"'):
+        assert key in body
+    assert "sortRows(tbody, rows, column," in body
+    # One fetch on the screen: sorting is a re-order of rows already held.
+    assert body.count('fetch(API + "/coverage")') == 1
+
+
+def test_a_header_is_a_button_and_says_how_it_is_sorted(client):
+    """
+    Intent: A header that only responds to a mouse leaves the table unsortable from the
+        keyboard, and an arrow drawn on it says which way round it is to someone who can
+        see the arrow and to nobody else.
+    Success: Headers are buttons, the sorted one carries the direction as a data attribute
+        for the stylesheet and as aria-sort on its cell, and the stylesheet draws the arrow
+        rather than the script writing one into the label.
+    Feature: Coverage table — the sort is visible and reachable.
+    """
+    body = client.get(PAGE).text
+    assert 'button.type = "button"' in body
+    assert 'button.className = "sort-header"' in body
+    assert 'setAttribute("aria-sort"' in body
+    assert ".sort-header::after" in _theme()
+    assert '.sort-header[data-sorted="ascending"]::after' in _theme()
+
+
+def test_a_column_starts_at_the_direction_it_is_wanted_in(client):
+    """
+    Intent: Sorting always ascending first means a click on a count gives the smallest
+        numbers, which is not what a count is usually asked for, and every use costs two
+        clicks. Names are the opposite: nobody asks for badges from Z.
+    Success: A name column starts ascending and a count column starts descending, and
+        clicking the column already sorted turns it round rather than restarting it.
+    Feature: Coverage table — one click gives the order that was wanted.
+    """
+    body = client.get(PAGE).text
+    assert "ascendingFirst: true," in body
+    assert "ascendingFirst: false," in body
+    assert "turn ? !sort.ascending : column.ascendingFirst" in body
+
+
+def test_a_badge_with_no_chunk_count_sorts_to_the_end(client):
+    """
+    Intent: A badge whose material could not be resolved prints an em dash rather than a
+        number. Treated as zero it would lead an ascending sort, putting the rows nothing
+        is known about above the rows the screen exists to surface; treated as large it
+        would lead the other. It is neither small nor large.
+    Success: Rows with no chunk count sort to the end whichever way the column is turned.
+    Feature: Coverage table — an unknown is not a zero.
+    """
+    body = client.get(PAGE).text
+    assert "if (left === null && right === null) return 0;" in body
+    assert "if (left === null) return 1;" in body
+    assert "if (right === null) return -1;" in body
+
+
+def test_the_table_opens_thinnest_first(client):
+    """
+    Intent: The screen's whole purpose is "what should I run next", and the answer is the
+        thinnest badge. Opening on whatever order storage returned, or on an alphabetical
+        list, would make the author sort before reading every time.
+    Success: The table is sorted by questions created, ascending, before it is first shown,
+        and the header shows that as a sort like any other rather than as an implicit order.
+    Feature: Coverage table — it opens on the question it answers.
+    """
+    body = client.get(PAGE).text
+    assert "sortRows(tbody, rows, COLUMNS[1], true);" in body

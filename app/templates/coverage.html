@@ -319,6 +319,89 @@ function showXMode(chart, mode) {
   });
 }
 
+// The table's columns, each with what it reads from a row and which way round it starts.
+// A name is wanted from A; a count is wanted largest first, because the question asked of
+// a number in this table is "which has the most", or in the case of the thinnest badges,
+// "which has the least" — one click either way.
+const COLUMNS = [
+  {
+    key: "name",
+    label: "Skill badge",
+    value: (row) => (row.name || row.skill_badge).toLowerCase(),
+    ascendingFirst: true,
+  },
+  {
+    key: "total",
+    label: "Questions created",
+    value: (row) => row.total,
+    numeric: true,
+    ascendingFirst: false,
+  },
+  {
+    key: "pages_available",
+    label: "Chunks left",
+    value: (row) => row.pages_available,
+    numeric: true,
+    ascendingFirst: false,
+  },
+];
+
+let sort = { key: null, ascending: true };
+
+// Sorted in place and the body refilled. A badge whose material could not be resolved has
+// no chunk count and prints an em dash: it sorts to the end whichever way the column is
+// turned, because it is not a small number or a large one, and burying it at the top of an
+// ascending sort would put the rows nothing is known about above the rows the screen is
+// for.
+function sortRows(tbody, rows, column, ascending) {
+  sort = { key: column.key, ascending };
+  const direction = ascending ? 1 : -1;
+  const ordered = rows.slice().sort((a, b) => {
+    const left = column.value(a);
+    const right = column.value(b);
+    if (left === null && right === null) return 0;
+    if (left === null) return 1;
+    if (right === null) return -1;
+    if (left < right) return -direction;
+    if (left > right) return direction;
+    // Ties fall back to the badge's name, so a column of equal counts is still in an
+    // order a reader can find a badge in rather than the order storage happened to give.
+    return COLUMNS[0].value(a) < COLUMNS[0].value(b) ? -1 : 1;
+  });
+  fillRows(tbody, ordered);
+  document.querySelectorAll("[data-sort]").forEach((button) => {
+    const on = button.dataset.sort === column.key;
+    button.dataset.sorted = on ? (ascending ? "ascending" : "descending") : "none";
+    // The table's own way of saying which column it is in and which way round, rather
+    // than an arrow a screen reader has to guess at.
+    button.closest("th").setAttribute("aria-sort", on ? (ascending ? "ascending" : "descending") : "none");
+  });
+}
+
+function fillRows(tbody, ordered) {
+  tbody.textContent = "";
+  ordered.forEach((row) => {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    const link = document.createElement("a");
+    // The badge's name leads to its questions, because "this badge is thin" is only
+    // useful next to what it already has.
+    link.href = "/?skill_badge=" + encodeURIComponent(row.skill_badge);
+    link.textContent = row.name || row.skill_badge;
+    name.append(link);
+    tr.append(name);
+    const total = document.createElement("td");
+    total.className = "text-end";
+    total.textContent = row.total;
+    tr.append(total);
+    const left = document.createElement("td");
+    left.className = "text-end";
+    left.textContent = row.pages_available === null ? "—" : row.pages_available;
+    tr.append(left);
+    tbody.append(tr);
+  });
+}
+
 (async () => {
   const target = document.getElementById("coverage-body");
   const heatmap = document.getElementById("coverage-heatmap");
@@ -355,35 +438,33 @@ function showXMode(chart, mode) {
   table.dataset.coverageTable = "true";
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
-  ["Skill badge", "Questions created", "Chunks left"].forEach((label, i) => {
+  const tbody = document.createElement("tbody");
+  COLUMNS.forEach((column) => {
     const th = document.createElement("th");
-    th.textContent = label;
-    if (i > 0) th.className = "text-end";
+    // A button rather than a click handler on the cell: sorting is an action, and a
+    // header that only responds to a mouse leaves the list unsortable from the keyboard.
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "sort-header";
+    button.textContent = column.label;
+    button.dataset.sort = column.key;
+    button.addEventListener("click", () => {
+      // Clicking the column already sorted turns it around; clicking another starts it at
+      // the direction that column is usually wanted in — names from A, numbers from the
+      // largest, because "who has the most" is the question asked of a count.
+      const turn = sort.key === column.key;
+      sortRows(tbody, rows, column, turn ? !sort.ascending : column.ascendingFirst);
+    });
+    th.append(button);
+    if (column.numeric) th.className = "text-end";
     headRow.append(th);
   });
   head.append(headRow);
-  const tbody = document.createElement("tbody");
-  rows.forEach((row) => {
-    const tr = document.createElement("tr");
-    const name = document.createElement("td");
-    const link = document.createElement("a");
-    // The badge's name leads to its questions, because "this badge is thin" is only
-    // useful next to what it already has.
-    link.href = "/?skill_badge=" + encodeURIComponent(row.skill_badge);
-    link.textContent = row.name || row.skill_badge;
-    name.append(link);
-    tr.append(name);
-    const total = document.createElement("td");
-    total.className = "text-end";
-    total.textContent = row.total;
-    tr.append(total);
-    const left = document.createElement("td");
-    left.className = "text-end";
-    left.textContent = row.pages_available === null ? "—" : row.pages_available;
-    tr.append(left);
-    tbody.append(tr);
-  });
   table.append(head, tbody);
+  // Thinnest first, which is what the screen is for: it is the order the rows arrive in,
+  // and it is stated here rather than left implicit so the header shows it as a sort like
+  // any other.
+  sortRows(tbody, rows, COLUMNS[1], true);
   target.append(table);
 })();
 </script>

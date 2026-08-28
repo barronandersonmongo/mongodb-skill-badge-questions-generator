@@ -785,7 +785,14 @@ question is an artefact: deleting a bad batch must not erase the record that it 
 generated, which is the evidence for changing the prompt.
 
 **Coverage** lists every badge thinnest-first with its question count and how many sections
-it has left to walk. Because a badge's questions come from its documentation, a badge with
+it has left to walk. Every column sorts, in the browser, from rows already fetched: the
+same list also answers "which badge has the most questions" and "where is the most
+material sitting unused". A name column starts from A and a count column starts from the
+largest, because that is what each is usually asked for, and clicking the sorted column
+turns it round. A badge whose material could not be resolved prints an em dash and sorts
+to the end either way — it is neither a small number nor a large one, and led into an
+ascending sort it would put the rows nothing is known about above the rows the screen is
+for. Because a badge's questions come from its documentation, a badge with
 little documentation gets few questions — this is what makes that a workflow rather than a
 defect. Few questions and many sections left means run it again; few questions and none left
 means the material is spent. Resolving every badge's section set is dozens of vector
