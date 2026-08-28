@@ -810,6 +810,20 @@ badges that are alike overlap and a solid fill would hide the smaller one. A bad
 questions is drawn hollow and in grey — it is the reading most worth having, and at the floor
 size in the same fill as everything else it reads as merely small.
 
+Each bubble carries its badge's name, drawn under it rather than inside: the largest bubble
+here is about 68px across and most badge names are three words, so a name set inside would
+have to shrink to fit, and a name small enough to fit a small bubble is not a name anyone
+reads. Set below, every bubble can carry its own at one size. A name too long for the space
+is trimmed with an ellipsis, and the tooltip has the whole of it.
+
+Names are drawn largest bubble first, and one that would land on a name already drawn — or
+outside the plotting area — is dropped. With 34 badges and a tail of thin ones clustered
+together, labelling every bubble overprints that cluster into a smear which names none of
+them and hides the bubbles as well; the biggest badges are what a glance is about, and the
+tooltip still names whatever is under the pointer. The labels are drawn by a dozen lines of
+canvas in the screen itself rather than by the usual second CDN plugin, which would be a
+dependency for something the canvas already does.
+
 A badge whose material could not be resolved has no chunk count, and the table prints an em
 dash for it. It is left off the chart rather than plotted at zero, which would place it in the
 corner that means "spent" — the opposite of not knowing. Nothing is drawn at all when no badge

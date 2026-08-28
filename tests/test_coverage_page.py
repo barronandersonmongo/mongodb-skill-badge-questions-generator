@@ -230,3 +230,69 @@ def test_the_charting_library_is_loaded_only_where_it_is_used(client):
     assert "chart.js@4.4.3" in body
     assert 'integrity="sha384-' in body[body.index("chart.js@4.4.3") - 200 : body.index("chart.js@4.4.3") + 400]
     assert "chart.js" not in client.get("/").text
+
+
+def test_each_bubble_carries_its_badges_name(client):
+    """
+    Intent: A bubble that has to be hovered to say which badge it is makes the chart a
+        lookup rather than a glance — and the reading it exists for, "which badge is that
+        one out on its own", is exactly the one hovering cannot give, because it is about
+        several bubbles at once.
+    Success: The chart draws each badge's name against its bubble, set in the theme's own
+        type rather than a charting library's default.
+    Feature: Coverage chart — a bubble says which badge it is.
+    """
+    body = client.get(PAGE).text
+    assert 'id: "badgeLabels"' in body
+    assert "plugins: [badgeLabels]" in body
+    assert "ctx.fillText(text, element.x, top)" in body
+    assert 'themeColor("--font")' in body
+
+
+def test_a_name_is_set_beside_the_bubble_at_one_size(client):
+    """
+    Intent: The largest bubble here is about 68px across and most badge names are three
+        words, so a name written inside its bubble has to shrink to fit — and a name set
+        small enough to fit a small bubble is not a name anyone reads. The chart would then
+        have labels that are only decoration.
+    Success: Names are drawn under the bubbles at a single size, and one too long for the
+        space is trimmed with an ellipsis rather than set smaller.
+    Feature: Coverage chart — names are read, not decoration.
+    """
+    body = client.get(PAGE).text
+    assert "element.y + element.options.radius + LABEL_GAP" in body
+    assert "const LABEL_MAX_WIDTH" in body
+    assert 'text.trimEnd() + "…"' in body
+
+
+def test_names_that_would_collide_are_dropped(client):
+    """
+    Intent: With 34 badges and a tail of thin ones clustered together, labelling every
+        bubble overprints the cluster into a smear that names none of them — worse than no
+        labels at all, because it also obscures the bubbles underneath.
+    Success: Names are drawn largest bubble first, and one that would land on a name already
+        drawn, or outside the plotting area, is dropped. The tooltip still names any bubble
+        under the pointer.
+    Feature: Coverage chart — labels give way rather than overprint.
+    """
+    body = client.get(PAGE).text
+    assert ".sort((a, b) => b.element.options.radius - a.element.options.radius)" in body
+    assert "if (clash) return;" in body
+    assert "chart.chartArea.right" in body
+    assert "tooltip: {" in body
+
+
+def test_the_labels_do_not_add_a_dependency(client):
+    """
+    Intent: The stack is deliberately small — no bundler, no framework, and every CDN script
+        is a thing to keep pinned and current. Chart.js has no labels for a scatter and the
+        usual answer is a second plugin from the CDN, which is a dependency for what the
+        canvas already does in a dozen lines.
+    Success: The labels are drawn by a plugin defined in this screen, and no second charting
+        script is loaded.
+    Feature: Coverage chart — labels without a second library.
+    """
+    body = client.get(PAGE).text
+    assert "afterDatasetsDraw(chart, args, opts)" in body
+    assert "datalabels" not in body
+    assert body.count("cdn.jsdelivr.net/npm/chart.js") == 1

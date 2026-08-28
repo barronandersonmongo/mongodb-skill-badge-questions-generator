@@ -78,6 +78,65 @@ function themeColor(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+// Names go under the bubbles rather than inside them: the largest bubble here is 68px
+// across, which holds about eight characters at a size anyone reads, and most badge names
+// are three words. Set below, every bubble can carry its own name at one size — no name
+// shrunk to fit its circle, which is a name nobody reads.
+const LABEL_MAX_WIDTH = 104;
+const LABEL_GAP = 3;
+
+// Chart.js has no labels of its own for a scatter, and the plugin that adds them is
+// another dependency for what is a dozen lines of canvas. This is those lines.
+const badgeLabels = {
+  id: "badgeLabels",
+  afterDatasetsDraw(chart, args, opts) {
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.font = opts.font;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    // Drawn largest first, and a name that would land on one already drawn is dropped
+    // rather than overprinted: with 34 badges and clusters of thin ones, labelling every
+    // bubble makes a smear that names none of them. The biggest badges are the ones a
+    // glance is about, and the tooltip still names whichever bubble is under the pointer.
+    const taken = [];
+    const elements = chart.getDatasetMeta(0).data
+      .map((element, index) => ({ element, index }))
+      .sort((a, b) => b.element.options.radius - a.element.options.radius);
+    elements.forEach(({ element, index }) => {
+      const point = chart.data.datasets[0].data[index];
+      const text = fitLabel(ctx, point.name);
+      const width = ctx.measureText(text).width;
+      const left = element.x - width / 2;
+      const top = element.y + element.options.radius + LABEL_GAP;
+      const box = { left, top, right: left + width, bottom: top + opts.lineHeight };
+      const clash = taken.some((other) =>
+        box.left < other.right && box.right > other.left &&
+        box.top < other.bottom && box.bottom > other.top);
+      if (clash) return;
+      // A label that would be drawn off the plotting area is dropped for the same reason
+      // a clashing one is: half a name is worse than the tooltip.
+      if (box.right > chart.chartArea.right || box.left < chart.chartArea.left) return;
+      if (box.bottom > chart.chartArea.bottom) return;
+      taken.push(box);
+      ctx.fillStyle = opts.color;
+      ctx.fillText(text, element.x, top);
+    });
+    ctx.restore();
+  },
+};
+
+// The name as it will fit, trimmed with an ellipsis rather than set smaller. The whole of
+// it is in the tooltip.
+function fitLabel(ctx, name) {
+  if (ctx.measureText(name).width <= LABEL_MAX_WIDTH) return name;
+  let text = name;
+  while (text.length > 1 && ctx.measureText(text + "…").width > LABEL_MAX_WIDTH) {
+    text = text.slice(0, -1);
+  }
+  return text.trimEnd() + "…";
+}
+
 function drawHeatmap(canvas, rows) {
   const largest = Math.max(...rows.map((row) => row.total));
   const forest = themeColor("--forest");
@@ -96,6 +155,7 @@ function drawHeatmap(canvas, rows) {
   }));
   new Chart(canvas, {
     type: "bubble",
+    plugins: [badgeLabels],
     data: {
       datasets: [{
         data: points,
@@ -113,6 +173,13 @@ function drawHeatmap(canvas, rows) {
       // Chart.js' default is a legend for the one dataset, which names nothing.
       plugins: {
         legend: { display: false },
+        // The theme's own type and its quietest ink: the names are how the chart is read,
+        // but the bubbles are what it says.
+        badgeLabels: {
+          font: '500 11px ' + themeColor("--font"),
+          lineHeight: 13,
+          color: themeColor("--ink-2"),
+        },
         tooltip: {
           callbacks: {
             label: (item) => {
