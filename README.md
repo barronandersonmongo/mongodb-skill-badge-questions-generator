@@ -1208,17 +1208,6 @@ item up.
   orphaned; and retiring, unlike deleting, would want to release the chunks back so the
   material can be written from again.
 
-- **Removing a badge from a question by hand.** A question written from one badge's
-  material is often defensible for a second badge and not for a third, and that is a
-  judgement the model is not well placed to make. A small × on each badge pill, with a
-  confirmation, would let an author take one badge off a question without deleting the
-  question. This is the first editorial act other than deletion, so it reopens
-  [No review workflow](#no-review-workflow) narrowly: not a review state, but a second way
-  to correct a stored question. Two decisions it needs — whether removing the last badge is
-  refused or is the same as deleting the question, and whether the removal is recorded, since
-  a later re-run resolving that badge to the same chunks would otherwise be free to write the
-  question again.
-
 - **Sample tests, and crowd-sourced judgement on the questions in them.** Generate a sample
   quiz from the bank — the diverse-retrieval pull above is exactly the right way to choose
   its questions — put it in front of colleagues, and collect an opinion per question: is this
@@ -1234,6 +1223,50 @@ item up.
   anonymous feedback cannot be weighted or audited and identified feedback on a colleague's
   authoring is a different social contract; and needs a threshold that a handful of ratings
   cannot trip, which is the same calibration problem as the duplicate threshold.
+
+- **A stored coverage report, with a dated refresh.** `/coverage` computes itself from
+  scratch on every visit and takes one to two minutes to arrive, because the expensive half
+  is resolving each badge's unused chunk set against the Atlas index — one pass per badge,
+  every time, to answer a question whose answer rarely changed since yesterday. Storing the
+  finished rows would let the screen paint at once from the last report, label it with when
+  it was taken, and offer a refresh that recomputes it behind the same status bar and
+  chunk-by-chunk detail a generation run already shows. The figures themselves are unchanged;
+  what changes is that reading them costs nothing and only recomputing them costs anything.
+
+  Three things to settle. A stored report goes stale the moment a run stores questions or
+  the corpus is refreshed, and both of those are known events — so the screen can either
+  simply show the report's age and leave the judgement to the reader, or mark itself stale
+  when it can prove it is, which is more honest and more code. Whether a refresh is
+  all-badges or one badge at a time, since a single thin badge is the usual reason to look
+  and recomputing the other forty to see it is the whole cost being avoided. And whether a
+  failed badge — the `PyMongoError` path that currently reports "unknown" — is stored as
+  unknown or leaves the previous good figures standing, which is the difference between a
+  report that degrades and one that lies by omission.
+
+- **Report chunks done, not only chunks left — and never a chunk figure without its total.**
+  Coverage states questions written and chunks left to walk, which frames the badge as work
+  still available. That is the right frame for booking a run, but it is not the question most
+  people arrive with: they want to know how much of a badge is already done, in chunks and as
+  a share, and today they have to work it out by subtraction. The figures needed already
+  exist — `pages_used` and `pages_available` are both returned, and `coverage.html` already
+  adds them together to compute the share left — so this is what is shown and how it is
+  labelled, not new computation.
+
+  The wider half is the rule: **wherever the application shows chunks consumed or chunks
+  remaining, it should show the total for that subject alongside.** "40 chunks left" means
+  nearly finished on a large badge and barely started on a small one, and the same is true of
+  the live run status, the generate form's ceiling and the per-badge line on `/`. The
+  denominator is what makes any of those numbers legible, and it is currently implicit
+  everywhere.
+
+  Two things to settle. What the total honestly denominates: used plus available is the
+  badge's *resolved* chunk set, not everything MongoDB has written on the subject, so calling
+  it "the badge's chunks" is true only in the sense Material means it — and a badge whose
+  chunk lookup failed has `pages_available` of `null`, so it has no total to state and must
+  say so rather than imply zero. And whether done-first replaces left-to-walk or joins it:
+  the heatmap, its axis label and the table's sortable column are all currently phrased as
+  what is left, and showing both readings of the same pair of numbers everywhere would be
+  clutter, so one of them has to lead.
 
 - **A run detail screen.** `/runs` lists finished runs and `GET /api/questions/runs/{id}`
   already returns one in full, including the chunk-by-chunk detail — so this is a
