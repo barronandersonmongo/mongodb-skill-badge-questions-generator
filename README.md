@@ -1208,17 +1208,6 @@ item up.
   orphaned; and retiring, unlike deleting, would want to release the chunks back so the
   material can be written from again.
 
-- **Removing a badge from a question by hand.** A question written from one badge's
-  material is often defensible for a second badge and not for a third, and that is a
-  judgement the model is not well placed to make. A small × on each badge pill, with a
-  confirmation, would let an author take one badge off a question without deleting the
-  question. This is the first editorial act other than deletion, so it reopens
-  [No review workflow](#no-review-workflow) narrowly: not a review state, but a second way
-  to correct a stored question. Two decisions it needs — whether removing the last badge is
-  refused or is the same as deleting the question, and whether the removal is recorded, since
-  a later re-run resolving that badge to the same chunks would otherwise be free to write the
-  question again.
-
 - **Sample tests, and crowd-sourced judgement on the questions in them.** Generate a sample
   quiz from the bank — the diverse-retrieval pull above is exactly the right way to choose
   its questions — put it in front of colleagues, and collect an opinion per question: is this

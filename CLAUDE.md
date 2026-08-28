@@ -103,8 +103,9 @@ No Node, no npm, no bundler, no Docker, no task queue, no RAG framework.
 - **Documentation corpus**: fetched and stored directly, not through the MCP server.
 - **Badge catalog**: synced from MongoDB's published collection, which is authoritative;
   research fills what it does not list. The badge artwork is the canonical name.
-- **No review workflow**: every stored question is in use. Deleting is the only editorial
-  act, and it is final.
+- **No review workflow**: every stored question is in use. Deleting is the only *irreversible*
+  editorial act. The one reversible one is unfiling a badge from a question, and a question
+  always keeps at least one badge.
 
 ## Open questions
 
