@@ -21,7 +21,15 @@
 <div class="panel">
   <div class="panel-header">
     <span>All badges</span>
-    <span class="text-body-secondary heat-legend">
+    {# Two readings of one axis rather than two actions, so a segmented group — the same
+       control the documentation screen uses to switch between views of one page. #}
+    <div class="btn-group btn-group-sm" role="group" aria-label="Chunks left as">
+      <button class="btn btn-outline-secondary active" id="x-count" type="button"
+              data-x-mode="count">How many</button>
+      <button class="btn btn-outline-secondary" id="x-share" type="button"
+              data-x-mode="share">What share</button>
+    </div>
+    <span class="text-body-secondary heat-legend" id="chart-legend" data-chart-legend="true">
       Right is material still to run, up is questions already written, and the bubble is
       how many. Bottom right is the badge to run next.
     </span>
@@ -157,6 +165,49 @@ function fitLabel(ctx, name) {
   return text.trimEnd() + "…";
 }
 
+// The two readings of the x axis. A count answers "how much is there to run", which is
+// what a run is booked against — a badge with 300 chunks left is worth a walk whatever
+// fraction of it that is. A share answers "how far through this badge are we", which a
+// count cannot: 40 chunks left is nearly done on a large badge and barely started on a
+// small one, and the count puts those two in the same place. Neither is the truer axis,
+// so the screen offers both rather than picking.
+const X_MODES = {
+  count: {
+    axis: "Chunks left to walk",
+    value: (row) => row.pages_available,
+    legend: "Right is material still to run, up is questions already written, and the " +
+      "bubble is how many. Bottom right is the badge to run next.",
+    tick: (value) => value,
+    // Left to the data, so the fullest badge sets the right-hand edge.
+    max: undefined,
+  },
+  share: {
+    axis: "Share of the badge's chunks left to walk",
+    value: (row) => chunkShare(row),
+    legend: "Right is how much of the badge's own documentation is still unwalked, up is " +
+      "questions already written, and the bubble is how many. Bottom right is the badge " +
+      "least started.",
+    tick: (value) => value + "%",
+    // Pinned to the whole, or a screen where no badge is above 60% left would stretch
+    // that 60 to the right-hand edge and read as "nothing walked yet".
+    max: 100,
+  },
+};
+
+// What is left as a percentage of everything that badge resolves to — walked and not.
+// A badge resolving to no chunks at all has no share to state, which is not the same as
+// nought per cent left, so it gets none and is dropped from that reading.
+function chunkShare(row) {
+  const whole = (row.pages_used || 0) + row.pages_available;
+  if (!whole) return null;
+  return (row.pages_available / whole) * 100;
+}
+
+// Which reading the x axis is showing. The chart is redrawn against it rather than
+// rebuilt, so a toggle keeps the same bubbles rather than animating them in from
+// nothing as though the data had changed.
+let xMode = X_MODES.count;
+
 function drawHeatmap(canvas, rows) {
   const largest = Math.max(...rows.map((row) => row.total));
   const forest = themeColor("--forest");
@@ -167,13 +218,18 @@ function drawHeatmap(canvas, rows) {
   // knowing, so it is left out and the table still lists it with an em dash.
   const plotted = rows.filter((row) => row.pages_available !== null);
   const points = plotted.map((row) => ({
-    x: row.pages_available,
+    x: X_MODES.count.value(row),
+    count: row.pages_available,
+    // A share needs a denominator, and the badge's whole chunk set is what it has walked
+    // plus what is left. A badge that resolves to no chunks at all has no share to state,
+    // which is a different thing from nought per cent left, so it has none.
+    share: chunkShare(row),
     y: row.total,
     r: bubbleRadius(row.total, largest),
     slug: row.skill_badge,
     name: row.name || row.skill_badge,
   }));
-  new Chart(canvas, {
+  return new Chart(canvas, {
     type: "bubble",
     plugins: [badgeLabels],
     data: {
@@ -202,18 +258,24 @@ function drawHeatmap(canvas, rows) {
         tooltip: {
           callbacks: {
             label: (item) => {
+              // Both readings, whichever axis is showing: the tooltip is where the
+              // figure behind a bubble is checked, and a share with no count behind it is
+              // the number people mistrust.
               const point = item.raw;
               const questions = point.y === 1 ? " question" : " questions";
-              return point.name + " — " + point.y + questions + ", " + point.x + " chunks left";
+              const share = point.share === null ? "" : " (" + Math.round(point.share) + "%)";
+              return point.name + " — " + point.y + questions + ", " +
+                point.count + " chunks left" + share;
             },
           },
         },
       },
       scales: {
         x: {
-          title: { display: true, text: "Chunks left to walk", color: ink3 },
+          title: { display: true, text: X_MODES.count.axis, color: ink3 },
           beginAtZero: true,
-          ticks: { color: ink3 },
+          max: X_MODES.count.max,
+          ticks: { color: ink3, callback: (value) => xMode.tick(value) },
           grid: { color: line },
         },
         y: {
@@ -235,6 +297,25 @@ function drawHeatmap(canvas, rows) {
         event.native.target.style.cursor = elements.length ? "pointer" : "default";
       },
     },
+  });
+}
+
+function showXMode(chart, mode) {
+  xMode = mode;
+  chart.data.datasets[0].data.forEach((point) => {
+    point.x = mode === X_MODES.share ? point.share : point.count;
+  });
+  // A badge with no chunk set at all has no share, so it leaves the chart for that
+  // reading and comes back for the other, rather than being drawn at an x it does not
+  // have. Chart.js skips a point whose x is null, so nothing else has to.
+  chart.options.scales.x.title.text = mode.axis;
+  chart.options.scales.x.max = mode.max;
+  chart.update();
+  document.getElementById("chart-legend").textContent = mode.legend;
+  document.querySelectorAll("[data-x-mode]").forEach((button) => {
+    const on = X_MODES[button.dataset.xMode] === mode;
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
   });
 }
 
@@ -261,7 +342,10 @@ function drawHeatmap(canvas, rows) {
   // Every badge's material unresolved leaves the chart with no point to draw, and an
   // empty grid is a worse answer than no grid.
   if (rows.some((row) => row.pages_available !== null)) {
-    drawHeatmap(document.getElementById("coverage-bubbles"), rows);
+    const chart = drawHeatmap(document.getElementById("coverage-bubbles"), rows);
+    document.querySelectorAll("[data-x-mode]").forEach((button) => {
+      button.addEventListener("click", () => showXMode(chart, X_MODES[button.dataset.xMode]));
+    });
   } else {
     heatmap.closest(".panel").hidden = true;
   }

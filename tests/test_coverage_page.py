@@ -118,9 +118,13 @@ def test_the_chart_places_a_badge_by_material_and_by_questions(client):
     """
     body = client.get(PAGE).text
     assert 'type: "bubble"' in body
-    assert "x: row.pages_available" in body
+    # The x axis gained a second reading, so what is asserted is the count reading and
+    # that it is what the chart opens on. The requirement recorded above is unchanged.
+    assert "value: (row) => row.pages_available" in body
+    assert "x: X_MODES.count.value(row)" in body
     assert "y: row.total" in body
-    assert 'text: "Chunks left to walk"' in body
+    assert 'axis: "Chunks left to walk"' in body
+    assert "text: X_MODES.count.axis" in body
     assert 'text: "Questions created"' in body
     assert body.count("beginAtZero: true") == 2
 
@@ -315,3 +319,85 @@ def test_a_fuller_badge_is_drawn_darker(client):
     assert "FILL_MIN + (FILL_MAX - FILL_MIN) * Math.sqrt(total / largest)" in body
     assert "withAlpha(forest, bubbleFill(p.y, largest))" in body
     assert "const FILL_MAX = 0.8;" in body
+
+
+def test_the_x_axis_can_be_read_as_a_count_or_as_a_share(client):
+    """
+    Intent: The two questions asked of "chunks left" are different and neither answers the
+        other. A count is what a run is booked against — 300 chunks left is worth a walk
+        whatever fraction of the badge that is. A share is how far through a badge the work
+        has got, which the count cannot say: 40 left is nearly done on a large badge and
+        barely started on a small one, and a count puts those two in the same place.
+    Success: A segmented control switches the x axis between the two, and the axis title
+        and the sentence explaining the chart change with it.
+    Feature: Coverage chart — chunks left, as a count or as a share.
+    """
+    body = client.get(PAGE).text
+    assert 'data-x-mode="count"' in body
+    assert 'data-x-mode="share"' in body
+    assert 'axis: "Chunks left to walk"' in body
+    assert "axis: \"Share of the badge's chunks left to walk\"" in body
+    assert 'data-chart-legend="true"' in body
+    assert 'document.getElementById("chart-legend").textContent = mode.legend' in body
+
+
+def test_the_share_is_of_the_badges_whole_chunk_set(client):
+    """
+    Intent: A share needs a denominator, and the only honest one is everything that badge
+        resolves to — what has been walked plus what is left. Taken against the corpus, or
+        against the largest badge, the figure would answer a question nobody asked.
+    Success: The share is chunks left over walked plus left, as a percentage, and its axis
+        is pinned to 100 so a screen where no badge is above 60% left does not stretch that
+        to the right-hand edge and read as "nothing walked yet".
+    Feature: Coverage chart — the share is of the badge itself.
+    """
+    body = client.get(PAGE).text
+    assert "(row.pages_used || 0) + row.pages_available" in body
+    assert "(row.pages_available / whole) * 100" in body
+    assert "max: 100," in body
+    assert 'tick: (value) => value + "%"' in body
+
+
+def test_a_badge_with_no_chunk_set_has_no_share(client):
+    """
+    Intent: Nought chunks walked and nought left is a badge that resolves to no
+        documentation at all. Drawn at 0% it would sit at the left-hand edge among the
+        badges whose material is spent, which is a claim about a badge nothing is known
+        about — the same mistake as charting an unknown chunk count as zero.
+    Success: Such a badge has no share, and is absent from that reading rather than placed
+        at either end of it.
+    Feature: Coverage chart — no chunk set is not nought per cent.
+    """
+    body = client.get(PAGE).text
+    assert "if (!whole) return null;" in body
+    assert "point.x = mode === X_MODES.share ? point.share : point.count;" in body
+
+
+def test_switching_the_axis_keeps_the_same_bubbles(client):
+    """
+    Intent: The two readings are two views of one set of badges. Rebuilt from scratch, the
+        chart animates every bubble in from nothing as though the data had changed, and the
+        badge the author was looking at is lost in the redraw.
+    Success: The toggle moves the existing points and updates the chart rather than
+        constructing a new one, and the buttons say which reading is showing.
+    Feature: Coverage chart — a toggle, not a redraw.
+    """
+    body = client.get(PAGE).text
+    assert "chart.update();" in body
+    assert body.count("new Chart(canvas") == 1
+    assert 'button.classList.toggle("active", on)' in body
+    assert 'button.setAttribute("aria-pressed"' in body
+
+
+def test_the_tooltip_gives_both_readings(client):
+    """
+    Intent: The tooltip is where the figure behind a bubble is checked, and a percentage
+        with no count behind it is exactly the number people mistrust — 50% left is four
+        chunks on one badge and 120 on another.
+    Success: The tooltip names the badge and gives the questions, the count of chunks left
+        and its share, whichever axis is showing.
+    Feature: Coverage chart — the tooltip does not depend on the axis.
+    """
+    body = client.get(PAGE).text
+    assert 'point.count + " chunks left" + share' in body
+    assert 'Math.round(point.share) + "%)"' in body

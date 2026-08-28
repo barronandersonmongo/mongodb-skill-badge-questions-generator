@@ -802,6 +802,24 @@ with material and almost nothing written from it, which is the one to run next. 
 low is a badge whose material is spent, which needs the corpus widening instead of another
 run. Both axes begin at zero, or distances between badges would not be comparable.
 
+The x axis has two readings, switched by a segmented control in the panel header. **How
+many** is chunks left, which is what a run is booked against: 300 chunks left is worth a
+walk whatever fraction of the badge that is. **What share** is chunks left over that badge's
+whole chunk set — walked plus left — which is how far through a badge the work has got, and
+the count cannot say it: 40 left is nearly done on a large badge and barely started on a
+small one, and a count puts those two in the same place. Neither is the truer axis, so the
+screen offers both rather than picking one. The share axis is pinned to 100%, or a screen
+where no badge is above 60% left would stretch that to the right-hand edge and read as
+nothing having been walked at all.
+
+A badge that resolves to no chunks at all — nothing walked and nothing left — has no share
+to state, which is a different thing from nought per cent left, so it leaves the chart for
+that reading rather than sitting at the left-hand edge among the badges whose material is
+spent. Switching moves the existing bubbles rather than building a new chart, so the badge
+being looked at is not lost in a redraw, and the tooltip gives the count and the share
+together whichever axis is showing: a percentage with no count behind it is the number
+people mistrust, since 50% left is four chunks on one badge and 120 on another.
+
 The bubble is sized by **area**, which is the usual way a bubble chart lies: Chart.js takes a
 radius, so the radius is the square root of the badge's share of the fullest badge, or a badge
 with four times the questions would look sixteen times the badge and overstate the very

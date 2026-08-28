@@ -476,8 +476,11 @@ a:focus-visible,
 }
 
 /* The chart says what its axes mean in the panel header, because a scatter of bubbles
-   is only readable once, and reading it is the whole point. */
+   is only readable once, and reading it is the whole point. It is last in the header and
+   takes the space the title and the axis toggle leave, so switching the axis rewrites the
+   sentence without moving the control that switched it. */
 .heat-legend {
+  margin-left: auto;
   max-width: 46ch;
   font-size: 0.75rem;
   font-weight: 400;
